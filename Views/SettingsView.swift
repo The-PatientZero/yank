@@ -81,13 +81,42 @@ struct SettingsView: View {
             }
             
             Divider()
-            
+
+            // History section
+            VStack(alignment: .leading, spacing: 12) {
+                Text("History")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    Text("Ignore entries shorter than")
+                        .font(.system(size: 12))
+                    Spacer()
+                    Stepper(
+                        settings.minTextLength == 1
+                            ? "1 character"
+                            : "\(settings.minTextLength) characters",
+                        value: $settings.minTextLength,
+                        in: 1...20
+                    )
+                    .font(.system(size: 12))
+                    .onChange(of: settings.minTextLength) { _ in settings.save() }
+                }
+
+                Toggle("Deduplicate history", isOn: $settings.deduplicateHistory)
+                    .font(.system(size: 12))
+                    .onChange(of: settings.deduplicateHistory) { _ in settings.save() }
+                    .toggleStyle(.switch)
+            }
+
+            Divider()
+
             // System section
             VStack(alignment: .leading, spacing: 12) {
                 Text("System")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.secondary)
-                
+
                 HStack {
                     Text("Launch at Login")
                         .font(.system(size: 13, weight: .medium))
@@ -159,7 +188,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            
+
             Divider()
 
             // About
@@ -297,11 +326,13 @@ class SettingsViewModel: ObservableObject {
     @Published var hotkeyKeyCode: UInt16
     @Published var launchAtLogin: Bool
     @Published var historyLimit: HistoryLimit
-    
+    @Published var minTextLength: Int
+    @Published var deduplicateHistory: Bool
+
     private let defaults = UserDefaults.standard
     private let hotkeyModifiersKey = "hotkeyModifiers"
     private let hotkeyKeyCodeKey = "hotkeyKeyCode"
-    
+
     init() {
         // Load modifiers
         if let savedMods = defaults.array(forKey: hotkeyModifiersKey) as? [String] {
@@ -309,29 +340,35 @@ class SettingsViewModel: ObservableObject {
         } else {
             self.hotkeyModifiers = HotkeyModifiers(shift: true, command: true, option: false, control: false)
         }
-        
+
         // Load keycode (default to V = 9)
         let savedKeyCode = defaults.integer(forKey: hotkeyKeyCodeKey)
         self.hotkeyKeyCode = savedKeyCode > 0 ? UInt16(savedKeyCode) : 9
-        
+
         // Load launch at login status from manager natively via SMAppService
         self.launchAtLogin = SettingsManager.shared.launchAtLogin
-        
+
         // Load history limit
         let rawLimit = defaults.integer(forKey: "historyLimit")
         self.historyLimit = HistoryLimit(rawValue: rawLimit) ?? .essential
+
+        // Load history filter settings
+        self.minTextLength = SettingsManager.shared.minTextLength
+        self.deduplicateHistory = SettingsManager.shared.deduplicateHistory
     }
-    
+
     func save() {
         defaults.set(hotkeyModifiers.toArray(), forKey: hotkeyModifiersKey)
         defaults.set(Int(hotkeyKeyCode), forKey: hotkeyKeyCodeKey)
         defaults.set(historyLimit.rawValue, forKey: "historyLimit")
-        
+
         SettingsManager.shared.hotkeyModifiers = hotkeyModifiers
         SettingsManager.shared.hotkeyKeyCode = hotkeyKeyCode
         SettingsManager.shared.historyLimit = historyLimit
+        SettingsManager.shared.minTextLength = minTextLength
+        SettingsManager.shared.deduplicateHistory = deduplicateHistory
         SettingsManager.shared.save()
-        
+
         NotificationCenter.default.post(name: .bufferHotkeyChanged, object: nil)
         NotificationCenter.default.post(name: .bufferHistoryLimitChanged, object: nil)
     }
