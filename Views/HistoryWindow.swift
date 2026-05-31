@@ -185,6 +185,7 @@ struct HistoryContentView: View {
     let onPaste: (ClipboardItem) -> Void
     let onPasteMultiple: ([ClipboardItem]) -> Void
     let onDismiss: () -> Void
+    @ObservedObject private var themeManager = ThemeManager.shared
     
     @FocusState private var isSearchFocused: Bool
     @State private var searchText = ""
@@ -429,6 +430,7 @@ struct HistoryContentView: View {
         }
         .frame(minWidth: 600, minHeight: 400)
         .background(Color(NSColor.windowBackgroundColor))
+        .accentColor(themeManager.current.accentColor)
         .onChange(of: searchText) { newValue in
             showTagAutocomplete = newValue.hasPrefix("#")
             // Don't reset selection when in tag autocomplete mode (list is unchanged)
