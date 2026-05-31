@@ -79,3 +79,9 @@ fastlane/test_output
 build_test/
 
 *.zip
+
+# JetBrains / IntelliJ IDEA
+.idea/
+
+# Local planning notes (not for version control)
+copy_source_label_plan.md
