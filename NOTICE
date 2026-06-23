@@ -1,0 +1,41 @@
+NOTICE
+======
+
+This product is a derivative work based on Buffer, a lightweight, privacy-focused
+clipboard manager for macOS.
+
+Original project
+----------------
+  Buffer
+  https://github.com/samirpatil2000/Buffer
+  Copyright (c) 2026 Samir Patil
+  Licensed under the MIT License.
+
+This derivative
+---------------
+  Copyright (c) 2026 The-PatientZero
+  Licensed under the MIT License (see LICENSE).
+
+The original MIT copyright and permission notice are retained in the LICENSE file
+as required by the license. Portions of this software remain copyright their
+respective authors as recorded in the project's Git history.
+
+Credits
+-------
+Upstream contributors whose work is incorporated in this codebase:
+  - Samir Patil      (samirpatil2000)
+  - Sarath Donepudi  (dupenodi)
+
+Additional upstream contributions incorporated later via merged pull requests
+retain their authorship in the Git history and are credited to their respective
+authors.
+
+Assets
+------
+Interface sound effects are derived from Kenney's Interface Sounds pack:
+  https://kenney.nl/assets/interface-sounds
+  Copyright (c) 2020 Kenney
+  Licensed under Creative Commons Zero 1.0 Universal.
+
+The WAV versions are sourced from the CC0 Godot repackaging:
+  https://github.com/Calinou/kenney-interface-sounds
