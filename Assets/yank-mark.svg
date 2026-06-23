@@ -1,0 +1,27 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- ============================================================
+       Yank — app mark v0.2  ("pull a copy")  ·  flat, no gradient
+       Concept: two overlapping cards = copy / clipboard history;
+       the amber arrow = the "yank" — pulling a copy up and out.
+
+       PALETTE — edit these to re-skin:
+         tile    #1C1C1E   (background, flat)
+         card    #FFFFFF   (clipboard cards)
+         accent  #FBBF24   (yank motion)
+       ============================================================ -->
+
+  <!-- app-icon rounded square (~22% radius, Apple-style) -->
+  <rect width="1024" height="1024" rx="224" fill="#1C1C1E"/>
+
+  <!-- back card: the history beneath -->
+  <rect x="420" y="420" width="350" height="350" rx="80" fill="#FFFFFF" fill-opacity="0.32"/>
+
+  <!-- front card: the copy you grabbed -->
+  <rect x="255" y="255" width="350" height="350" rx="80" fill="#FFFFFF"/>
+
+  <!-- yank motion: pull a copy up-and-out -->
+  <g stroke="#FBBF24" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M660 660 L470 470"/>
+    <path d="M560 470 L470 470 L470 560"/>
+  </g>
+</svg>

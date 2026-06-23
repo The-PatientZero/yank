@@ -1,0 +1,29 @@
+<svg width="548" height="548" viewBox="238 238 548 548" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- ============================================================
+       Yank — menu-bar logo v0.4
+       JUST the logo from the centre of the app icon (yank-mark) —
+       the two cards + the amber "yank" arrow — standalone, with no
+       rounded-square tile, cropped to fill the menu-bar frame.
+       Same geometry and palette as the mark; the back card is the
+       solid grey the mark's translucent card resolves to over the
+       dark tile, so the logo reads the same on its own. Colour icon,
+       so StatusBarController sets isTemplate = false.
+
+       PALETTE — keep in sync with yank-mark.svg:
+         card      #FFFFFF   (front clipboard card)
+         card-back #656566   (= white @32% over the #1C1C1E tile)
+         accent    #FBBF24   (yank motion)
+       ============================================================ -->
+
+  <!-- back card: the history beneath -->
+  <rect x="420" y="420" width="350" height="350" rx="80" fill="#656566"/>
+
+  <!-- front card: the copy you grabbed -->
+  <rect x="255" y="255" width="350" height="350" rx="80" fill="#FFFFFF"/>
+
+  <!-- yank motion: pull a copy up-and-out -->
+  <g stroke="#FBBF24" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M660 660 L470 470"/>
+    <path d="M560 470 L470 470 L470 560"/>
+  </g>
+</svg>

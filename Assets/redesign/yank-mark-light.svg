@@ -1,0 +1,83 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- ============================================================
+       Yank — CANONICAL MARK · LIGHT appearance (composited web master)
+       Same geometry + construction as the dark master; recolored for
+       a light ground. On light, the white front card reads via a
+       crisp graphite hairline + soft shadow (not a white rim); the
+       back card is a warm mid-grey; amber unchanged.
+       ============================================================ -->
+  <defs>
+    <linearGradient id="groundL" x1="120" y1="80" x2="900" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F6F4EF"/>
+      <stop offset="0.55" stop-color="#EEEBE4"/>
+      <stop offset="1" stop-color="#E3DFD6"/>
+    </linearGradient>
+    <linearGradient id="frontL" x1="232" y1="250" x2="568" y2="586" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F7F8FA"/>
+    </linearGradient>
+    <mask id="frontMaskL">
+      <rect x="232" y="250" width="336" height="336" rx="82" fill="#FFFFFF"/>
+      <g stroke="#000000" stroke-width="72" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M594 590 L426 408"/>
+        <path d="M512 406 L426 408 L428 492"/>
+      </g>
+    </mask>
+    <linearGradient id="backL" x1="458" y1="440" x2="794" y2="776" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D6D2CA"/>
+      <stop offset="1" stop-color="#C5C0B7"/>
+    </linearGradient>
+    <linearGradient id="amberL" x1="430" y1="600" x2="600" y2="398" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E8870A"/>
+      <stop offset="0.5" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#FFD45A"/>
+    </linearGradient>
+    <!-- light-mode rim: faint white top-left highlight, graphite bottom-right edge -->
+    <linearGradient id="rimL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="0.4" stop-color="#FFFFFF" stop-opacity="0.0"/>
+      <stop offset="1" stop-color="#2A2924" stop-opacity="0.22"/>
+    </linearGradient>
+    <linearGradient id="rimBackL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.7"/>
+      <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0.0"/>
+      <stop offset="1" stop-color="#2A2924" stop-opacity="0.20"/>
+    </linearGradient>
+    <filter id="cardShadowL" x="-18%" y="-18%" width="136%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#6B6862" flood-opacity="0.28"/>
+    </filter>
+    <filter id="arrowShadowL" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#9A5B0A" flood-opacity="0.22"/>
+    </filter>
+    <clipPath id="frontClipL"><rect x="232" y="250" width="336" height="336" rx="82"/></clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#groundL)"/>
+  <rect x="1.5" y="1.5" width="1021" height="1021" rx="222.5" fill="none" stroke="#2A2924" stroke-opacity="0.07" stroke-width="2"/>
+
+  <g filter="url(#cardShadowL)">
+    <rect x="458" y="440" width="336" height="336" rx="82" fill="url(#backL)"/>
+  </g>
+  <rect x="458" y="440" width="336" height="336" rx="82" fill="none" stroke="url(#rimBackL)" stroke-width="2.5"/>
+
+  <g filter="url(#cardShadowL)">
+    <rect x="232" y="250" width="336" height="336" rx="82" fill="url(#frontL)" mask="url(#frontMaskL)"/>
+  </g>
+  <g clip-path="url(#frontClipL)" mask="url(#frontMaskL)" fill="#2A2924" fill-opacity="0.12">
+    <rect x="280" y="330" width="200" height="20" rx="10"/>
+    <rect x="280" y="378" width="160" height="20" rx="10"/>
+  </g>
+  <rect x="232" y="250" width="336" height="336" rx="82" fill="none" stroke="url(#rimL)" stroke-width="3" mask="url(#frontMaskL)"/>
+
+  <g filter="url(#arrowShadowL)">
+    <g stroke="url(#amberL)" stroke-width="62" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M594 590 L426 408"/>
+      <path d="M512 406 L426 408 L428 492"/>
+    </g>
+  </g>
+  <g stroke="#FFE7A6" stroke-opacity="0.6" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none" transform="translate(-5,-5)">
+    <path d="M566 566 L432 414"/>
+    <path d="M508 412 L436 414"/>
+  </g>
+  <circle cx="430" cy="412" r="11" fill="#FFF4D2" fill-opacity="0.9"/>
+</svg>

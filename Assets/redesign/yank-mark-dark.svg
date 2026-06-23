@@ -1,0 +1,137 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- ============================================================
+       Yank — CANONICAL MARK · DARK (composited web master) · refined
+       Indie-minimal direction, premium polish pass:
+         · ground has a real top-left light + corner vignette (depth)
+         · front pane: gradient rim + crisp INNER top-edge highlight
+           (reads as lit glass thickness) + tight interior specular
+         · amber arrow as a jewel: dimensional specular ridge down the
+           lit flank + a light catch at the tip + refined contact shadow
+         · everything lit top-left; restraint preserved
+       Geometry + arrow direction (up-left) unchanged.
+       ============================================================ -->
+  <defs>
+    <!-- ground: graphite with depth -->
+    <linearGradient id="ground" x1="120" y1="80" x2="900" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2A2A2F"/>
+      <stop offset="0.55" stop-color="#1B1B1E"/>
+      <stop offset="1" stop-color="#131315"/>
+    </linearGradient>
+    <radialGradient id="groundLight" cx="0.3" cy="0.2" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.07"/>
+      <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0.0"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="0.5" cy="0.5" r="0.72">
+      <stop offset="0.62" stop-color="#000000" stop-opacity="0.0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.28"/>
+    </radialGradient>
+
+    <linearGradient id="front" x1="232" y1="250" x2="568" y2="586" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EBEEF3"/>
+    </linearGradient>
+    <mask id="frontMask">
+      <rect x="232" y="250" width="336" height="336" rx="82" fill="#FFFFFF"/>
+      <g stroke="#000000" stroke-width="72" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M594 590 L426 408"/>
+        <path d="M512 406 L426 408 L428 492"/>
+      </g>
+    </mask>
+    <linearGradient id="back" x1="458" y1="440" x2="794" y2="776" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#505056"/>
+      <stop offset="1" stop-color="#343438"/>
+    </linearGradient>
+
+    <!-- amber, richer warm core -->
+    <linearGradient id="amber" x1="430" y1="600" x2="600" y2="398" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E8870A"/>
+      <stop offset="0.5" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#FFD45A"/>
+    </linearGradient>
+
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.92"/>
+      <stop offset="0.32" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="0.66" stop-color="#000000" stop-opacity="0.0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.32"/>
+    </linearGradient>
+    <linearGradient id="rimBack" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.45"/>
+      <stop offset="0.38" stop-color="#FFFFFF" stop-opacity="0.07"/>
+      <stop offset="0.7" stop-color="#000000" stop-opacity="0.0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.32"/>
+    </linearGradient>
+    <linearGradient id="rimTile" x1="0" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.24"/>
+    </linearGradient>
+    <!-- inner top-edge highlight: bright at top, gone by mid -->
+    <linearGradient id="innerTop" x1="400" y1="256" x2="400" y2="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.0"/>
+    </linearGradient>
+
+    <filter id="cardShadow" x="-18%" y="-18%" width="136%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#000000" flood-opacity="0.38"/>
+    </filter>
+    <filter id="arrowShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="1" dy="6" stdDeviation="7" flood-color="#1A0E00" flood-opacity="0.40"/>
+    </filter>
+    <radialGradient id="frontSheen" cx="0.28" cy="0.16" r="0.7">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.7"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.0"/>
+    </radialGradient>
+
+    <clipPath id="tileClip"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <clipPath id="frontClip"><rect x="232" y="250" width="336" height="336" rx="82"/></clipPath>
+  </defs>
+
+  <!-- GROUND with depth -->
+  <rect width="1024" height="1024" rx="224" fill="url(#ground)"/>
+  <g clip-path="url(#tileClip)">
+    <rect width="1024" height="1024" fill="url(#groundLight)"/>
+    <rect width="1024" height="1024" fill="url(#vignette)"/>
+  </g>
+  <rect x="1.5" y="1.5" width="1021" height="1021" rx="222.5" fill="none" stroke="url(#rimTile)" stroke-width="3"/>
+
+  <!-- BACK CARD -->
+  <g filter="url(#cardShadow)">
+    <rect x="458" y="440" width="336" height="336" rx="82" fill="url(#back)"/>
+  </g>
+  <rect x="458" y="440" width="336" height="336" rx="82" fill="none" stroke="url(#rimBack)" stroke-width="2.5"/>
+
+  <!-- FRONT CARD -->
+  <g filter="url(#cardShadow)">
+    <rect x="232" y="250" width="336" height="336" rx="82" fill="url(#front)" mask="url(#frontMask)"/>
+  </g>
+  <g clip-path="url(#frontClip)" mask="url(#frontMask)">
+    <rect x="232" y="250" width="336" height="336" fill="url(#frontSheen)"/>
+  </g>
+  <!-- copied-snippet hint -->
+  <g clip-path="url(#frontClip)" mask="url(#frontMask)" fill="#1C1C1E" fill-opacity="0.12">
+    <rect x="280" y="330" width="196" height="18" rx="9"/>
+    <rect x="280" y="372" width="158" height="18" rx="9"/>
+  </g>
+  <!-- crisp inner top-edge highlight (glass thickness), inset 5px, top-left only -->
+  <g clip-path="url(#frontClip)" mask="url(#frontMask)">
+    <path d="M237 337 a80 80 0 0 1 80 -80 H483" fill="none" stroke="url(#innerTop)" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <!-- outer gradient rim -->
+  <rect x="232" y="250" width="336" height="336" rx="82" fill="none" stroke="url(#rim)" stroke-width="3" mask="url(#frontMask)"/>
+
+  <!-- THE YANK — dimensional amber jewel -->
+  <g filter="url(#arrowShadow)">
+    <g stroke="url(#amber)" stroke-width="62" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M594 590 L426 408"/>
+      <path d="M512 406 L426 408 L428 492"/>
+    </g>
+  </g>
+  <!-- specular ridge down the lit flank (rounded-bar gloss) -->
+  <g stroke="#FFE7A6" stroke-opacity="0.55" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none" transform="translate(-5,-5)">
+    <path d="M566 566 L432 414"/>
+    <path d="M508 412 L436 414"/>
+  </g>
+  <!-- light catch at the arrowhead tip -->
+  <circle cx="430" cy="412" r="11" fill="#FFF4D2" fill-opacity="0.85"/>
+</svg>

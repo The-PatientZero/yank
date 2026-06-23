@@ -1,0 +1,12 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Icon Composer layer · THE YANK (top layer, in front).
+       Flat amber, bold, rounded — NO gradient/glow (the system adds the
+       specular). Up-left "pull a copy out" geometry, matched to the
+       canonical mark and the menu-bar glyph. Keep on its own group with
+       specular ON; if the head goes "pillowy" at export, turn specular
+       off for this group (the Calendar fix). -->
+  <g stroke="#FBBF24" stroke-width="62" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M594 590 L426 408"/>
+    <path d="M512 406 L426 408 L428 492"/>
+  </g>
+</svg>
