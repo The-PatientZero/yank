@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Store export config for: xcodebuild -exportArchive -exportOptionsPlist scripts/ExportOptions-AppStore.plist
+	     Set teamID to your Apple Developer Team ID before use. -->
+	<key>method</key>
+	<string>app-store</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>teamID</key>
+	<string>YOUR_TEAM_ID</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>uploadBitcode</key>
+	<false/>
+</dict>
+</plist>

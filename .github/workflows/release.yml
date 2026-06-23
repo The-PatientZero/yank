@@ -1,0 +1,147 @@
+name: Release
+
+# Pushing a v* tag builds, signs, and notarizes the DMG + updater ZIP, publishes the
+# GitHub release, refreshes releases.json on main (the in-app updater's feed), and
+# bumps the Homebrew cask. Secrets required — see docs/RELEASE.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  XCODEGEN_VERSION: "2.45.4"
+  XCODEGEN_TARBALL_SHA256: "90705e5c410a980f7d98f75462bba2120de7c94b721cc06fd3f7e52a52a1aeed"
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag matches MARKETING_VERSION
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          grep -q "MARKETING_VERSION: \"${VERSION}\"" project.yml \
+            || { echo "Tag ${GITHUB_REF_NAME} does not match MARKETING_VERSION in project.yml"; exit 1; }
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Prepare release notes from CHANGELOG.md
+        run: |
+          bash scripts/extract_release_notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          echo "RELEASE_NOTES_FILE=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
+
+      - name: Install pinned XcodeGen before loading signing secrets
+        run: scripts/install_xcodegen.sh
+
+      - name: Import Developer ID certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Configure App Store Connect API key
+        env:
+          ASC_KEY_B64: ${{ secrets.ASC_KEY_B64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          echo "$ASC_KEY_B64" | base64 --decode > "$RUNNER_TEMP/asc_key.p8"
+          xcrun notarytool store-credentials yank-ci-notary \
+            --key "$RUNNER_TEMP/asc_key.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/asc_key.p8" >> "$GITHUB_ENV"
+
+      - name: Install Developer ID provisioning profile
+        env:
+          MAC_PROVISIONING_PROFILE_B64: ${{ secrets.MAC_PROVISIONING_PROFILE_B64 }}
+        run: |
+          PROFILE="$RUNNER_TEMP/yank.provisionprofile"
+          echo "$MAC_PROVISIONING_PROFILE_B64" | base64 --decode > "$PROFILE"
+          security cms -D -i "$PROFILE" > "$RUNNER_TEMP/profile.plist"
+          UUID="$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")"
+          NAME="$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist")"
+          echo "Installing profile: $NAME ($UUID)"
+          mkdir -p "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles" \
+                   "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$UUID.provisionprofile"
+          cp "$PROFILE" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.provisionprofile"
+          echo "PROVISIONING_PROFILE_NAME=$NAME" >> "$GITHUB_ENV"
+
+      - name: Build, sign, and notarize
+        env:
+          APP_NAME: Yank
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          NOTARY_PROFILE: yank-ci-notary
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          ./scripts/build_dmg.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Yank $VERSION" \
+            --notes-file "$RELEASE_NOTES_FILE" \
+            build/dist/Yank.dmg \
+            build/dist/Yank.dmg.sha256 \
+            "build/dist/Yank-$VERSION-universal.zip" \
+            "build/dist/Yank-$VERSION-universal.zip.sha256"
+
+      - name: Refresh the updater feed (releases.json on main)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXPECTED_ZIP="Yank-$VERSION-universal.zip"
+          EXPECTED_CHECKSUM="$EXPECTED_ZIP.sha256"
+          for attempt in {1..30}; do
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+            if jq -e \
+              --arg tag "$GITHUB_REF_NAME" \
+              --arg zip "$EXPECTED_ZIP" \
+              --arg checksum "$EXPECTED_CHECKSUM" \
+              'any(.[]; .tag_name == $tag and .draft == false and (.assets | any(.name == $zip)) and (.assets | any(.name == $checksum)))' \
+              releases.json > /dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Release feed did not include $GITHUB_REF_NAME with $EXPECTED_ZIP and $EXPECTED_CHECKSUM" >&2
+              jq '[.[] | {tag_name, draft, assets: [.assets[].name]}]' releases.json >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          CURRENT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/releases.json?ref=main" --jq .sha)"
+          CONTENT="$(base64 < releases.json | tr -d '\n')"
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/releases.json" \
+            -f message="chore: refresh updater feed for $GITHUB_REF_NAME" \
+            -f branch=main \
+            -f sha="$CURRENT_SHA" \
+            -f content="$CONTENT" > /dev/null
+          echo "releases.json updated on main"
+
+      - name: Bump Homebrew cask
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+        run: |
+          gh auth setup-git
+          gh repo clone The-PatientZero/homebrew-tap "$RUNNER_TEMP/homebrew-tap"
+          git -C "$RUNNER_TEMP/homebrew-tap" config user.name "The-PatientZero"
+          git -C "$RUNNER_TEMP/homebrew-tap" config user.email "The-PatientZero@users.noreply.github.com"
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
+          git -C "$RUNNER_TEMP/homebrew-tap" push origin main

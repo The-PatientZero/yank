@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    runs-on: macos-26
+    env:
+      XCODEGEN_VERSION: "2.45.4"
+      XCODEGEN_TARBALL_SHA256: "90705e5c410a980f7d98f75462bba2120de7c94b721cc06fd3f7e52a52a1aeed"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run YankCore tests
+        run: swift test
+
+      - name: Install pinned XcodeGen
+        run: scripts/install_xcodegen.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Test macOS app (unsigned)
+        run: >
+          xcodebuild -project Yank.xcodeproj -scheme Yank -configuration Debug
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO test
+
+      - name: Test iOS app (simulator, unsigned)
+        run: >
+          xcodebuild -project Yank.xcodeproj -scheme YankiOS -configuration Debug
+          -destination 'platform=iOS Simulator,name=iPhone 17'
+          CODE_SIGNING_ALLOWED=NO test
