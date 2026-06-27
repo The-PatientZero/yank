@@ -2,14 +2,15 @@
 # Updates the Homebrew cask in the sibling homebrew-tap repo after a DMG release.
 #
 # Run AFTER `build_dmg.sh` and after the DMG is uploaded as `Yank.dmg` to the
-# `v<version>` GitHub release on The-PatientZero/yank — the cask URL is derived
-# from that tag, so the asset must exist before the cask is pushed.
+# GitHub release on The-PatientZero/yank. By default the cask URL points at
+# `v<version>`; set RELEASE_TAG when the pushed tag is different.
 #
 # Usage:
 #   ./scripts/update_homebrew_cask.sh <version> [dmg-path]
 #   e.g. ./scripts/update_homebrew_cask.sh 1.0.0
 #
-# Defaults: dmg-path = build/dist/Yank.dmg, tap = ../homebrew-tap (override with TAP_DIR).
+# Defaults: dmg-path = build/dist/Yank.dmg, tap = ../homebrew-tap (override with TAP_DIR),
+# release tag = v<version> (override with RELEASE_TAG).
 
 set -eo pipefail
 
@@ -20,8 +21,13 @@ VERSION="${1:?usage: update_homebrew_cask.sh <version> [dmg-path]}"
 DMG_PATH="${2:-${REPO_ROOT}/build/dist/Yank.dmg}"
 TAP_DIR="${TAP_DIR:-${REPO_ROOT}/../homebrew-tap}"
 CASK_PATH="${TAP_DIR}/Casks/yank.rb"
+RELEASE_TAG="${RELEASE_TAG:-v${VERSION}}"
 
 [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must be semver (got: ${VERSION})"; exit 1; }
+[[ "${RELEASE_TAG}" == "${VERSION}" || "${RELEASE_TAG}" == "v${VERSION}" ]] || {
+    echo "Release tag must be ${VERSION} or v${VERSION} (got: ${RELEASE_TAG})"
+    exit 1
+}
 [[ -f "${DMG_PATH}" ]] || { echo "DMG not found: ${DMG_PATH} — run build_dmg.sh first"; exit 1; }
 [[ -d "${TAP_DIR}/.git" ]] || { echo "Tap repo not found: ${TAP_DIR} — clone The-PatientZero/homebrew-tap next to this repo"; exit 1; }
 
@@ -66,13 +72,20 @@ CASK
 fi
 
 SHA256="$(shasum -a 256 "${DMG_PATH}" | awk '{print $1}')"
+if [[ "${RELEASE_TAG}" == v* ]]; then
+    URL_TAG='v#{version}'
+else
+    URL_TAG='#{version}'
+fi
 
-echo "Updating ${CASK_PATH} → version ${VERSION}, sha256 ${SHA256}"
+echo "Updating ${CASK_PATH} → version ${VERSION}, tag ${RELEASE_TAG}, sha256 ${SHA256}"
 perl -pi -e "s/^(  version \").*(\")$/\${1}${VERSION}\${2}/" "${CASK_PATH}"
 perl -pi -e "s/^(  sha256 \").*?(\").*$/\${1}${SHA256}\${2}/" "${CASK_PATH}"
+URL_TAG="${URL_TAG}" perl -pi -e 's#^(  url "https://github\.com/The-PatientZero/yank/releases/download/).*?(/Yank\.dmg",)$#$1$ENV{URL_TAG}$2#' "${CASK_PATH}"
 
 grep -q "version \"${VERSION}\"" "${CASK_PATH}" || { echo "Failed to write version"; exit 1; }
 grep -q "sha256 \"${SHA256}\"" "${CASK_PATH}" || { echo "Failed to write sha256"; exit 1; }
+grep -q "releases/download/${URL_TAG}/Yank.dmg" "${CASK_PATH}" || { echo "Failed to write release URL"; exit 1; }
 
 # `brew style` only resolves casks inside a registered tap, so check via the tap token
 # when it's installed; the raw working-clone path is invisible to it.

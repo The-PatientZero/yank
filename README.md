@@ -10,11 +10,11 @@
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT">
 </p>
 
-> **Status: preparing the first 1.0.0 release.** Yank started as a clean‑slate evolution of
-> [Buffer](https://github.com/samirpatil2000/Buffer) (MIT, by Samir Patil). The macOS app ships
-> as a signed, notarized release once 1.0.0 is published. The iOS app +
-> keyboard/share extensions and private CloudKit sync are **built** and reach the App Store on
-> their own review track.
+> **Status: 1.0.0 is the first public macOS release.** Yank started as a clean‑slate
+> evolution of [Buffer](https://github.com/samirpatil2000/Buffer) (MIT, by Samir Patil).
+> The macOS app ships as a signed, notarized release. The iOS app + keyboard/share
+> extensions and private CloudKit sync are **built** and reach the App Store on their
+> own review track.
 
 ---
 
@@ -55,7 +55,7 @@
 
 ## Install
 
-Once 1.0.0 is published, grab the notarized DMG from
+Grab the notarized DMG from
 [Releases](https://github.com/The-PatientZero/yank/releases/latest), or use Homebrew:
 
 ```bash

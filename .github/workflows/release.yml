@@ -1,12 +1,15 @@
 name: Release
 
-# Pushing a v* tag builds, signs, and notarizes the DMG + updater ZIP, publishes the
-# GitHub release, refreshes releases.json on main (the in-app updater's feed), and
-# bumps the Homebrew cask. Secrets required — see docs/RELEASE.md.
+# Pushing a version tag builds, signs, and notarizes the DMG + updater ZIP,
+# publishes the GitHub release, refreshes releases.json on main (the in-app
+# updater's feed), and bumps the Homebrew cask. Secrets required — see
+# docs/RELEASE.md.
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v[0-9]*"
+      - "[0-9]*"
 
 permissions:
   contents: write
@@ -143,5 +146,5 @@ jobs:
           gh repo clone The-PatientZero/homebrew-tap "$RUNNER_TEMP/homebrew-tap"
           git -C "$RUNNER_TEMP/homebrew-tap" config user.name "The-PatientZero"
           git -C "$RUNNER_TEMP/homebrew-tap" config user.email "The-PatientZero@users.noreply.github.com"
-          TAP_DIR="$RUNNER_TEMP/homebrew-tap" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
+          RELEASE_TAG="$GITHUB_REF_NAME" TAP_DIR="$RUNNER_TEMP/homebrew-tap" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
           git -C "$RUNNER_TEMP/homebrew-tap" push origin main

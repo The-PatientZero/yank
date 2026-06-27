@@ -1,14 +1,17 @@
 # Yank - Release Overview
 
-Releases are cut by pushing a version tag; GitHub Actions does the rest.
+Releases are cut by pushing a version tag; GitHub Actions does the rest. Prefer
+`v<version>` tags for public releases. The workflow also accepts bare semver tags
+(`1.0.0`) and strips the optional `v` before comparing against `MARKETING_VERSION`.
 
 ```bash
 # 1. Move CHANGELOG.md Unreleased notes into a dated version section.
 # 2. Bump MARKETING_VERSION in project.yml (the workflow refuses a mismatched tag), commit.
 # 3. Verify the release notes section:
 bash scripts/extract_release_notes.sh v1.0.0
-# 4. Tag and push:
-git tag v1.0.0 && git push origin v1.0.0
+# 4. Tag and push (preferred form):
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The `Release` workflow (`.github/workflows/release.yml`) then:

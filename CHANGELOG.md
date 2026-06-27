@@ -8,7 +8,7 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-06-27
 
 Initial public release.
 
