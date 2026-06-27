@@ -19,7 +19,8 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
 1. Builds, signs, and notarizes the universal DMG via `scripts/build_dmg.sh`, plus the
    stapled-app ZIP + `.sha256` sidecars the in-app updater consumes.
 2. Publishes the GitHub release with all four assets and the matching `CHANGELOG.md` section.
-3. Refreshes `releases.json` on `main` — the updater's feed.
+3. Opens a PR to refresh `releases.json` — the updater's feed — and attempts
+   auto-merge for that PR only.
 4. Bumps the Homebrew cask in `The-PatientZero/homebrew-tap`.
 
 `ci.yml` runs `swift test` and unsigned macOS/iOS builds on every push and PR.

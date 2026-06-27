@@ -1,8 +1,8 @@
 name: Release
 
 # Pushing a version tag builds, signs, and notarizes the DMG + updater ZIP,
-# publishes the GitHub release, refreshes releases.json on main (the in-app
-# updater's feed), and bumps the Homebrew cask. Secrets required — see
+# publishes the GitHub release, opens an updater-feed PR for releases.json,
+# and bumps the Homebrew cask. Secrets required — see
 # docs/RELEASE.md.
 
 on:
@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 env:
   XCODEGEN_VERSION: "2.45.4"
@@ -106,7 +107,7 @@ jobs:
             "build/dist/Yank-$VERSION-universal.zip" \
             "build/dist/Yank-$VERSION-universal.zip.sha256"
 
-      - name: Refresh the updater feed (releases.json on main)
+      - name: Open updater feed PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -129,14 +130,51 @@ jobs:
             fi
             sleep 5
           done
-          CURRENT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/releases.json?ref=main" --jq .sha)"
+
+          SAFE_TAG="$(printf '%s' "$GITHUB_REF_NAME" | tr -cs 'A-Za-z0-9._-' '-')"
+          FEED_BRANCH="automation/refresh-updater-feed-${SAFE_TAG}"
+          BASE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FEED_BRANCH" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$FEED_BRANCH" \
+              -f sha="$BASE_SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/heads/$FEED_BRANCH" \
+              -f sha="$BASE_SHA" > /dev/null
+          fi
+
+          gh api "repos/$GITHUB_REPOSITORY/contents/releases.json?ref=$FEED_BRANCH" \
+            --jq .content | base64 --decode > current-releases.json
+          if cmp -s releases.json current-releases.json; then
+            echo "releases.json already includes $GITHUB_REF_NAME"
+            exit 0
+          fi
+
+          CURRENT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/releases.json?ref=$FEED_BRANCH" --jq .sha)"
           CONTENT="$(base64 < releases.json | tr -d '\n')"
           gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/releases.json" \
             -f message="chore: refresh updater feed for $GITHUB_REF_NAME" \
-            -f branch=main \
+            -f branch="$FEED_BRANCH" \
             -f sha="$CURRENT_SHA" \
             -f content="$CONTENT" > /dev/null
-          echo "releases.json updated on main"
+
+          PR_URL="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$FEED_BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url')"
+          if [ -z "$PR_URL" ]; then
+            PR_URL="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$FEED_BRANCH" \
+              --title "chore: refresh updater feed for $GITHUB_REF_NAME" \
+              --body "Updates releases.json after publishing $GITHUB_REF_NAME.")"
+          fi
+          echo "Updater feed PR: $PR_URL"
+          gh pr merge "$PR_URL" --auto --squash --delete-branch \
+            || echo "Auto-merge could not be enabled; merge $PR_URL manually."
 
       - name: Bump Homebrew cask
         env:
