@@ -65,4 +65,37 @@ import Foundation
         #expect(merged.count == 1)
         #expect(merged[0].isDeleted)
     }
+
+    private func enriched(_ n: Int, mod: Double, tags: [String], title: String?, enrichedAt: Double) -> ClipboardItem {
+        ClipboardItem(
+            id: clipID(n), type: .text, timestamp: Date(timeIntervalSinceReferenceDate: 1000),
+            textContent: "item-\(n)", aiTags: tags, aiTitle: title,
+            aiEnrichedAt: Date(timeIntervalSinceReferenceDate: enrichedAt),
+            modifiedAt: Date(timeIntervalSinceReferenceDate: mod)
+        )
+    }
+
+    @Test func enrichmentSurvivesNewerEditFromUnenrichedDevice() {
+        // A device that never ran enrichment edits the clip later (newer modifiedAt, no AI).
+        let unenrichedNewer = item(7, ts: 1000, mod: 3000)
+        let enrichedOlder = enriched(7, mod: 2000, tags: ["aws", "error"], title: "AWS error", enrichedAt: 2000)
+        let merged = ClipboardMerge.reconcile([enrichedOlder], [unenrichedNewer])
+        #expect(merged.count == 1)
+        // The newer edit wins the item, but the enrichment is carried forward, not erased.
+        #expect(merged[0].modifiedAt == unenrichedNewer.modifiedAt)
+        #expect(merged[0].aiTags == ["aws", "error"])
+        #expect(merged[0].aiTitle == "AWS error")
+        #expect(merged[0].aiEnrichedAt == enrichedOlder.aiEnrichedAt)
+    }
+
+    @Test func freshestEnrichmentWinsRegardlessOfItemWinner() {
+        // Item winner is the newer-modified side; AI resolves on its own clock.
+        let itemWinnerStaleAI = enriched(8, mod: 5000, tags: ["old"], title: "old", enrichedAt: 1000)
+        let itemLoserFreshAI = enriched(8, mod: 4000, tags: ["new"], title: "new", enrichedAt: 9000)
+        let merged = ClipboardMerge.reconcile([itemWinnerStaleAI], [itemLoserFreshAI])
+        #expect(merged.count == 1)
+        #expect(merged[0].modifiedAt == itemWinnerStaleAI.modifiedAt)
+        #expect(merged[0].aiTags == ["new"])
+        #expect(merged[0].aiEnrichedAt == itemLoserFreshAI.aiEnrichedAt)
+    }
 }

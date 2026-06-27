@@ -5,7 +5,7 @@ import SwiftUI
 final class WelcomeWindowController: NSWindowController {
     private let axPermission: AccessibilityPermission
 
-    init(axPermission: AccessibilityPermission, syncAvailable: Bool) {
+    init(axPermission: AccessibilityPermission, syncAvailable: Bool, manager: SettingsManager = .shared) {
         self.axPermission = axPermission
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
@@ -22,6 +22,7 @@ final class WelcomeWindowController: NSWindowController {
             rootView: WelcomeView(
                 axPermission: axPermission,
                 syncAvailable: syncAvailable,
+                manager: manager,
                 onDismiss: { [weak self] in self?.close() }
             )
         )
@@ -52,9 +53,8 @@ final class WelcomeWindowController: NSWindowController {
 private struct WelcomeView: View {
     let axPermission: AccessibilityPermission
     let syncAvailable: Bool
+    let manager: SettingsManager
     let onDismiss: () -> Void
-
-    private let manager = SettingsManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xxl) {

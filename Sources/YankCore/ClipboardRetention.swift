@@ -45,12 +45,13 @@ enum ClipboardRetention {
                 blobReferencesToDelete: []
             )
         }
-        let kept = items.filter(\.isProtected)
+        let kept = items.filter(\.isProtected).sorted { $0.timestamp > $1.timestamp }
         let budget = max(0, limit - kept.count)
         let fresh = items.filter { !$0.isProtected }
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(budget)
-        let capped = (kept + fresh).sorted { $0.timestamp > $1.timestamp }
+        // Both runs are already newest-first; merge them in one pass instead of re-sorting the union.
+        let capped = mergedNewestFirst(kept, Array(fresh))
         let keptIDs = Set(capped.map(\.id))
         let removed = items.filter { !keptIDs.contains($0.id) }
         return CapResult(
@@ -58,6 +59,23 @@ enum ClipboardRetention {
             removedItems: removed,
             blobReferencesToDelete: ClipboardBlobCleanup.referencesToDelete(removing: removed, keeping: capped)
         )
+    }
+
+    /// Merge two newest-first runs into one newest-first array (ties keep `a`'s element first).
+    private static func mergedNewestFirst(_ a: [ClipboardItem], _ b: [ClipboardItem]) -> [ClipboardItem] {
+        var result: [ClipboardItem] = []
+        result.reserveCapacity(a.count + b.count)
+        var i = 0, j = 0
+        while i < a.count, j < b.count {
+            if a[i].timestamp >= b[j].timestamp {
+                result.append(a[i]); i += 1
+            } else {
+                result.append(b[j]); j += 1
+            }
+        }
+        if i < a.count { result.append(contentsOf: a[i...]) }
+        if j < b.count { result.append(contentsOf: b[j...]) }
+        return result
     }
 
     static func enforce(

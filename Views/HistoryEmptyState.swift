@@ -4,14 +4,14 @@ import SwiftUI
 /// clipboard (`isClear`) from a search/filter that matched nothing.
 struct HistoryEmptyState: View {
     var isClear: Bool
+    var settings: SettingsManager = .shared
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
 
     private var hotkeyDisplay: String {
-        let mgr = SettingsManager.shared
-        let key = keyCodeNames[mgr.hotkeyKeyCode] ?? "V"
-        return mgr.hotkeyModifiers.displayString + key
+        let key = keyCodeNames[settings.hotkeyKeyCode] ?? "V"
+        return settings.hotkeyModifiers.displayString + key
     }
 
     var body: some View {

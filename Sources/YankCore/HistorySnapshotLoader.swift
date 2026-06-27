@@ -8,6 +8,8 @@ enum HistorySnapshotLoader {
     struct Snapshot: Equatable, Sendable {
         var items: [ClipboardItem]
         var tombstones: [UUID: Date]
+        /// Individually-malformed items that were skipped (the rest of the history still loaded).
+        var skippedItemCount = 0
     }
 
     enum LoadError: Error, Equatable, LocalizedError {
@@ -42,8 +44,14 @@ enum HistorySnapshotLoader {
         }
 
         let items: [ClipboardItem]
+        let skippedItemCount: Int
         do {
-            items = try JSONDecoder().decode([ClipboardItem].self, from: historyData)
+            // Decode element-by-element: one malformed clip is skipped rather than failing the
+            // whole snapshot and locking the user out of all their history. A non-array top level
+            // (a genuinely corrupt file) still throws, so the fail-closed protection holds.
+            let decoded = try JSONDecoder().decode([FailableClipItem].self, from: historyData)
+            items = decoded.compactMap(\.item)
+            skippedItemCount = decoded.count - items.count
         } catch {
             return .failure(.corruptHistory)
         }
@@ -62,7 +70,17 @@ enum HistorySnapshotLoader {
             return .failure(error)
         }
 
-        return .success(Snapshot(items: items, tombstones: tombstones))
+        return .success(Snapshot(items: items, tombstones: tombstones, skippedItemCount: skippedItemCount))
+    }
+
+    /// Decodes one history element, yielding `nil` for an individually-malformed item so the
+    /// rest of the snapshot still loads.
+    private struct FailableClipItem: Decodable {
+        let item: ClipboardItem?
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            item = try? container.decode(ClipboardItem.self)
+        }
     }
 
     private static func existingFileData(

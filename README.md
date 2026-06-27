@@ -29,8 +29,9 @@
   [sponsoring development](https://github.com/sponsors/The-PatientZero).
 - **Text + Images + OCR** — captures anything; extracts searchable text from images/screenshots
   on‑device with Apple Vision.
-- **No AI gimmicks** — intelligence stays purposeful and on-device; anything added later must stay
-  private, lightweight, and opt-in.
+- **Purposeful, on-device intelligence** — optional Apple Intelligence (macOS 26+): tag & title
+  suggestions, Smart Paste rewrites, and natural-language search. On-device via Foundation Models,
+  opt-in, no cloud, no account — intelligence stays purposeful, never a gimmick.
 - **Organized** — pins, bookmarks, and color‑coded tags with `#` filtering.
 - **Multi‑select & multi‑paste** — select several items and paste them together.
 - **Large‑content friendly** — chunked previews and disk‑backed storage for multi‑MB text.

@@ -29,6 +29,15 @@ enum UpdateVersion {
         return false
     }
 
+    /// Whether `candidate` should be offered as an update: strictly newer than what's running
+    /// AND not below the highest version ever installed on this machine. The floor closes a
+    /// downgrade-via-tampered-manifest path — a signed-but-older release the user already moved
+    /// past can't be re-offered. Reduces to `isNewer(candidate, current)` in the normal case
+    /// where the running app *is* the highest ever installed.
+    static func shouldOfferUpdate(candidate: String, current: String, highestInstalled: String) -> Bool {
+        isNewer(candidate, than: current) && !isNewer(highestInstalled, than: candidate)
+    }
+
     /// True when a staged update should be offered to install: it is a newer version than the
     /// running app AND its install target is the bundle we expect. Whether the staged payload
     /// still exists on disk is an I/O concern the caller checks separately. Pure so the

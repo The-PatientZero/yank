@@ -167,6 +167,39 @@ import Testing
         #expect(item.hasRichContent == false)
     }
 
+    @Test func aiFieldsRoundTripViaCloudKit() throws {
+        let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+        let original = ClipboardItem(
+            id: UUID(),
+            type: .text,
+            timestamp: Date(timeIntervalSinceReferenceDate: 1000),
+            textContent: "a long passage worth a title",
+            aiTags: ["aws", "billing"],
+            aiTitle: "AWS billing summary",
+            aiEnrichedAt: Date(timeIntervalSinceReferenceDate: 1500),
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 2000)
+        )
+        let record = try #require(ClipboardCloudMapping.record(from: original, in: zoneID))
+        let restored = try #require(ClipboardCloudMapping.item(from: record))
+        #expect(restored.aiTags == original.aiTags)
+        #expect(restored.aiTitle == original.aiTitle)
+        #expect(restored.aiEnrichedAt == original.aiEnrichedAt)
+    }
+
+    @Test func aiFieldsDefaultWhenAbsentInCloudKit() throws {
+        let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+        let recordID = CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
+        let record = CKRecord(recordType: ClipboardCloudMapping.recordType, recordID: recordID)
+        record[ClipboardCloudMapping.Key.type] = ClipboardItemType.text.rawValue
+        record[ClipboardCloudMapping.Key.timestamp] = Date()
+        record[ClipboardCloudMapping.Key.modifiedAt] = Date()
+        record[ClipboardCloudMapping.Key.textContent] = "legacy record from a pre-AI build"
+        let item = try #require(ClipboardCloudMapping.item(from: record))
+        #expect(item.aiTags.isEmpty)
+        #expect(item.aiTitle == nil)
+        #expect(item.aiEnrichedAt == nil)
+    }
+
     @Test func blobPolicyAcceptsGeneratedBasenamesOnly() throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

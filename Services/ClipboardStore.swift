@@ -2,55 +2,6 @@ import Foundation
 import AppKit
 import Observation
 
-private enum ClipboardStoreFileSecurity {
-    static let directoryPermissions = 0o700
-    static let filePermissions = 0o600
-    static let fileProtection: FileProtectionType = .complete
-    static let writeOptions: Data.WritingOptions = .atomic
-
-    static var directoryAttributes: [FileAttributeKey: Any] {
-        [.posixPermissions: directoryPermissions]
-    }
-
-    static func write(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: writeOptions)
-        try applyPrivateFileAttributes(to: url)
-    }
-
-    static func writeText(_ text: String, to url: URL) async throws {
-        try await Task.detached(priority: .utility) {
-            try write(Data(text.utf8), to: url)
-        }.value
-    }
-
-    static func applyPrivateFileAttributes(to url: URL) throws {
-        try PrivateFileAttributes.apply(to: url, permissions: filePermissions, protection: fileProtection)
-    }
-
-    static func applyPrivateDirectoryAttributes(to url: URL) throws {
-        try PrivateFileAttributes.apply(to: url, permissions: directoryPermissions, protection: fileProtection)
-    }
-
-    static func secureExistingFiles(in directories: [URL]) {
-        Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            let keys: [URLResourceKey] = [.isRegularFileKey]
-            for directory in directories {
-                guard let enumerator = fileManager.enumerator(
-                    at: directory,
-                    includingPropertiesForKeys: keys,
-                    options: [.skipsHiddenFiles]
-                ) else { continue }
-                while let url = enumerator.nextObject() as? URL {
-                    let values = try? url.resourceValues(forKeys: Set(keys))
-                    guard values?.isRegularFile == true else { continue }
-                    try? applyPrivateFileAttributes(to: url)
-                }
-            }
-        }
-    }
-}
-
 /// Manages persistent storage of clipboard history
 @MainActor
 @Observable
@@ -109,8 +60,10 @@ final class ClipboardStore {
     @ObservationIgnored private var cachedTags: [String] = []
 
     private var maxItems: Int { captureSettings.historyLimit }
-    private let fileManager = FileManager.default
-    private let storageDirectoryOverride: URL?
+
+    /// Owns the on-disk blob layout (texts / images / rich), its private-file attributes,
+    /// and all blob reads/writes/deletes. The store delegates every filesystem concern here.
+    @ObservationIgnored private let blobStore: ClipBlobStore
 
     /// When capture-path age retention last ran. Age-based expiry is a coarse, time-driven
     /// sweep, so running it on every single capture is wasted work; we gate it to at most
@@ -128,47 +81,28 @@ final class ClipboardStore {
     @ObservationIgnored private lazy var historyWriter = HistorySnapshotWriter(
         historyURL: historyFileURL,
         tombstonesURL: tombstonesFileURL,
-        writeOptions: ClipboardStoreFileSecurity.writeOptions,
-        filePermissions: ClipboardStoreFileSecurity.filePermissions,
-        fileProtection: ClipboardStoreFileSecurity.fileProtection,
+        writeOptions: ClipBlobStore.writeOptions,
+        filePermissions: ClipBlobStore.filePermissions,
+        fileProtection: ClipBlobStore.fileProtection,
         debounce: .milliseconds(300),
         queueLabel: "com.yank.save",
         onError: { error in Log.store.error("Failed to save history: \(error.localizedDescription)") }
     )
-    
-    private var storageDirectory: URL {
-        if let storageDirectoryOverride { return storageDirectoryOverride }
-        // Application Support effectively always exists for a Mac app, but never trap the
-        // app at launch if the lookup is empty (sandbox/odd-volume edge) — fail soft to tmp.
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.temporaryDirectory
-        return base.appendingPathComponent("Yank", isDirectory: true)
-    }
-    
-    private var historyFileURL: URL {
-        storageDirectory.appendingPathComponent("history.json")
-    }
-    
-    private var imagesDirectory: URL {
-        storageDirectory.appendingPathComponent("images", isDirectory: true)
-    }
-    
-    private var textsDirectory: URL {
-        storageDirectory.appendingPathComponent("texts", isDirectory: true)
-    }
 
-    private var richDirectory: URL {
-        storageDirectory.appendingPathComponent("rich", isDirectory: true)
+    private var historyFileURL: URL {
+        blobStore.storageDirectory.appendingPathComponent("history.json")
     }
 
     private var tombstonesFileURL: URL {
-        storageDirectory.appendingPathComponent("tombstones.json")
+        blobStore.storageDirectory.appendingPathComponent("tombstones.json")
     }
 
     init(settings: CaptureSettings, storageDirectory: URL? = nil) {
         self.captureSettings = settings
-        self.storageDirectoryOverride = storageDirectory
-        ensureDirectoriesExist()
+        self.blobStore = ClipBlobStore(storageDirectoryOverride: storageDirectory)
+        if !blobStore.ensureDirectoriesExist() {
+            storageUnavailable = true
+        }
         loadSnapshot()
         pruneExpired()
         hasLoaded = true
@@ -179,9 +113,9 @@ final class ClipboardStore {
     func pruneExpired() {
         if applyRetentionAndLimit(now: Date()) { persist() }
     }
-    
+
     // MARK: - Public API
-    
+
     func add(_ item: ClipboardItem, richArchive: PasteboardArchive? = nil) {
         // History-wide dedup: an identical inline-text copy floats up instead of duplicating.
         if item.type == .text, item.textFilename == nil, !item.isTruncated,
@@ -242,7 +176,7 @@ final class ClipboardStore {
         pendingDeletion = nil
         let ids = Set(pending.items.map(\.id))
         let result = ClipboardMutations.removeItems(ids: ids, from: items)
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()
@@ -291,6 +225,11 @@ final class ClipboardStore {
         persist()
     }
 
+    func setAIEnrichment(tags: [String], title: String?, for item: ClipboardItem) {
+        ClipboardMutations.setAIEnrichment(tags: tags, title: title, id: item.id, in: &items)
+        persist()
+    }
+
     /// Move an item to the top of the list (most recent position)
     func moveToTop(_ item: ClipboardItem) {
         if ClipboardMutations.moveToTop(item.id, in: &items) { persist() }
@@ -303,12 +242,12 @@ final class ClipboardStore {
 
     func clear() {
         let result = ClipboardMutations.removeItems(ids: Set(items.map(\.id)), from: items)
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()
     }
-    
+
     func image(for item: ClipboardItem) -> NSImage? {
         guard item.type == .image else { return nil }
         return Self.image(at: blobURL(for: item))
@@ -318,7 +257,7 @@ final class ClipboardStore {
         guard let url else { return nil }
         return NSImage(contentsOf: url)
     }
-    
+
     /// Copy each image clip's blob into `folder` as `image-0001.png`, `image-0002.png`, …
     /// Moves the blob-copy `FileManager` I/O out of the SwiftUI view and into
     /// the store, which owns the blob layout. Non-image items are skipped; an item whose
@@ -335,10 +274,7 @@ final class ClipboardStore {
             let fileName = "image-\(String(format: "%04d", written)).png"
             let destination = folder.appendingPathComponent(fileName)
             do {
-                if fileManager.fileExists(atPath: destination.path) {
-                    try fileManager.removeItem(at: destination)
-                }
-                try fileManager.copyItem(at: source, to: destination)
+                try blobStore.copyImageBlob(from: source, to: destination)
             } catch {
                 throw .copyFailed(itemID: item.id, underlying: error)
             }
@@ -347,42 +283,23 @@ final class ClipboardStore {
     }
 
     func saveImage(_ data: Data) -> String? {
-        let filename = UUID().uuidString + ".png"
-        let url = imagesDirectory.appendingPathComponent(filename)
-        
-        do {
-            try ClipboardStoreFileSecurity.write(data, to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save image: \(error.localizedDescription)")
-            return nil
-        }
+        blobStore.saveImage(data)
     }
-    
+
     /// Persist a full pasteboard archive (binary plist) and return its filename (#11).
     func saveRichArchive(_ archive: PasteboardArchive) -> String? {
-        let filename = UUID().uuidString + ".plist"
-        let url = richDirectory.appendingPathComponent(filename)
-        do {
-            let encoder = PropertyListEncoder()
-            encoder.outputFormat = .binary
-            try ClipboardStoreFileSecurity.write(encoder.encode(archive), to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save rich archive: \(error.localizedDescription)")
-            return nil
-        }
+        blobStore.saveRichArchive(archive)
     }
 
     /// Load the full pasteboard archive for an item, if it has one.
     func richArchive(for item: ClipboardItem) -> PasteboardArchive? {
-        guard let url = richArchiveURL(for: item) else { return nil }
+        guard let url = blobStore.richArchiveURL(for: item) else { return nil }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? PropertyListDecoder().decode(PasteboardArchive.self, from: data)
     }
 
     func richArchiveAsync(for item: ClipboardItem) async -> PasteboardArchive? {
-        guard let url = richArchiveURL(for: item) else { return nil }
+        guard let url = blobStore.richArchiveURL(for: item) else { return nil }
         do {
             return try await ClipboardPayloadLoader.richArchive(for: item, blobURL: url)
         } catch {
@@ -393,37 +310,19 @@ final class ClipboardStore {
 
     /// Save large text to a file and return the filename
     func saveText(_ text: String) -> String? {
-        let filename = UUID().uuidString + ".txt"
-        let url = textsDirectory.appendingPathComponent(filename)
-        
-        do {
-            try ClipboardStoreFileSecurity.write(Data(text.utf8), to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save text file: \(error.localizedDescription)")
-            return nil
-        }
+        blobStore.saveText(text)
     }
 
     /// Save large text off the main actor and return the filename. Used by clipboard
     /// capture, where a multi-MB write should never stall the menu-bar UI.
     func saveTextAsync(_ text: String) async -> String? {
-        let filename = UUID().uuidString + ".txt"
-        let url = textsDirectory.appendingPathComponent(filename)
-
-        do {
-            try await ClipboardStoreFileSecurity.writeText(text, to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save text file: \(error.localizedDescription)")
-            return nil
-        }
+        await blobStore.saveTextAsync(text)
     }
-    
+
     /// Load full text content from file (lazy loading for large text)
     func fullText(for item: ClipboardItem) -> String? {
         guard let filename = item.textFilename else { return item.textContent }
-        guard let url = SyncBlobPolicy.containedURL(directory: textsDirectory, filename: filename, kind: .text) else {
+        guard let url = blobStore.textURL(filename: filename) else {
             return item.textContent
         }
 
@@ -453,7 +352,7 @@ final class ClipboardStore {
             return nil
         }
     }
-    
+
     /// Load a chunk of text content, reading only what's necessary
     func textChunk(for item: ClipboardItem, charCount: Int) -> (text: String, totalBytes: Int, reachedEOF: Bool)? {
         Self.textChunk(for: item, textURL: blobURL(for: item), charCount: charCount)
@@ -471,7 +370,7 @@ final class ClipboardStore {
         }
         return TextChunkReader.page(for: item, textURL: nil, charCount: charCount)
     }
-    
+
     /// Per-id memo of the disk-stat result for file-backed clips. A clip's blob is immutable
     /// for its id, so its size never changes; this keeps repeated reads from a SwiftUI body
     /// (e.g. the multi-selection size summary) off the filesystem.
@@ -484,13 +383,13 @@ final class ClipboardStore {
         switch item.type {
         case .text:
             guard let filename = item.textFilename else { return item.textContent?.utf8.count }
-            guard let url = SyncBlobPolicy.containedURL(directory: textsDirectory, filename: filename, kind: .text) else {
+            guard let url = blobStore.textURL(filename: filename) else {
                 return nil
             }
             return cachedFileSize(id: item.id, url: url)
         case .image:
             guard let filename = item.imageFilename else { return nil }
-            guard let url = SyncBlobPolicy.containedURL(directory: imagesDirectory, filename: filename, kind: .image) else {
+            guard let url = blobStore.imageURL(filename: filename) else {
                 return nil
             }
             return cachedFileSize(id: item.id, url: url)
@@ -499,47 +398,13 @@ final class ClipboardStore {
 
     private func cachedFileSize(id: UUID, url: URL) -> Int? {
         if let cached = sizeCache[id] { return cached }
-        guard let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? Int else { return nil }
+        guard let size = blobStore.fileSize(at: url) else { return nil }
         sizeCache[id] = size
         return size
     }
-    
-    // MARK: - Private
-    
-    private func ensureDirectoriesExist() {
-        // Failing to create the storage tree means history cannot be persisted this
-        // session — captures would be silently lost on quit. Surface it explicitly via
-        // `storageUnavailable` and log with context instead of swallowing.
-        let directories = [storageDirectory, imagesDirectory, textsDirectory, richDirectory]
-        for directory in directories {
-            do {
-                try fileManager.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true,
-                    attributes: ClipboardStoreFileSecurity.directoryAttributes
-                )
-                try ClipboardStoreFileSecurity.applyPrivateDirectoryAttributes(to: directory)
-            } catch {
-                storageUnavailable = true
-                Log.store.error(
-                    "Failed to create storage directory \(directory.lastPathComponent, privacy: .public): \(error.localizedDescription)"
-                )
-            }
-        }
-        ClipboardStoreFileSecurity.secureExistingFiles(in: directories)
-        // Keep clip history (which can hold secrets) out of Time Machine / iCloud backups;
-        // excluding the parent covers the whole subtree. CloudKit sync is the intended
-        // cross-device/restore path for clips the user wants to keep.
-        excludeFromBackup(storageDirectory)
-    }
 
-    private func excludeFromBackup(_ url: URL) {
-        var url = url
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? url.setResourceValues(values)
-    }
-    
+    // MARK: - Private
+
     private func loadSnapshot() {
         switch HistorySnapshotLoader.load(historyURL: historyFileURL, tombstonesURL: tombstonesFileURL) {
         case .success(let snapshot):
@@ -551,28 +416,9 @@ final class ClipboardStore {
             Log.store.error("Failed to load history snapshot: \(error.localizedDescription)")
         }
     }
-    
-    private func deleteBlobReferences(_ references: [ClipboardBlobReference]) {
-        for reference in references {
-            guard let url = blobURL(for: reference) else { continue }
-            try? fileManager.removeItem(at: url)
-        }
-    }
 
-    private func blobURL(for reference: ClipboardBlobReference) -> URL? {
-        switch reference.kind {
-        case .image:
-            SyncBlobPolicy.containedURL(directory: imagesDirectory, filename: reference.filename, kind: .image)
-        case .text:
-            SyncBlobPolicy.containedURL(directory: textsDirectory, filename: reference.filename, kind: .text)
-        case .rich:
-            SyncBlobPolicy.containedURL(directory: richDirectory, filename: reference.filename, kind: .rich)
-        }
-    }
-
-    private func richArchiveURL(for item: ClipboardItem) -> URL? {
-        guard let filename = item.richFilename else { return nil }
-        return SyncBlobPolicy.containedURL(directory: richDirectory, filename: filename, kind: .rich)
+    func blobURL(for item: ClipboardItem) -> URL? {
+        blobStore.blobURL(for: item)
     }
 
     @discardableResult
@@ -580,7 +426,7 @@ final class ClipboardStore {
         guard maxItems > 0, items.count > maxItems else { return false }
         let result = ClipboardRetention.cap(items, limit: maxItems)
         guard result.items != items else { return false }
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         items = result.items
         return true
     }
@@ -595,7 +441,7 @@ final class ClipboardStore {
             now: now
         )
         guard result.didChange else { return false }
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         items = result.items
         tombstones = result.tombstones
         return true
@@ -675,7 +521,7 @@ final class ClipboardStore {
         if result.expiredVisibleCount > 0 {
             Log.store.info("Reconcile retention expired \(result.expiredVisibleCount) synced clip(s).")
         }
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         items = result.visibleItems
         tombstones = result.tombstones
         persist(notify: result.expiredVisibleCount > 0)
@@ -686,56 +532,16 @@ final class ClipboardStore {
         flushPendingWrites()
     }
 
-    func blobURL(for item: ClipboardItem) -> URL? {
-        if let filename = item.imageFilename {
-            return SyncBlobPolicy.containedURL(directory: imagesDirectory, filename: filename, kind: .image)
-        }
-        if let filename = item.textFilename {
-            return SyncBlobPolicy.containedURL(directory: textsDirectory, filename: filename, kind: .text)
-        }
-        return nil
-    }
-
     func blobURL(for reference: SyncBlobReference) -> URL? {
-        let directory = syncDirectory(for: reference.kind)
-        return reference.containedURL(in: directory)
+        blobStore.blobURL(for: reference)
     }
 
     func writeBlob(_ data: Data, reference: SyncBlobReference) async throws {
-        let directory = syncDirectory(for: reference.kind)
-        guard let url = reference.containedURL(in: directory) else {
-            throw SyncBlobStorage.Error.unsafeFilename
-        }
-        do {
-            try await SyncBlobStorage.write(
-                data,
-                to: url,
-                maxBytes: reference.maximumBytes,
-                writeOptions: ClipboardStoreFileSecurity.writeOptions,
-                filePermissions: ClipboardStoreFileSecurity.filePermissions,
-                fileProtection: ClipboardStoreFileSecurity.fileProtection
-            )
-        } catch {
-            Log.store.error("Failed to write synced blob \(reference.filename, privacy: .public): \(error.localizedDescription)")
-            throw error
-        }
+        try await blobStore.writeSyncedBlob(data, reference: reference)
     }
 
     func deleteBlob(_ reference: SyncBlobReference) {
-        let directory = syncDirectory(for: reference.kind)
-        guard let url = reference.containedURL(in: directory) else { return }
-        try? fileManager.removeItem(at: url)
-    }
-
-    private func syncDirectory(for kind: SyncBlobKind) -> URL {
-        switch kind {
-        case .image:
-            imagesDirectory
-        case .text:
-            textsDirectory
-        case .rich:
-            richDirectory
-        }
+        blobStore.deleteSyncedBlob(reference)
     }
 
 }

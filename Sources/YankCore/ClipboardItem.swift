@@ -50,6 +50,14 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// Extracted OCR text, persisted after first extraction.
     public var ocrText: String?
 
+    /// On-device AI tag suggestions. Advisory and subordinate to user `tags`: they don't
+    /// protect from retention and stay in their own field so they never pollute the user's
+    /// namespace. `aiEnrichedAt` records when enrichment ran and guards re-running.
+    public var aiTags: [String] = []
+    /// On-device one-line title for long clips (nil for short clips, where the excerpt suffices).
+    public var aiTitle: String?
+    public var aiEnrichedAt: Date?
+
     /// True when the original text exceeded the storage limit and only a preview is saved.
     public let isTruncated: Bool
 
@@ -67,7 +75,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// Device identifier that last authored this record.
     public var deviceOrigin: String
 
-    public init(id: UUID = UUID(), type: ClipboardItemType, timestamp: Date = Date(), sourceApp: String? = nil, textContent: String? = nil, textFilename: String? = nil, imageFilename: String? = nil, richFilename: String? = nil, hasRichContent: Bool = false, isPinned: Bool = false, isBookmarked: Bool = false, tags: [String] = [], ocrText: String? = nil, isTruncated: Bool = false, originalSizeBytes: Int? = nil, searchIndex: String? = nil, modifiedAt: Date? = nil, deletedAt: Date? = nil, deviceOrigin: String = "") {
+    public init(id: UUID = UUID(), type: ClipboardItemType, timestamp: Date = Date(), sourceApp: String? = nil, textContent: String? = nil, textFilename: String? = nil, imageFilename: String? = nil, richFilename: String? = nil, hasRichContent: Bool = false, isPinned: Bool = false, isBookmarked: Bool = false, tags: [String] = [], ocrText: String? = nil, isTruncated: Bool = false, originalSizeBytes: Int? = nil, searchIndex: String? = nil, aiTags: [String] = [], aiTitle: String? = nil, aiEnrichedAt: Date? = nil, modifiedAt: Date? = nil, deletedAt: Date? = nil, deviceOrigin: String = "") {
         self.id = id
         self.type = type
         self.timestamp = timestamp
@@ -84,6 +92,9 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.isTruncated = isTruncated
         self.originalSizeBytes = originalSizeBytes
         self.searchIndex = searchIndex
+        self.aiTags = aiTags
+        self.aiTitle = aiTitle
+        self.aiEnrichedAt = aiEnrichedAt
         self.modifiedAt = modifiedAt ?? timestamp
         self.deletedAt = deletedAt
         self.deviceOrigin = deviceOrigin
@@ -94,6 +105,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         case isPinned, isBookmarked, tags, ocrText, isTruncated, originalSizeBytes, searchIndex
         case modifiedAt, deletedAt, deviceOrigin
         case hasRichContent
+        case aiTags, aiTitle, aiEnrichedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,6 +129,9 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
         self.deviceOrigin = try container.decodeIfPresent(String.self, forKey: .deviceOrigin) ?? ""
         self.hasRichContent = try container.decodeIfPresent(Bool.self, forKey: .hasRichContent) ?? false
+        self.aiTags = try container.decodeIfPresent([String].self, forKey: .aiTags) ?? []
+        self.aiTitle = try container.decodeIfPresent(String.self, forKey: .aiTitle)
+        self.aiEnrichedAt = try container.decodeIfPresent(Date.self, forKey: .aiEnrichedAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -140,6 +155,9 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         try container.encodeIfPresent(deletedAt, forKey: .deletedAt)
         try container.encode(deviceOrigin, forKey: .deviceOrigin)
         try container.encode(hasRichContent, forKey: .hasRichContent)
+        try container.encode(aiTags, forKey: .aiTags)
+        try container.encodeIfPresent(aiTitle, forKey: .aiTitle)
+        try container.encodeIfPresent(aiEnrichedAt, forKey: .aiEnrichedAt)
     }
 
     /// Create an inline text clip.
@@ -218,6 +236,8 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         if textContent?.localizedCaseInsensitiveContains(query) == true { return true }
         if ClipboardSearchIndex.matches(searchIndex, query: query) { return true }
         if ocrText?.localizedCaseInsensitiveContains(query) == true { return true }
+        if aiTags.contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
+        if aiTitle?.localizedCaseInsensitiveContains(query) == true { return true }
         return false
     }
 

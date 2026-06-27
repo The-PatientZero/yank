@@ -6,16 +6,20 @@ struct QuickPickerView: View {
     let onPaste: (ClipboardItem) -> Void
     let onPasteAsText: (ClipboardItem) -> Void
     let onCopy: (ClipboardItem) -> Void
+    let onSmartPaste: (ClipboardItem, TextTransform) -> Void
     let onDismiss: () -> Void
     let onOpenFullHistory: () -> Void
+    let onSmartSearch: (String) async -> [ClipboardItem]
 
     @State private var searchText = ""
     @State private var selection = ClipSelectionState()
+    @State private var smartResults: [ClipboardItem]?
+    @State private var interpreting = false
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var items: [ClipboardItem] {
-        store.filteredItems(search: searchText, activeTag: nil)
+        smartResults ?? store.filteredItems(search: searchText, activeTag: nil)
     }
 
     private var selectedItem: ClipboardItem? {
@@ -41,7 +45,10 @@ struct QuickPickerView: View {
             reconcileSelection(preferFirst: true)
             searchFocused = true
         }
-        .onChange(of: searchText) { _, _ in reconcileSelection(preferFirst: true) }
+        .onChange(of: searchText) { _, _ in
+            smartResults = nil
+            reconcileSelection(preferFirst: true)
+        }
         .onChange(of: store.changeToken) { _, _ in reconcileSelection(preferFirst: false) }
     }
 
@@ -67,6 +74,18 @@ struct QuickPickerView: View {
                                   lineWidth: searchFocused ? 1.25 : Hairline.width)
             )
 
+            if FoundationModelEnricher.isAvailable {
+                if interpreting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: ControlTarget.compact, height: ControlTarget.compact)
+                        .accessibilityLabel("Interpreting search")
+                } else {
+                    PickerIconButton(systemName: "text.magnifyingglass",
+                                     label: "Interpret search",
+                                     action: interpretSearch)
+                }
+            }
             PickerIconButton(systemName: "arrow.up.left.and.arrow.down.right",
                              label: "Full history",
                              action: onOpenFullHistory)
@@ -98,6 +117,7 @@ struct QuickPickerView: View {
                                 select(item)
                                 onPaste(item)
                             }
+                            .contextMenu { rowMenu(for: item) }
                             .id(item.id)
                         }
                     }
@@ -121,7 +141,7 @@ struct QuickPickerView: View {
     private var emptyState: some View {
         VStack(spacing: Space.sm) {
             Image(systemName: searchText.isEmpty ? "tray" : "magnifyingglass")
-                .font(.system(size: 28, weight: .medium))
+                .font(.system(size: IconSize.emptyState, weight: .medium))
                 .foregroundColor(.yankTextTertiary)
             Text(searchText.isEmpty ? "No clips" : "No matches")
                 .font(.system(size: TypeScale.body, weight: .semibold))
@@ -133,7 +153,7 @@ struct QuickPickerView: View {
 
     private var footer: some View {
         HStack {
-            Text("\(items.count) \(items.count == 1 ? "clip" : "clips")")
+            Text(smartResults != nil ? "Smart results · \(items.count)" : "\(items.count) \(items.count == 1 ? "clip" : "clips")")
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
             Spacer()
@@ -158,6 +178,35 @@ struct QuickPickerView: View {
             onFocusSearch: { searchFocused = true },
             onPasteIndex: { pasteItem(atQuickIndex: $0) }
         ))
+    }
+
+    private func interpretSearch() {
+        let phrase = searchText
+        guard !phrase.isEmpty, !interpreting else { return }
+        interpreting = true
+        Task {
+            let results = await onSmartSearch(phrase)
+            smartResults = results
+            interpreting = false
+            reconcileSelection(preferFirst: true)
+        }
+    }
+
+    @ViewBuilder
+    private func rowMenu(for item: ClipboardItem) -> some View {
+        Button("Paste") { onPaste(item) }
+        Button("Copy") { onCopy(item) }
+        if item.type == .text, FoundationModelEnricher.isAvailable {
+            Menu("Smart Paste") {
+                ForEach(TextTransform.allCases) { transform in
+                    Button {
+                        onSmartPaste(item, transform)
+                    } label: {
+                        Label(transform.label, systemImage: transform.symbol)
+                    }
+                }
+            }
+        }
     }
 
     private func reconcileSelection(preferFirst: Bool) {
@@ -215,7 +264,7 @@ private struct QuickPickerRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: Space.md) {
             icon
-                .frame(width: 30, height: 30)
+                .frame(width: IconSize.clipRow, height: IconSize.clipRow)
 
             VStack(alignment: .leading, spacing: Space.xxs) {
                 primaryText
@@ -230,6 +279,15 @@ private struct QuickPickerRow: View {
                 }
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
+
+                let suggested = item.aiTags.filter { !item.tags.contains($0) }.prefix(2)
+                if !suggested.isEmpty {
+                    HStack(spacing: Space.xs) {
+                        ForEach(Array(suggested), id: \.self) { tag in
+                            AITagChip(label: tag) { store.addTag(tag, to: item) }
+                        }
+                    }
+                }
             }
 
             Spacer(minLength: Space.sm)
@@ -278,6 +336,11 @@ private struct QuickPickerRow: View {
     private var primaryText: some View {
         if case let .link(url) = kind {
             Text(url.host ?? url.absoluteString)
+                .font(.system(size: TypeScale.body, weight: .medium))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+        } else if let title = item.aiTitle, !title.isEmpty {
+            Text(title)
                 .font(.system(size: TypeScale.body, weight: .medium))
                 .foregroundColor(.primary)
                 .lineLimit(1)

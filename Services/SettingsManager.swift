@@ -76,6 +76,7 @@ final class SettingsManager {
     private let minCaptureLengthKey = "minCaptureLength"
     private let showMenuBarIconKey = "showMenuBarIcon"
     private let keepHistoryWindowOpenKey = "keepHistoryWindowOpen"
+    private let aiTaggingEnabledKey = "aiTaggingEnabled"
     private let historyWindowPlacementKey = "historyWindowPlacement"
     private let quickPickerPlacementKey = "quickPickerPlacement"
     private let shortcutOpenTargetKey = "shortcutOpenTarget"
@@ -104,6 +105,9 @@ final class SettingsManager {
 
     /// Whether outside clicks leave the history window visible.
     var keepHistoryWindowOpen: Bool = false
+
+    /// On-device AI tag suggestions for new text clips. Off by default — opt-in.
+    var aiTaggingEnabled: Bool = false
 
     /// Where the history window opens before the user drags it somewhere custom.
     var historyWindowPlacement: HistoryWindowPlacement = .menuBarIcon
@@ -177,6 +181,7 @@ final class SettingsManager {
         self.retentionDays = defaults.integer(forKey: SettingsKeys.retentionDays)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
+        self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
         self.historyWindowPlacement = HistoryWindowPlacementDefaults.initialPlacement(
             storedRawValue: defaults.string(forKey: historyWindowPlacementKey)
         )
@@ -209,6 +214,7 @@ final class SettingsManager {
         defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
         defaults.set(showMenuBarIcon, forKey: showMenuBarIconKey)
         defaults.set(keepHistoryWindowOpen, forKey: keepHistoryWindowOpenKey)
+        defaults.set(aiTaggingEnabled, forKey: aiTaggingEnabledKey)
         defaults.set(historyWindowPlacement.rawValue, forKey: historyWindowPlacementKey)
         defaults.set(quickPickerPlacement.rawValue, forKey: quickPickerPlacementKey)
         defaults.set(shortcutOpenTarget.rawValue, forKey: shortcutOpenTargetKey)
@@ -224,6 +230,58 @@ final class SettingsManager {
         // Posting on every save is fine: the store's `captureSettings` setter no-ops
         // when the capture-relevant fields are unchanged.
         NotificationCenter.default.post(name: .yankCaptureSettingsChanged, object: nil)
+    }
+
+    // Each setter pairs a write with the exact notification its call site posts today, so the
+    // two can't drift apart. The notification mapping is preserved verbatim from `SettingsView`.
+
+    func setShowMenuBarIcon(_ value: Bool) {
+        showMenuBarIcon = value
+        save()
+        NotificationCenter.default.post(name: .yankMenuBarVisibilityChanged, object: nil)
+    }
+
+    func setSpotlightIndexingEnabled(_ value: Bool) {
+        spotlightIndexingEnabled = value
+        save()
+        NotificationCenter.default.post(name: .yankSpotlightIndexingChanged, object: nil)
+    }
+
+    func setAITaggingEnabled(_ value: Bool) {
+        aiTaggingEnabled = value
+        save()
+        NotificationCenter.default.post(name: .yankAITaggingChanged, object: nil)
+    }
+
+    func setSyncEnabled(_ value: Bool) {
+        syncEnabled = value
+        save()
+        NotificationCenter.default.post(name: .yankSyncPreferenceChanged, object: nil)
+    }
+
+    func setThemeID(_ value: String) {
+        themeID = value
+        save()
+        NotificationCenter.default.post(name: .yankThemeChanged, object: nil)
+    }
+
+    func setViewMode(_ value: ClipViewMode) {
+        viewMode = value
+        save()
+        NotificationCenter.default.post(name: .yankAppearanceChanged, object: nil)
+    }
+
+    func setDensity(_ value: ClipDensity) {
+        density = value
+        save()
+        NotificationCenter.default.post(name: .yankAppearanceChanged, object: nil)
+    }
+
+    func setHotkey(keyCode: UInt16, modifiers: HotkeyModifiers) {
+        hotkeyKeyCode = keyCode
+        hotkeyModifiers = modifiers
+        save()
+        NotificationCenter.default.post(name: .yankHotkeyChanged, object: nil)
     }
 
     func setExclusion(bundleID: String, enabled: Bool) {

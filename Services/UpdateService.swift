@@ -9,6 +9,7 @@ final class UpdateService {
     private nonisolated static let stagedUpdateKey = "yankStagedUpdate"
     private nonisolated static let justUpdatedKey = "yankJustUpdated"
     private nonisolated static let updateTagKey = "yankUpdateTag"
+    private nonisolated static let highestInstalledKey = "yankHighestInstalledVersion"
     private nonisolated static let releaseFeedURL =
         URL(string: "https://raw.githubusercontent.com/The-PatientZero/yank/main/releases.json")!
     private let releasesURL: URL
@@ -117,7 +118,9 @@ final class UpdateService {
 
         let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
 
-        if UpdateVersion.isNewer(candidate.version, than: current) {
+        if UpdateVersion.shouldOfferUpdate(
+            candidate: candidate.version, current: current, highestInstalled: updatedInstallFloor(current: current)
+        ) {
             availableCandidate = candidate
             updateState = .available(version: candidate.version, tag: candidate.tag)
         } else if !silent {
@@ -141,6 +144,16 @@ final class UpdateService {
             version: nil,
             tag: nil
         ))
+    }
+
+    /// The highest version ever run on this machine — a monotonic floor that stops a tampered
+    /// release manifest from re-offering a signed-but-older build the user already moved past.
+    /// Bumped to the running version on every read, so it's a no-op floor in the normal case.
+    private func updatedInstallFloor(current: String) -> String {
+        let stored = UserDefaults.standard.string(forKey: Self.highestInstalledKey) ?? current
+        let floor = UpdateVersion.isNewer(current, than: stored) ? current : stored
+        UserDefaults.standard.set(floor, forKey: Self.highestInstalledKey)
+        return floor
     }
 
     private func stripTagPrefix(_ tag: String) -> String {

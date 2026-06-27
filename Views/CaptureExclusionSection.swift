@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// pile of toggles — excluded apps are uniform removable rows; adding is one "Add app…"
 /// menu that offers installed password managers plus a Browse option.
 struct CaptureExclusionSection: View {
-    private let settings = SettingsManager.shared
+    var settings: SettingsManager = .shared
 
     /// Currently-excluded apps, sorted by display name.
     private var excluded: [String] {

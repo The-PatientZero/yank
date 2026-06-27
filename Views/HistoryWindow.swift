@@ -8,13 +8,14 @@ import QuartzCore
 final class HistoryPanel: NSPanel {
     var onClickOutside: (() -> Void)?
     var settingsScreenIsActive = false
+    var settings: SettingsManager = .shared
 
     override var canBecomeKey: Bool { true }
 
     override func resignKey() {
         super.resignKey()
         let policy = HistoryDismissalPolicy(
-            keepsHistoryWindowOpen: SettingsManager.shared.keepHistoryWindowOpen,
+            keepsHistoryWindowOpen: settings.keepHistoryWindowOpen,
             settingsScreenIsActive: settingsScreenIsActive
         )
         guard policy.shouldDismissOnOutsideClick else { return }
@@ -113,6 +114,7 @@ enum HistoryWindowFramePersistencePolicy {
 @MainActor
 final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private let store: ClipboardStore
+    private let settings: SettingsManager
     private let axPermission: AccessibilityPermission
     private let appStatus: AppStatus
     private let anchorFrameProvider: @MainActor () -> NSRect?
@@ -146,11 +148,13 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
 
     init(
         store: ClipboardStore,
+        settings: SettingsManager = .shared,
         axPermission: AccessibilityPermission,
         appStatus: AppStatus,
         anchorFrameProvider: @escaping @MainActor () -> NSRect? = { nil }
     ) {
         self.store = store
+        self.settings = settings
         self.axPermission = axPermission
         self.appStatus = appStatus
         self.anchorFrameProvider = anchorFrameProvider
@@ -162,6 +166,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        panel.settings = settings
 
         super.init(window: panel)
 
@@ -223,7 +228,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let windowSize = window.frame.size
         let anchorFrame = anchorFrameProvider()
         let anchorScreen = anchorFrame.flatMap { screen(containing: $0) }
-        let settings = SettingsManager.shared
 
         switch settings.historyWindowPlacement {
         case .menuBarIcon:
@@ -254,7 +258,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             isWindowVisible: window?.isVisible == true
         ) else { return }
         persistFrame()
-        let settings = SettingsManager.shared
         guard settings.historyWindowPlacement != .lastPosition else { return }
         settings.historyWindowPlacement = HistoryWindowFramePersistencePolicy
             .placementAfterUserFrame(settings.historyWindowPlacement)
@@ -353,6 +356,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let contentView = HistoryContentView(
             store: store,
             axPermission: axPermission,
+            settings: settings,
             shouldResetOnOpen: Binding(
                 get: { [weak self] in self?.shouldResetOnOpen ?? true },
                 set: { [weak self] newValue in self?.shouldResetOnOpen = newValue }

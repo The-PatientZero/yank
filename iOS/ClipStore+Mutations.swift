@@ -78,7 +78,12 @@ extension ClipStore {
 
     /// Full text for a clip — the file-backed blob for large clips, else the inline content.
     func fullText(for item: ClipboardItem) async -> String? {
-        try? await ClipboardPayloadLoader.fullText(for: item, blobURL: blobURL(for: item))
+        do {
+            return try await ClipboardPayloadLoader.fullText(for: item, blobURL: blobURL(for: item))
+        } catch {
+            clipStoreLog.error("Failed to load full text for clip: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     nonisolated static func textChunk(

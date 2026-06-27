@@ -9,6 +9,7 @@ extension Notification.Name {
     static let yankAppearanceChanged = Notification.Name("yankAppearanceChanged")
     static let yankOpenSettings = Notification.Name("yankOpenSettings")
     static let yankSpotlightIndexingChanged = Notification.Name("yankSpotlightIndexingChanged")
+    static let yankAITaggingChanged = Notification.Name("yankAITaggingChanged")
     static let yankCaptureSettingsChanged = Notification.Name("yankCaptureSettingsChanged")
     static let yankSyncPreferenceChanged = Notification.Name("yankSyncPreferenceChanged")
     static let yankDidCapture = Notification.Name("yankDidCapture")

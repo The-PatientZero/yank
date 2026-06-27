@@ -9,14 +9,16 @@ final class HubController {
     private var statusItem: NSStatusItem
     private var menuPopover: NSPopover?
     private let footer: HubAppFooter
+    private let settings: SettingsManager
 
     private var primaryPanelProvider: (@MainActor () -> HubPrimaryPanel)?
 
-    init(footer: HubAppFooter) {
+    init(footer: HubAppFooter, settings: SettingsManager = .shared) {
         self.footer = footer
+        self.settings = settings
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         setupButton()
-        statusItem.isVisible = SettingsManager.shared.showMenuBarIcon
+        statusItem.isVisible = settings.showMenuBarIcon
         NotificationCenter.default.addObserver(self, selector: #selector(menuBarVisibilityChanged),
                                                name: .yankMenuBarVisibilityChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(didCapture),
@@ -49,7 +51,7 @@ final class HubController {
     // MARK: - Status item
 
     @objc private func menuBarVisibilityChanged() {
-        statusItem.isVisible = SettingsManager.shared.showMenuBarIcon
+        statusItem.isVisible = settings.showMenuBarIcon
     }
 
     @objc private func didCapture() {

@@ -52,13 +52,23 @@ private final class SpotlightIndexStorage: @unchecked Sendable {
 
     private func searchableItem(for item: ClipboardItem) -> CSSearchableItem {
         let attributes = CSSearchableItemAttributeSet(contentType: .text)
-        attributes.title = "Yank clip"
-        attributes.contentDescription = item.textContent
+        // Index only a short first-line snippet, never the full clip body: a distinguishable title
+        // in results and a bounded lock-screen / Spotlight preview rather than the whole (possibly
+        // sensitive) content. Indexing is opt-in and off by default.
+        let snippet = Self.snippet(from: item.textContent ?? "")
+        attributes.title = snippet.isEmpty ? "Yank clip" : snippet
+        attributes.contentDescription = snippet
         return CSSearchableItem(
             uniqueIdentifier: item.id.uuidString,
             domainIdentifier: "yank.clips",
             attributeSet: attributes
         )
+    }
+
+    /// First non-empty line, trimmed and length-capped — what's safe to expose to the system index.
+    private static func snippet(from text: String, limit: Int = 100) -> String {
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        return String(firstLine.trimmingCharacters(in: .whitespaces).prefix(limit))
     }
 }
 

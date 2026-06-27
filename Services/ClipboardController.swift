@@ -5,6 +5,7 @@ import CloudKit
 @MainActor
 struct ClipboardDependencies {
     let store: ClipboardStore
+    let settings: SettingsManager
     let axPermission: AccessibilityPermission
     let appStatus: AppStatus
     let hub: HubController
@@ -23,6 +24,7 @@ final class ClipboardController {
     private var clipboardWatcher: ClipboardWatcher?
     private var historyWindowController: HistoryWindowController?
     private var quickPickerWindowController: QuickPickerWindowController?
+    private var enrichmentService: ClipEnrichmentService?
     private var delayedQuickPickerOpen: DispatchWorkItem?
     private var cloudSync: CloudKitSyncService?
     private var observerTokens: [NSObjectProtocol] = []
@@ -42,7 +44,7 @@ final class ClipboardController {
     }
 
     func start() {
-        let watcher = ClipboardWatcher(store: store, settings: SettingsManager.shared.captureSettings)
+        let watcher = ClipboardWatcher(store: store, settings: dependencies.settings.captureSettings)
         watcher.startWatching()
         clipboardWatcher = watcher
 
@@ -53,7 +55,7 @@ final class ClipboardController {
                                                    object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    let snapshot = SettingsManager.shared.captureSettings
+                    let snapshot = self.dependencies.settings.captureSettings
                     self.store.captureSettings = snapshot
                     self.clipboardWatcher?.captureSettings = snapshot
                 }
@@ -62,14 +64,14 @@ final class ClipboardController {
 
         // Index clips into system-wide Spotlight only when the user has opted in: clipboard
         // history can hold secrets, so system-wide indexing is off by default.
-        if SettingsManager.shared.spotlightIndexingEnabled {
+        if dependencies.settings.spotlightIndexingEnabled {
             SpotlightIndexer.index(store.items)
         }
         observerTokens.append(
             NotificationCenter.default.addObserver(forName: .yankLocalStoreDidChange,
                                                    object: store, queue: .main) { [weak self] _ in
                 Task { @MainActor in
-                    guard let self, SettingsManager.shared.spotlightIndexingEnabled else { return }
+                    guard let self, self.dependencies.settings.spotlightIndexingEnabled else { return }
                     SpotlightIndexer.schedule(self.store.items)
                 }
             }
@@ -79,7 +81,7 @@ final class ClipboardController {
                                                    object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    if SettingsManager.shared.spotlightIndexingEnabled {
+                    if self.dependencies.settings.spotlightIndexingEnabled {
                         SpotlightIndexer.index(self.store.items)
                     } else {
                         SpotlightIndexer.clear()
@@ -100,15 +102,30 @@ final class ClipboardController {
 
         historyWindowController = HistoryWindowController(
             store: store,
+            settings: dependencies.settings,
             axPermission: dependencies.axPermission,
             appStatus: dependencies.appStatus,
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame
         )
         quickPickerWindowController = QuickPickerWindowController(
             store: store,
+            settings: dependencies.settings,
             axPermission: dependencies.axPermission,
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
             onOpenFullHistory: { [weak self] in self?.showHistoryWindow() }
+        )
+
+        let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
+        enrichmentService = enrichment
+        if dependencies.settings.aiTaggingEnabled { enrichment.start() }
+        observerTokens.append(
+            NotificationCenter.default.addObserver(forName: .yankAITaggingChanged,
+                                                   object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let enrichment = self.enrichmentService else { return }
+                    if self.dependencies.settings.aiTaggingEnabled { enrichment.start() } else { enrichment.stop() }
+                }
+            }
         )
 
         dependencies.hub.setPrimaryPanelProvider { [weak self] in self?.makePrimaryPanel() ?? .empty }
@@ -139,6 +156,8 @@ final class ClipboardController {
         cancelDelayedQuickPickerOpen()
         quickPickerWindowController?.close()
         quickPickerWindowController = nil
+        enrichmentService?.stop()
+        enrichmentService = nil
         historyWindowController?.close()
         historyWindowController = nil
         cloudSync = nil
@@ -154,7 +173,7 @@ final class ClipboardController {
     }
 
     private func pullRemoteChange() async -> Bool {
-        guard SettingsManager.shared.syncEnabled else { return false }
+        guard dependencies.settings.syncEnabled else { return false }
         guard let cloudSync else {
             configureCloudSync()
             return false
@@ -168,7 +187,7 @@ final class ClipboardController {
     }
 
     private func registerHotkey() {
-        let settings = SettingsManager.shared
+        let settings = dependencies.settings
         let ok = dependencies.hotkeys.register(
             keyCode: settings.hotkeyKeyCode,
             modifiers: settings.hotkeyModifiers,
@@ -190,7 +209,7 @@ final class ClipboardController {
     }
 
     private func configureCloudSync() {
-        guard SettingsManager.shared.syncEnabled else {
+        guard dependencies.settings.syncEnabled else {
             cloudSync = nil
             NSApp.unregisterForRemoteNotifications()
             store.markSyncUnavailable(reason: .disabled)
@@ -211,7 +230,7 @@ final class ClipboardController {
     }
 
     private func toggleShortcutTargetWindow() {
-        switch SettingsManager.shared.shortcutOpenTarget {
+        switch dependencies.settings.shortcutOpenTarget {
         case .quickPicker:
             toggleQuickPickerWindow()
         case .fullHistory:
@@ -267,7 +286,7 @@ final class ClipboardController {
     }
 
     private func updateTooltip() {
-        let settings = SettingsManager.shared
+        let settings = dependencies.settings
         let shortcut = "\(settings.hotkeyModifiers.displayString)\(keyCodeNames[settings.hotkeyKeyCode] ?? "?")"
         dependencies.hub.setTooltip("Yank — \(shortcut)\nRight-click for options")
     }
@@ -276,7 +295,7 @@ final class ClipboardController {
 
     /// Snapshot the clipboard's current state into the panel the hub renders on right-click.
     private func makePrimaryPanel() -> HubPrimaryPanel {
-        let settings = SettingsManager.shared
+        let settings = dependencies.settings
         let shortcut = "\(settings.hotkeyModifiers.displayString)\(keyCodeNames[settings.hotkeyKeyCode] ?? "?")"
         return HubPrimaryPanel(
             shortcut: shortcut,

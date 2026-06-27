@@ -17,6 +17,16 @@ enum ClipboardMutations {
         update(&items, id: id, now: now) { $0.ocrText = text }
     }
 
+    /// Store on-device AI suggestions and stamp when enrichment ran (also marks the clip
+    /// enriched even when empty, so it isn't re-evaluated on every change).
+    static func setAIEnrichment(tags: [String], title: String?, id: UUID, in items: inout [ClipboardItem], now: Date = Date()) {
+        update(&items, id: id, now: now) {
+            $0.aiTags = tags
+            $0.aiTitle = title
+            $0.aiEnrichedAt = now
+        }
+    }
+
     /// Adds a tag if absent. No-op (and no `modifiedAt` bump) when the tag is already present.
     static func addTag(_ tag: String, id: UUID, in items: inout [ClipboardItem], now: Date = Date()) {
         guard let index = items.firstIndex(where: { $0.id == id }),

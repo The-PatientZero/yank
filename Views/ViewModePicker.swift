@@ -5,6 +5,7 @@ import SwiftUI
 struct ViewModePicker: View {
     @Binding var selection: ClipViewMode
     var reduceMotion: Bool
+    var settings: SettingsManager = .shared
 
     @Namespace private var selectionIndicator
 
@@ -52,8 +53,8 @@ struct ViewModePicker: View {
 
     private func select(_ mode: ClipViewMode) {
         guard mode != selection else { return }
-        SettingsManager.shared.viewMode = mode
-        SettingsManager.shared.save()
+        settings.viewMode = mode
+        settings.save()
         withAnimation(YankMotion.navigation(reduceMotion)) {
             selection = mode
         }

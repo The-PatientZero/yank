@@ -86,7 +86,7 @@ struct ShareConfirmationView: View {
         switch outcome {
         case let .saved(excerpt) where !excerpt.isEmpty: return "Saved to Yank. \(excerpt)"
         case .saved: return "Saved to Yank"
-        case let .failed(reason) where reason != nil: return "Couldn't save to Yank. \(reason!)"
+        case let .failed(reason?): return "Couldn't save to Yank. \(reason)"
         case .failed: return "Couldn't save to Yank"
         }
     }

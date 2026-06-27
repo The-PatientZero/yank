@@ -526,7 +526,7 @@ struct HistoryView: View {
     }
 
     private func undoMessage(count: Int) -> String {
-        count == 1 ? "Clip deleted" : "\(count) clips deleted"
+        PendingDeletePolicy.deletedMessage(count: count)
     }
 
     // MARK: - Selection

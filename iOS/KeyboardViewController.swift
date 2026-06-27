@@ -18,7 +18,6 @@ final class KeyboardViewController: UIInputViewController {
     private var statusHost: UIHostingController<KeyboardStatusView>?
     private var searchField: UITextField?
     private var searchQuery = ""
-    private var searchEntries: [KeyboardClipSearch.Entry] = []
     private let resultsStack = UIStackView()
 
     private enum Metrics {
@@ -32,13 +31,11 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         view.backgroundColor = UIColor(Color.yankSurface)
         configureLayout()
-        reloadSearchEntries()
         render()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        reloadSearchEntries()
         scrollView.flashScrollIndicators()
         render()
     }
@@ -88,10 +85,6 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - State machine
 
-    private func reloadSearchEntries() {
-        searchEntries = KeyboardClipSearch.entries(from: store.items)
-    }
-
     private func render() {
         teardownStatusCard()
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -107,12 +100,13 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        let allItems = store.items.filter { !$0.isDeleted }
-        if searchEntries.isEmpty && allItems.isEmpty {
+        let hasInsertableClips = !KeyboardClipSearch.insertableItems(from: store.items).isEmpty
+        let hasAnyClip = store.items.contains { !$0.isDeleted }
+        if !hasInsertableClips && !hasAnyClip {
             presentStatusCard(.empty)
             return
         }
-        if searchEntries.isEmpty {
+        if !hasInsertableClips {
             presentNonInsertablePlaceholder()
             return
         }
@@ -129,7 +123,7 @@ final class KeyboardViewController: UIInputViewController {
     private func updateSearchResults() {
         resultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let filtered = KeyboardClipSearch.results(
-            from: searchEntries,
+            from: store.items,
             query: searchQuery,
             emptyLimit: maxVisibleClips,
             searchLimit: maxSearchResults

@@ -2,24 +2,18 @@ import Foundation
 
 /// Pure keyboard-extension search/index helper.
 ///
-/// The extension renders only text clips. Building entries once per store snapshot keeps
-/// per-keystroke work to a bounded scan over normalized strings instead of rebuilding
-/// display metadata and re-checking clip eligibility each time.
+/// The extension renders only text clips. It scans the store's items directly and normalizes
+/// lazily during the scan — stopping at the result limit — so the memory-constrained keyboard
+/// never holds a second copy of the history's text (the store already holds it once).
 enum KeyboardClipSearch {
-    struct Entry: Equatable, Sendable {
-        var item: ClipboardItem
-        var normalizedText: String
-    }
-
-    static func entries(from items: [ClipboardItem]) -> [Entry] {
-        items.compactMap { item in
-            guard !item.isDeleted, let text = item.textContent else { return nil }
-            return Entry(item: item, normalizedText: normalize(text))
-        }
+    /// Live, insertable text clips, order preserved. Used to decide whether the keyboard has
+    /// anything to show before building the search UI.
+    static func insertableItems(from items: [ClipboardItem]) -> [ClipboardItem] {
+        items.filter { !$0.isDeleted && $0.textContent != nil }
     }
 
     static func results(
-        from entries: [Entry],
+        from items: [ClipboardItem],
         query: String,
         emptyLimit: Int,
         searchLimit: Int
@@ -28,13 +22,13 @@ enum KeyboardClipSearch {
         let limit = max(0, normalizedQuery.isEmpty ? emptyLimit : searchLimit)
         guard limit > 0 else { return [] }
 
+        let insertable = items.lazy.filter { !$0.isDeleted && $0.textContent != nil }
         if normalizedQuery.isEmpty {
-            return Array(entries.lazy.map(\.item).prefix(limit))
+            return Array(insertable.prefix(limit))
         }
         return Array(
-            entries.lazy
-                .filter { $0.normalizedText.contains(normalizedQuery) }
-                .map(\.item)
+            insertable
+                .filter { normalize($0.textContent ?? "").contains(normalizedQuery) }
                 .prefix(limit)
         )
     }

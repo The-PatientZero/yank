@@ -12,6 +12,7 @@ final class AppStatus {
 /// app status, menu-bar hub, and app-level lifecycle callbacks.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let settings = SettingsManager.shared
     let axPermission = AccessibilityPermission()
     let appStatus = AppStatus()
     let clipboardStore = ClipboardStore(settings: SettingsManager.shared.captureSettings)
@@ -28,12 +29,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onUpdateAction: { UpdateService.shared.handleMenuAction($0) },
             onRestart: { [weak self] in self?.restartOrFinishUpdate() },
             onQuit: { NSApplication.shared.terminate(nil) }
-        ))
+        ), settings: settings)
         self.hub = hub
 
         let clipboard = ClipboardController(
             dependencies: ClipboardDependencies(
                 store: clipboardStore,
+                settings: settings,
                 axPermission: axPermission,
                 appStatus: appStatus,
                 hub: hub,
@@ -73,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reopening the app (e.g. from Finder) surfaces Settings — the recovery path when the
     /// menu-bar icon is hidden, so the user is never stranded.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !SettingsManager.shared.showMenuBarIcon {
+        if !settings.showMenuBarIcon {
             clipboardController?.openSettings()
         }
         return true
@@ -81,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showWelcomeWindow() {
         let syncAvailable = CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID)
-        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable)
+        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, manager: settings)
         controller.showWindow(nil)
         welcomeWindowController = controller
     }

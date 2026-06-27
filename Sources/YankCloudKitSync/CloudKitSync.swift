@@ -45,6 +45,9 @@ enum ClipboardCloudMapping {
         static let blob = "blob"
         static let hasRichContent = "hasRichContent"
         static let searchIndex = "searchIndex"
+        static let aiTags = "aiTags"
+        static let aiTitle = "aiTitle"
+        static let aiEnrichedAt = "aiEnrichedAt"
     }
 
     static func record(from item: ClipboardItem, in zoneID: CKRecordZone.ID, blobURL: URL? = nil) -> CKRecord? {
@@ -71,6 +74,9 @@ enum ClipboardCloudMapping {
         record[Key.isTruncated] = item.isTruncated ? 1 : 0
         record[Key.originalSizeBytes] = item.originalSizeBytes
         record[Key.searchIndex] = item.searchIndex
+        record[Key.aiTags] = item.aiTags
+        record[Key.aiTitle] = item.aiTitle
+        record[Key.aiEnrichedAt] = item.aiEnrichedAt
         record[Key.modifiedAt] = item.modifiedAt
         record[Key.deletedAt] = item.deletedAt
         record[Key.deviceOrigin] = item.deviceOrigin
@@ -113,6 +119,9 @@ enum ClipboardCloudMapping {
             isTruncated: bool(Key.isTruncated),
             originalSizeBytes: record[Key.originalSizeBytes] as? Int,
             searchIndex: record[Key.searchIndex] as? String,
+            aiTags: record[Key.aiTags] as? [String] ?? [],
+            aiTitle: record[Key.aiTitle] as? String,
+            aiEnrichedAt: record[Key.aiEnrichedAt] as? Date,
             modifiedAt: modifiedAt,
             deletedAt: record[Key.deletedAt] as? Date,
             deviceOrigin: record[Key.deviceOrigin] as? String ?? ""
@@ -142,6 +151,8 @@ enum ClipboardCloudMapping {
     }
 }
 
+/// Outcome of `CloudKitSyncService.start()`: sync came up, or it failed with a
+/// user-presentable message.
 public enum CloudKitSyncStartResult: Equatable, Sendable {
     case started
     case failed(message: String)
@@ -276,6 +287,8 @@ public final class CloudKitSyncService {
         }
     }
 
+    /// Mark sync as unavailable on the store (e.g. no iCloud account, container not provisioned),
+    /// without attempting a network round-trip.
     public func reportUnavailable(reason: SyncStatus.Reason) {
         store?.markSyncUnavailable(reason: reason)
     }
@@ -485,6 +498,13 @@ public final class CloudKitSyncService {
         into store: SyncableStore
     ) async throws -> SyncBlobReference? {
         guard !item.isDeleted, let blob = item.syncBlobReference else { return nil }
+        // A blob is immutable for a given filename — editing a clip mints a new one — so if the
+        // file is already on disk there is nothing to fetch. This skips re-reading the full (up to
+        // 32 MB) CKAsset on every metadata-only edit (pin/tag), which re-surfaces the record in the
+        // change feed with its asset attached.
+        if let localURL = store.blobURL(for: blob), FileManager.default.fileExists(atPath: localURL.path) {
+            return blob
+        }
         guard let asset = record[ClipboardCloudMapping.Key.blob] as? CKAsset,
               let fileURL = asset.fileURL else {
             throw CloudKitSyncError.missingBlobAsset(blob.filename)

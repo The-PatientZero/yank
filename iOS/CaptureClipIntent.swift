@@ -30,7 +30,7 @@ struct CaptureClipIntent: AppIntent {
         guard !store.storageUnavailable else {
             throw CaptureError.storageUnavailable
         }
-        store.capture(text: text, sourceApp: "Action Button")
+        await store.capture(text: text, sourceApp: "Action Button")
         store.flushPendingWrites()
         return .result(dialog: IntentDialog(stringLiteral: "Saved to Yank"))
     }

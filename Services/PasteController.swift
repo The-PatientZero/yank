@@ -335,6 +335,23 @@ enum PasteController {
         simulatePasteWithCustomDelay(0.1)
     }
 
+    /// Smart Paste: transform a text clip's content on-device, then paste the result. The
+    /// transform is throwaway (never stored); on failure or when the model is unavailable it
+    /// falls back to the original text. The transform is awaited *before* the pasteboard write,
+    /// so the 0.1s focus-settle in `pasteText` stays correct regardless of inference latency.
+    static func pasteTransformed(_ item: ClipboardItem, as transform: TextTransform,
+                                 store: ClipboardStore,
+                                 transformer: TextTransformer = FoundationModelTransformer(),
+                                 axPermission: AccessibilityPermission? = nil,
+                                 previousApp: NSRunningApplication? = nil) {
+        Task { @MainActor in
+            guard let original = await store.fullTextAsync(for: item), !original.isEmpty else { return }
+            let result = await transformer.transform(original, as: transform) ?? original
+            store.moveToTop(item)
+            pasteText(result, axPermission: axPermission, previousApp: previousApp)
+        }
+    }
+
     /// Pastes text clips as one newline-joined string, then pastes image clips as file URLs when present.
     static func pasteMultiple(_ items: [ClipboardItem], store: ClipboardStore,
                               axPermission: AccessibilityPermission? = nil,

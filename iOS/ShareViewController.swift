@@ -60,7 +60,7 @@ final class ShareViewController: UIViewController {
             let excerpt: String
             switch content {
             case let .text(text):
-                store.capture(text: text, sourceApp: "Share")
+                await store.capture(text: text, sourceApp: "Share")
                 excerpt = self.excerpt(of: text)
             case let .image(pngData):
                 guard await store.captureImage(pngData: pngData, sourceApp: "Share") else {

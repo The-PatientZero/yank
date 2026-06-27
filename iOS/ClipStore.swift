@@ -62,6 +62,13 @@ final class ClipStore: SyncableStore {
         .completeFileProtectionUntilFirstUserAuthentication
     ]
 
+    // Same text-size policy the Mac watcher uses: inline ≤ 50 KB, file-back up to the blob
+    // ceiling, truncate above it. Keeps a single huge clip from bloating the in-memory
+    // history (critical for the memory-constrained keyboard extension) and the synced
+    // `textContent` field.
+    nonisolated private static let inlineTextLimit = 50_000
+    nonisolated private static let previewLength = 500
+
     private var containerURL: URL {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup)
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -100,19 +107,57 @@ final class ClipStore: SyncableStore {
         load()
     }
 
-    /// Manually capture text (share extension, App Intent, in-app paste).
-    func capture(text: String, sourceApp: String? = nil) {
+    /// Manually capture text (share extension, App Intent, in-app paste). Large text is
+    /// file-backed and oversized text is truncated — the same size policy the Mac uses — so a
+    /// huge clip can't bloat the in-memory history or the synced `textContent` field.
+    func capture(text: String, sourceApp: String? = nil) async {
         guard !historyWritesDisabled else { return }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if let existing = items.first(where: { $0.textContent == text }) {
             moveToTop(existing.id)
             return
         }
-        var item = ClipboardItem.text(text, sourceApp: sourceApp)
+
+        let plan = TextCapturePlan.make(
+            for: text,
+            inlineLimit: Self.inlineTextLimit,
+            previewLength: Self.previewLength,
+            maxStoredBytes: SyncBlobKind.text.maximumBytes
+        )
+
+        var item: ClipboardItem
+        switch plan.storage {
+        case .inline(let content):
+            item = ClipboardItem.text(content, sourceApp: sourceApp)
+        case .fileBacked(let preview, let fullText, let originalSizeBytes, let searchIndex):
+            guard let filename = await saveTextBlob(fullText) else { return }
+            item = ClipboardItem.largeText(
+                preview: preview, filename: filename, sourceApp: sourceApp,
+                originalSizeBytes: originalSizeBytes, searchIndex: searchIndex
+            )
+        case .truncated(let preview, let originalSizeBytes):
+            item = ClipboardItem.truncatedText(
+                preview: preview, originalSizeBytes: originalSizeBytes, sourceApp: sourceApp
+            )
+        }
         item.deviceOrigin = DeviceIdentity.current
         items.insert(item, at: 0)
         applyHistoryLimit()
         persist()
+    }
+
+    private func saveTextBlob(_ text: String) async -> String? {
+        let filename = UUID().uuidString + "." + SyncBlobKind.text.allowedExtension
+        guard let url = SyncBlobPolicy.containedURL(directory: blobsURL, filename: filename, kind: .text) else {
+            return nil
+        }
+        do {
+            try await SyncBlobStorage.write(Data(text.utf8), to: url, maxBytes: SyncBlobKind.text.maximumBytes)
+            return filename
+        } catch {
+            clipStoreLog.error("Failed to save iOS text blob: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     @discardableResult

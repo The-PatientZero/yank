@@ -16,6 +16,7 @@ Initial public release.
 
 - Added an iOS release evidence template and required device QA gate before App Store promotion.
 - Added a compact quick picker for keyboard-first clipboard selection.
+- Added optional on-device Apple Intelligence (macOS 26+): tag & title suggestions, Smart Paste rewrites, and natural-language search — private, on-device via Foundation Models, and opt-in.
 
 ### Changed
 

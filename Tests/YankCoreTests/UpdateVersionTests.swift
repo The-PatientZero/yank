@@ -70,4 +70,23 @@ import Testing
             stagedVersion: "2.0.0", currentVersion: "1.0.0",
             targetAppName: "Other.app", expectedAppName: "Other.app"))
     }
+
+    // MARK: - Downgrade floor (offer gate)
+
+    @Test func offerGateMatchesIsNewerWhenRunningTheHighestInstalled() {
+        // Normal case: floor == current, so the gate is exactly "strictly newer than current".
+        #expect(UpdateVersion.shouldOfferUpdate(candidate: "1.3.0", current: "1.2.0", highestInstalled: "1.2.0"))
+        #expect(!UpdateVersion.shouldOfferUpdate(candidate: "1.2.0", current: "1.2.0", highestInstalled: "1.2.0"))
+    }
+
+    @Test func offerGateBlocksSignedDowngradeBelowHighestInstalled() {
+        // Running 1.1.0 but 1.4.0 was previously installed: a manifest re-offering 1.2.0 is
+        // newer-than-current yet below the floor, so it is refused.
+        #expect(!UpdateVersion.shouldOfferUpdate(candidate: "1.2.0", current: "1.1.0", highestInstalled: "1.4.0"))
+        // A genuine upgrade past the floor is still offered.
+        #expect(UpdateVersion.shouldOfferUpdate(candidate: "1.5.0", current: "1.1.0", highestInstalled: "1.4.0"))
+        // Re-installing exactly the floor is not offered (not strictly newer than current is fine,
+        // but equal-to-floor with current below floor is allowed only when strictly newer than current).
+        #expect(UpdateVersion.shouldOfferUpdate(candidate: "1.4.0", current: "1.1.0", highestInstalled: "1.4.0"))
+    }
 }

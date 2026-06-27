@@ -24,6 +24,21 @@ import Testing
         #expect(result == .failure(.corruptHistory))
     }
 
+    @Test func skipsIndividuallyMalformedItemsKeepingTheRest() throws {
+        let urls = try makeURLs()
+        defer { try? FileManager.default.removeItem(at: urls.directory) }
+        // A valid JSON array whose middle element is missing the required id/type/timestamp.
+        let good = ClipboardItem(id: clipID(1), type: .text, textContent: "keep")
+        let goodObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(good))
+        let array: [Any] = [goodObject, ["nonsense": true], goodObject]
+        try JSONSerialization.data(withJSONObject: array).write(to: urls.history)
+
+        let snapshot = try HistorySnapshotLoader
+            .load(historyURL: urls.history, tombstonesURL: urls.tombstones).get()
+        #expect(snapshot.items.count == 2)
+        #expect(snapshot.skippedItemCount == 1)
+    }
+
     @Test func corruptTombstonesFileFailsInsteadOfDroppingDeletes() throws {
         let urls = try makeURLs()
         defer { try? FileManager.default.removeItem(at: urls.directory) }

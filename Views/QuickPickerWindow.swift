@@ -16,6 +16,7 @@ final class QuickPickerPanel: NSPanel {
 @MainActor
 final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private let store: ClipboardStore
+    private let settings: SettingsManager
     private let axPermission: AccessibilityPermission
     private let anchorFrameProvider: @MainActor () -> NSRect?
     private let focusedInputFrameProvider: @MainActor (NSRunningApplication?) -> NSRect?
@@ -28,6 +29,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
 
     init(
         store: ClipboardStore,
+        settings: SettingsManager = .shared,
         axPermission: AccessibilityPermission,
         anchorFrameProvider: @escaping @MainActor () -> NSRect? = { nil },
         focusedInputFrameProvider: @escaping @MainActor (NSRunningApplication?) -> NSRect? = {
@@ -36,6 +38,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         onOpenFullHistory: @escaping @MainActor () -> Void
     ) {
         self.store = store
+        self.settings = settings
         self.axPermission = axPermission
         self.anchorFrameProvider = anchorFrameProvider
         self.focusedInputFrameProvider = focusedInputFrameProvider
@@ -90,8 +93,10 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             onPaste: { [weak self] item in self?.paste(item) },
             onPasteAsText: { [weak self] item in self?.pasteAsText(item) },
             onCopy: { [weak self] item in self?.copy(item) },
+            onSmartPaste: { [weak self] item, transform in self?.smartPaste(item, transform) },
             onDismiss: { [weak self] in self?.close() },
-            onOpenFullHistory: { [weak self] in self?.openFullHistory() }
+            onOpenFullHistory: { [weak self] in self?.openFullHistory() },
+            onSmartSearch: { [weak self] phrase in await self?.smartSearch(phrase) ?? [] }
         )
         let host = NSHostingView(rootView: view)
         host.wantsLayer = true
@@ -119,7 +124,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
               let frame = window?.frame else { return }
         UserDefaults.standard.set(NSStringFromRect(frame), forKey: Self.frameDefaultsKey)
 
-        let settings = SettingsManager.shared
         guard settings.quickPickerPlacement != .lastPosition else { return }
         settings.quickPickerPlacement = .lastPosition
         settings.save()
@@ -128,6 +132,11 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private func openFullHistory() {
         close()
         onOpenFullHistory()
+    }
+
+    private func smartSearch(_ phrase: String) async -> [ClipboardItem] {
+        let query = await FoundationModelQueryParser().parse(phrase)
+        return query.apply(to: store.filteredItems(search: "", activeTag: nil))
     }
 
     private func copy(_ item: ClipboardItem) {
@@ -143,6 +152,14 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.async {
             PasteController.paste(item, store: self.store, axPermission: self.axPermission, previousApp: appToRestore)
         }
+    }
+
+    private func smartPaste(_ item: ClipboardItem, _ transform: TextTransform) {
+        let appToRestore = previousApp
+        close()
+        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
+        PasteController.pasteTransformed(item, as: transform, store: store,
+                                         axPermission: axPermission, previousApp: appToRestore)
     }
 
     private func pasteAsText(_ item: ClipboardItem) {
@@ -182,7 +199,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         let focusedInputFrame = focusedInputFrameProvider(previousApp)
         let focusedInputScreen = focusedInputFrame.flatMap { screen(containing: $0) }
         let preferredScreen = focusedInputScreen ?? anchorScreen
-        let settings = SettingsManager.shared
 
         switch settings.quickPickerPlacement {
         case .focusedInput:

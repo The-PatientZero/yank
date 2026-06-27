@@ -13,6 +13,11 @@ enum PendingDeletePolicy {
         now.timeIntervalSince(pending.enqueuedAt) < undoWindowSeconds
     }
 
+    /// Undo-banner confirmation text, shared so the macOS and iOS banners can't drift.
+    static func deletedMessage(count: Int) -> String {
+        count == 1 ? "Clip deleted" : "\(count) clips deleted"
+    }
+
     static func visibleItems(
         _ items: [ClipboardItem],
         pending: PendingDeletion?
