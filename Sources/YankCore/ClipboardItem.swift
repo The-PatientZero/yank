@@ -54,7 +54,10 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// protect from retention and stay in their own field so they never pollute the user's
     /// namespace. `aiEnrichedAt` records when enrichment ran and guards re-running.
     public var aiTags: [String] = []
-    /// On-device one-line title for long clips (nil for short clips, where the excerpt suffices).
+    /// Legacy on-device title retained only to decode and sync records from older releases.
+    /// Yank no longer generates, displays, or searches this metadata.
+    // TODO(v2): Remove aiTitle, the legacy title enrichment APIs, CloudKit mapping, and
+    // compatibility tests together in the next breaking history/sync migration.
     public var aiTitle: String?
     public var aiEnrichedAt: Date?
 
@@ -237,7 +240,6 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         if ClipboardSearchIndex.matches(searchIndex, query: query) { return true }
         if ocrText?.localizedCaseInsensitiveContains(query) == true { return true }
         if aiTags.contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
-        if aiTitle?.localizedCaseInsensitiveContains(query) == true { return true }
         return false
     }
 

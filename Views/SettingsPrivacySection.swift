@@ -15,8 +15,8 @@ extension SettingsView {
             if FoundationModelEnricher.isAvailable {
                 Divider().overlay(Color.yankHairline)
                 toggleRow(
-                    "Suggest tags & titles with Apple Intelligence",
-                    "Adds on-device topic tags and a short title to new text clips — private, never leaves your Mac. Off by default.",
+                    "Suggest tags with Apple Intelligence",
+                    "Adds on-device topic tags to new text clips — private, never leaves your Mac. Off by default.",
                     isOn: Binding(
                         get: { manager.aiTaggingEnabled },
                         set: { manager.setAITaggingEnabled($0) }))

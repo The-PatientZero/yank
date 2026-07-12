@@ -3,7 +3,7 @@ import Foundation
 import FoundationModels
 #endif
 
-/// On-device tag + title suggester backed by Apple's Foundation Models (macOS 26+). Returns
+/// On-device tag suggester backed by Apple's Foundation Models (macOS 26+). Returns
 /// an empty `ClipEnrichment` whenever the model can't run (older OS, Apple Intelligence off,
 /// model not ready), so callers degrade silently — never an error path.
 struct FoundationModelEnricher: ClipEnricher {
@@ -25,7 +25,7 @@ struct FoundationModelEnricher: ClipEnricher {
                 let session = LanguageModelSession(instructions: Self.instructions)
                 let response = try await session.respond(to: String(text.prefix(2000)),
                                                           generating: ClipDigest.self)
-                return ClipEnrichment(tags: response.content.tags, title: response.content.title)
+                return ClipEnrichment(tags: response.content.tags)
             } catch {
                 return ClipEnrichment()
             }
@@ -34,10 +34,9 @@ struct FoundationModelEnricher: ClipEnricher {
         return ClipEnrichment()
     }
 
-    private static let instructions = """
-    Summarise clipboard text. Produce 1 to 3 short, lowercase, single-word topical tags \
-    (for example: invoice, swift, address) preferring the subject over the format, plus a \
-    concise title of at most 8 words.
+    static let instructions = """
+    Classify clipboard text. Produce 1 to 3 short, lowercase, single-word topical tags \
+    (for example: invoice, swift, address), preferring the subject over the format.
     """
 }
 
@@ -47,7 +46,5 @@ struct FoundationModelEnricher: ClipEnricher {
 private struct ClipDigest {
     @Guide(description: "1 to 3 short lowercase single-word topic tags")
     var tags: [String]
-    @Guide(description: "A concise title of at most 8 words summarising the text")
-    var title: String
 }
 #endif

@@ -8,6 +8,12 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-12
+
+### Changed
+
+- Kept background Apple Intelligence enrichment focused on suggested tags; Yank no longer generates, displays, or searches AI titles in clipboard history.
+
 ## [1.0.0] - 2026-06-27
 
 Initial public release.

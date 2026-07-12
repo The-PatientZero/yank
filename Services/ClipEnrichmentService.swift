@@ -60,10 +60,8 @@ final class ClipEnrichmentService {
 
         let result = await enricher.enrich(text)
         let tags = AITagCleaner.clean(result.tags, existing: item.tags)
-        let title = ClipEnrichmentPolicy.shouldGenerateTitle(textCount: text.count)
-            ? AITitleCleaner.clean(result.title) : nil
         // The clip may have changed during the await — re-find and only stamp if still un-enriched.
         guard let current = store.items.first(where: { $0.id == item.id }), current.aiEnrichedAt == nil else { return }
-        store.setAIEnrichment(tags: tags, title: title, for: current)  // empty is fine: marks the clip done
+        store.setAIEnrichment(tags: tags, title: nil, for: current)  // empty is fine: marks the clip done
     }
 }

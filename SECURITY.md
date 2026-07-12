@@ -58,7 +58,7 @@ Copies that the source app marks concealed (`org.nspasteboard.ConcealedType`, us
 
 ### On-Device Intelligence
 
-The optional Apple Intelligence features (tag/title suggestions, Smart Paste rewrites, natural-language search) run entirely on-device through Apple's Foundation Models. No clip content leaves the device, is sent to any server, or is logged. Background tag/title suggestion is opt-in and off by default; Smart Paste and natural-language search are user-invoked and only available when Apple Intelligence is present. AI-derived fields (suggested tags and titles) are treated as ordinary clip metadata and, when sync is enabled, ride the user's own private CloudKit database — never our servers.
+The optional Apple Intelligence features (tag suggestions, Smart Paste rewrites, natural-language search) run entirely on-device through Apple's Foundation Models. No clip content leaves the device, is sent to any server, or is logged. Background tag suggestion is opt-in and off by default; Smart Paste and natural-language search are user-invoked and only available when Apple Intelligence is present. AI-derived tags are treated as ordinary clip metadata and, when sync is enabled, ride the user's own private CloudKit database — never our servers. Records created by older releases may retain legacy AI-title metadata for decoding and sync compatibility, but Yank no longer generates, displays, or searches it.
 
 Security concerns most relevant to this project:
 

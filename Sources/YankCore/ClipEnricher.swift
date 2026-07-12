@@ -1,7 +1,7 @@
 import Foundation
 
-/// One on-device enrichment pass over a clip's text: a few topic tags plus an optional
-/// one-line title (only worthwhile for long clips).
+/// One on-device enrichment pass over a clip's text. New enrichment produces topic tags only;
+/// `title` remains for source compatibility with the original 1.0 API and is ignored by Yank.
 public struct ClipEnrichment: Sendable, Equatable {
     public var tags: [String]
     public var title: String?
@@ -24,7 +24,7 @@ public protocol ClipEnricher: Sendable {
 public enum ClipEnrichmentPolicy {
     /// Shortest text worth tagging at all.
     public static let minTextLength = 6
-    /// Below this the excerpt already makes a fine title, so don't generate one.
+    /// Legacy 1.0 title threshold retained for source compatibility. Yank no longer calls it.
     public static let titleMinLength = 200
 
     /// Whether a freshly captured clip should be enriched now.
@@ -36,7 +36,7 @@ public enum ClipEnrichmentPolicy {
             && (item.textContent?.count ?? 0) >= minTextLength
     }
 
-    /// Whether a clip of `textCount` characters is long enough to warrant a generated title.
+    /// Legacy 1.0 title policy retained for source compatibility. Yank no longer calls it.
     public static func shouldGenerateTitle(textCount: Int) -> Bool {
         textCount >= titleMinLength
     }
@@ -67,8 +67,7 @@ public enum AITagCleaner {
     }
 }
 
-/// Pure cleanup for a generated title: collapse to one trimmed line, cap length, and drop it
-/// when it's too short to be a useful label.
+/// Legacy 1.0 title cleanup retained for source compatibility. Yank no longer calls it.
 public enum AITitleCleaner {
     public static func clean(_ raw: String?, limit: Int = 80) -> String? {
         guard let raw else { return nil }

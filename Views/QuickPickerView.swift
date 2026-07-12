@@ -339,11 +339,6 @@ private struct QuickPickerRow: View {
                 .font(.system(size: TypeScale.body, weight: .medium))
                 .foregroundColor(.primary)
                 .lineLimit(1)
-        } else if let title = item.aiTitle, !title.isEmpty {
-            Text(title)
-                .font(.system(size: TypeScale.body, weight: .medium))
-                .foregroundColor(.primary)
-                .lineLimit(1)
         } else {
             Text(item.excerpt)
                 .font(.system(size: TypeScale.body, design: kindTextDesign))

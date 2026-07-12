@@ -38,12 +38,12 @@ import Foundation
         #expect(items[0].modifiedAt == now)
     }
 
-    @Test func aiFieldsAreSearchableButDoNotProtect() {
+    @Test func aiTagsAreSearchableButLegacyTitleIsIgnored() {
         var item = ClipboardItem.text("nothing relevant here")
         item.aiTags = ["invoice"]
         item.aiTitle = "Quarterly budget summary"
         #expect(item.matches("invoice"))   // tag found in free-text search
-        #expect(item.matches("budget"))     // title found too
+        #expect(!item.matches("budget"))    // legacy titles are inactive metadata
         #expect(!item.isProtected)          // advisory — never blocks retention
     }
 
