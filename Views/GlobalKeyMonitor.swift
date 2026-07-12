@@ -30,9 +30,13 @@ struct GlobalKeyMonitor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        // A local monitor is app-wide and does not depend on the representable already being
-        // attached to a window. Capture `view` weakly only to resolve first responder at event time.
+        // NSEvent local monitors are app-wide, so route only while this monitor's window is key.
+        // Otherwise a retained, hidden history window can consume another panel's commands.
         context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak view] event in
+            guard WindowKeyEventScope.shouldHandle(
+                monitoredWindow: view?.window,
+                keyWindow: NSApp.keyWindow
+            ) else { return event }
             switch event.keyCode {
             case 126: // Up
                 if event.modifierFlags.contains(.shift) {

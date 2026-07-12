@@ -8,6 +8,13 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-12
+
+### Fixed
+
+- Restored Quick Picker arrow-key navigation by routing keyboard commands only to the active Yank window.
+- Focused the Quick Picker search field on every opening, including when reopening beside the focused text field.
+
 ## [1.0.1] - 2026-07-12
 
 ### Changed

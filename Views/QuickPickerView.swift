@@ -3,6 +3,7 @@ import Cocoa
 
 struct QuickPickerView: View {
     let store: ClipboardStore
+    @Bindable var presentationState: QuickPickerPresentationState
     let onPaste: (ClipboardItem) -> Void
     let onPasteAsText: (ClipboardItem) -> Void
     let onCopy: (ClipboardItem) -> Void
@@ -43,7 +44,10 @@ struct QuickPickerView: View {
         .background(keyMonitor.frame(width: 0, height: 0))
         .onAppear {
             reconcileSelection(preferFirst: true)
-            searchFocused = true
+            requestSearchFocus(for: presentationState.searchFocusRequest)
+        }
+        .onChange(of: presentationState.searchFocusRequest) { _, request in
+            requestSearchFocus(for: request)
         }
         .onChange(of: searchText) { _, _ in
             smartResults = nil
@@ -189,6 +193,15 @@ struct QuickPickerView: View {
             smartResults = results
             interpreting = false
             reconcileSelection(preferFirst: true)
+        }
+    }
+
+    private func requestSearchFocus(for request: Int) {
+        searchFocused = false
+        Task { @MainActor in
+            await Task.yield()
+            guard presentationState.searchFocusRequest == request else { return }
+            searchFocused = true
         }
     }
 
@@ -414,7 +427,11 @@ private struct QuickPickerKeyMonitor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak view] event in
+            guard WindowKeyEventScope.shouldHandle(
+                monitoredWindow: view?.window,
+                keyWindow: NSApp.keyWindow
+            ) else { return event }
             switch event.keyCode {
             case 126:
                 handlers.onUp()

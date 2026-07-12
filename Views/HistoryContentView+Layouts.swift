@@ -144,8 +144,8 @@ extension HistoryContentView {
         content()
             .contentShape(Rectangle())
             // A keyboard-focus ring on the primary-selected cell — the list's keyboard
-            // cursor, which is always live here (arrow keys navigate the stream app-wide
-            // via GlobalKeyMonitor, even while the search field types). It's the system
+            // cursor, which is always live here (arrow keys navigate the stream throughout
+            // the history window, even while the search field types). It's the system
             // 2pt focus colour, distinct from the accent selection *fill*, so arrow-key
             // users get one unambiguous "you are here" that doesn't rely on hue alone
             // (WCAG 2.4.7 / 1.4.1). It dims while the search field is actively being typed
@@ -236,7 +236,7 @@ extension HistoryContentView {
     }
 
     /// True when the search field isn't actively focused, so the stream's keyboard-cursor
-    /// ring can show at full strength. Arrow keys are routed app-wide by `GlobalKeyMonitor`
+    /// ring can show at full strength. Arrow keys are routed throughout the history window
     /// regardless, but the only place AppKit draws its own focus ring is the search field —
     /// so the cursor ring dims (rather than competes) while the field is being typed into.
     var listHasKeyboardFocus: Bool { !isSearchFocused }

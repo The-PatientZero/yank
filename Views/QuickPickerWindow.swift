@@ -1,5 +1,16 @@
 import Cocoa
+import Observation
 import SwiftUI
+
+@MainActor
+@Observable
+final class QuickPickerPresentationState {
+    private(set) var searchFocusRequest = 0
+
+    func requestSearchFocus() {
+        searchFocusRequest &+= 1
+    }
+}
 
 @MainActor
 final class QuickPickerPanel: NSPanel {
@@ -21,6 +32,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private let anchorFrameProvider: @MainActor () -> NSRect?
     private let focusedInputFrameProvider: @MainActor (NSRunningApplication?) -> NSRect?
     private let onOpenFullHistory: @MainActor () -> Void
+    private let presentationState = QuickPickerPresentationState()
     private var previousApp: NSRunningApplication?
     private var isApplyingProgrammaticFrame = false
 
@@ -90,6 +102,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private func setupContent() {
         let view = QuickPickerView(
             store: store,
+            presentationState: presentationState,
             onPaste: { [weak self] item in self?.paste(item) },
             onPasteAsText: { [weak self] item in self?.pasteAsText(item) },
             onCopy: { [weak self] item in self?.copy(item) },
@@ -112,7 +125,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         super.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        window?.makeFirstResponder(window?.contentView)
+        presentationState.requestSearchFocus()
         isApplyingProgrammaticFrame = false
         animateIn()
     }
