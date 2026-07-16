@@ -80,6 +80,44 @@ struct HistorySnapshotWriterTests {
         expectProtection(tombstoneAttributes[.protectionKey] as? FileProtectionType, matches: .complete)
     }
 
+    @Test func flushReportsLatestSnapshotWriteFailure() throws {
+        let urls = try makeURLs()
+        defer { try? FileManager.default.removeItem(at: urls.directory) }
+        try FileManager.default.createDirectory(at: urls.history, withIntermediateDirectories: false)
+        let writer = HistorySnapshotWriter(
+            historyURL: urls.history,
+            tombstonesURL: urls.tombstones,
+            queueLabel: "com.yank.tests.history-writer.failure"
+        )
+
+        writer.scheduleSave(items: [makeItem(8, text: "cannot persist")], tombstones: [:])
+
+        switch writer.flush() {
+        case .success:
+            Issue.record("Expected the history write failure to reach flush")
+        case .failure:
+            break
+        }
+    }
+
+    @Test func postWriteWorkRunsOnlyAfterSuccessfulSnapshot() throws {
+        let urls = try makeURLs()
+        defer { try? FileManager.default.removeItem(at: urls.directory) }
+        let marker = urls.directory.appendingPathComponent("projection-ready")
+        let writer = HistorySnapshotWriter(
+            historyURL: urls.history,
+            tombstonesURL: urls.tombstones,
+            queueLabel: "com.yank.tests.history-writer.post-write"
+        )
+
+        writer.scheduleSave(items: [makeItem(9, text: "ready")], tombstones: [:]) {
+            FileManager.default.createFile(atPath: marker.path, contents: Data())
+        }
+
+        try writer.flush().get()
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     private func makeURLs() throws -> WriterURLs {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("YankHistorySnapshotWriterTests-\(UUID().uuidString)", isDirectory: true)

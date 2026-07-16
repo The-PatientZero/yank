@@ -12,11 +12,14 @@ private let syncLog = Logger(subsystem: "com.thepatientzero.yank", category: "sy
 
 private enum CloudKitSyncError: LocalizedError {
     case missingBlobAsset(String)
+    case partialRecordFailures(Int)
 
     var errorDescription: String? {
         switch self {
         case .missingBlobAsset(let filename):
             "Synced blob \(filename) is missing from CloudKit."
+        case .partialRecordFailures(let count):
+            "CloudKit could not return \(count) changed record(s). Sync will retry."
         }
     }
 }
@@ -166,6 +169,7 @@ public enum CloudKitSyncStartResult: Equatable, Sendable {
 struct CloudKitZoneChanges {
     var changedRecords: [CKRecord]
     var deletedRecordNames: [String]
+    var failedRecordNames: [String] = []
     var changeToken: CKServerChangeToken?
     var moreComing: Bool
 }
@@ -215,15 +219,21 @@ extension CKDatabase: CloudKitDatabase {
     ) async throws -> CloudKitZoneChanges {
         let changes = try await recordZoneChanges(inZoneWith: zoneID, since: token)
         var changedRecords: [CKRecord] = []
+        var failedRecordNames: [String] = []
         changedRecords.reserveCapacity(changes.modificationResultsByID.count)
-        for (_, result) in changes.modificationResultsByID {
-            if case .success(let modification) = result {
+        failedRecordNames.reserveCapacity(changes.modificationResultsByID.count)
+        for (recordID, result) in changes.modificationResultsByID {
+            switch result {
+            case .success(let modification):
                 changedRecords.append(modification.record)
+            case .failure:
+                failedRecordNames.append(recordID.recordName)
             }
         }
         return CloudKitZoneChanges(
             changedRecords: changedRecords,
             deletedRecordNames: changes.deletions.map { $0.recordID.recordName },
+            failedRecordNames: failedRecordNames.sorted(),
             changeToken: changes.changeToken,
             moreComing: changes.moreComing
         )
@@ -390,30 +400,40 @@ public final class CloudKitSyncService {
         var downloadedBlobs: Set<SyncBlobReference> = []
         var token = changeToken
         var moreComing = true
-        while moreComing {
-            let changes = try await database.fetchZoneChanges(zoneID, since: token)
-            for record in changes.changedRecords {
-                guard let item = ClipboardCloudMapping.item(from: record) else { continue }
-                if let store, let blob = try await downloadBlobIfNeeded(from: record, for: item, into: store) {
-                    downloadedBlobs.insert(blob)
+        do {
+            while moreComing {
+                let changes = try await database.fetchZoneChanges(zoneID, since: token)
+                guard changes.failedRecordNames.isEmpty else {
+                    throw CloudKitSyncError.partialRecordFailures(changes.failedRecordNames.count)
                 }
-                remote.append(item)
-            }
-            for recordName in changes.deletedRecordNames {
-                if let id = UUID(uuidString: recordName) {
-                    remote.append(tombstone(id))
+                for record in changes.changedRecords {
+                    guard let item = ClipboardCloudMapping.item(from: record) else { continue }
+                    if let store, let blob = try await downloadBlobIfNeeded(from: record, for: item, into: store) {
+                        downloadedBlobs.insert(blob)
+                    }
+                    remote.append(item)
                 }
+                for recordName in changes.deletedRecordNames {
+                    if let id = UUID(uuidString: recordName) {
+                        remote.append(tombstone(id))
+                    }
+                }
+                token = changes.changeToken
+                moreComing = changes.moreComing
             }
-            token = changes.changeToken
-            moreComing = changes.moreComing
+            guard let store else { return }
+            let local = store.itemsForSync()
+            let reconciled = ClipboardMerge.reconcile(local, remote)
+            try store.applyReconciledDurably(reconciled)
+            deleteDownloadedBlobsNotReferenced(downloadedBlobs, in: store)
+            changeToken = token
+            persistToken(token)
+        } catch {
+            if let store {
+                deleteDownloadedBlobsNotReferenced(downloadedBlobs, in: store)
+            }
+            throw error
         }
-        guard let store else { return }
-        let local = store.itemsForSync()
-        let reconciled = ClipboardMerge.reconcile(local, remote)
-        store.applyReconciledDurably(reconciled)
-        deleteDownloadedBlobsNotReferenced(downloadedBlobs, in: store)
-        changeToken = token
-        persistToken(token)
     }
 
     private nonisolated static func isExpiredChangeTokenError(_ error: any Error) -> Bool {
@@ -514,7 +534,10 @@ public final class CloudKitSyncService {
         return blob
     }
 
-    private func deleteDownloadedBlobsNotReferenced(_ downloadedBlobs: Set<SyncBlobReference>, in store: SyncableStore) {
+    private func deleteDownloadedBlobsNotReferenced(
+        _ downloadedBlobs: Set<SyncBlobReference>,
+        in store: SyncableStore
+    ) {
         guard !downloadedBlobs.isEmpty else { return }
         let keptBlobs = Set(store.itemsForSync().compactMap(\.syncBlobReference))
         for blob in downloadedBlobs.subtracting(keptBlobs) {

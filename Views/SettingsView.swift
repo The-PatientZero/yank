@@ -173,6 +173,7 @@ struct SettingsView: View {
             }
             HStack(spacing: Space.lg) {
                 Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
+                Link("Privacy Policy", destination: YankLinks.privacyPolicy)
                 Link("Report an Issue", destination: URL(string: "https://github.com/The-PatientZero/yank/issues/new")!)
                 Link("Sponsor Yank", destination: URL(string: "https://github.com/sponsors/The-PatientZero")!)
             }

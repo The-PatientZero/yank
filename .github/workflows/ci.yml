@@ -13,7 +13,7 @@ jobs:
       XCODEGEN_VERSION: "2.45.4"
       XCODEGEN_TARBALL_SHA256: "90705e5c410a980f7d98f75462bba2120de7c94b721cc06fd3f7e52a52a1aeed"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Run YankCore tests
         run: swift test

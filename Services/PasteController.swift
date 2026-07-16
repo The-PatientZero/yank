@@ -179,6 +179,16 @@ enum PasteController {
         }
     }
 
+    @discardableResult
+    private static func registerSuccessfulWrite(_ didWrite: Bool, to pasteboard: NSPasteboard) -> Bool {
+        guard didWrite else { return false }
+        NotificationCenter.default.post(
+            name: .yankIgnoreNextChange,
+            object: pasteboard.changeCount
+        )
+        return true
+    }
+
     /// Write prepared clip content to a pasteboard. Rich clips (#11) replay every archived
     /// representation verbatim; otherwise the primary text/image is written.
     @discardableResult
@@ -195,6 +205,7 @@ enum PasteController {
                 pbItem.setData(rep.data, forType: NSPasteboard.PasteboardType(rep.uti))
             }
             if pasteboard.writeObjects([pbItem]) {
+                registerSuccessfulWrite(true, to: pasteboard)
                 discardTempFiles(in: content.fallback)
                 return true
             }
@@ -205,17 +216,17 @@ enum PasteController {
         case .none:
             return false
         case .text(let text):
-            return pasteboard.setString(text, forType: .string)
+            return registerSuccessfulWrite(pasteboard.setString(text, forType: .string), to: pasteboard)
         case .imageFile(let fileURL, let fallbackPNGData):
             let didWrite = pasteboard.writeObjects([fileURL as NSPasteboardWriting])
             scheduleTempFileCleanup([fileURL], afterPasteboardWrite: didWrite, delay: temporaryFileCleanupDelay)
-            if didWrite { return true }
+            if didWrite { return registerSuccessfulWrite(true, to: pasteboard) }
             if let fallbackPNGData {
-                return pasteboard.setData(fallbackPNGData, forType: .png)
+                return registerSuccessfulWrite(pasteboard.setData(fallbackPNGData, forType: .png), to: pasteboard)
             }
             return false
         case .imageData(let pngData):
-            return pasteboard.setData(pngData, forType: .png)
+            return registerSuccessfulWrite(pasteboard.setData(pngData, forType: .png), to: pasteboard)
         }
     }
 
@@ -288,7 +299,7 @@ enum PasteController {
         guard !objects.isEmpty else { return false }
         let didWrite = pasteboard.writeObjects(objects)
         scheduleTempFileCleanup(content.imageURLs, afterPasteboardWrite: didWrite, delay: temporaryFileCleanupDelay)
-        return didWrite
+        return registerSuccessfulWrite(didWrite, to: pasteboard)
     }
 
     static func paste(_ item: ClipboardItem, store: ClipboardStore,
@@ -322,7 +333,7 @@ enum PasteController {
                           previousApp: NSRunningApplication? = nil) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        registerSuccessfulWrite(pasteboard.setString(text, forType: .string), to: pasteboard)
 
         if let axPermission, !axPermission.isTrusted {
             AccessibilityPermission.requestPrompt()
@@ -397,7 +408,7 @@ enum PasteController {
 
             if prepared.hasText {
                 pasteboard.clearContents()
-                pasteboard.setString(prepared.text, forType: .string)
+                registerSuccessfulWrite(pasteboard.setString(prepared.text, forType: .string), to: pasteboard)
 
                 if !prepared.hasImages {
                     previousApp?.activate()
@@ -435,7 +446,7 @@ enum PasteController {
         pasteboard.clearContents()
         guard !imageURLs.isEmpty else { return }
         let didWrite = pasteboard.writeObjects(imageURLs as [NSPasteboardWriting])
-        guard didWrite else {
+        guard registerSuccessfulWrite(didWrite, to: pasteboard) else {
             removeTempFiles(for: imageURLs)
             return
         }
@@ -519,7 +530,6 @@ enum PasteController {
     private static func simulatePasteWithCustomDelay(_ delay: TimeInterval) {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
-            NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
             simulatePaste()
         }
     }

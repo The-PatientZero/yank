@@ -48,6 +48,6 @@ by hand.
 iOS App Store submission stays manual (Xcode → Archive → App Store Connect). Before promoting
 an iOS release candidate, copy `docs/IOS_RELEASE_EVIDENCE_TEMPLATE.md` to a versioned evidence
 file and complete the device matrix in `docs/iOS_DEVICE_QA.md`; simulator CI cannot validate
-App Groups, keyboard Full Access, CloudKit push delivery, iCloud account state, or file
+App Group access on physical devices, keyboard insertion, CloudKit push delivery, iCloud account state, or file
 protection. The app is free and open source on both platforms — no purchase, StoreKit IAP, or
 storefront setup.

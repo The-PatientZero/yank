@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Yank's ink table — every brand colour as packed `0xRRGGBB` `(light, dark)` pairs, in
@@ -6,6 +7,8 @@ import Foundation
 /// accent *fills* live in `Theme.swift` (`AppTheme.color`) and its AA-safe foregrounds in
 /// the same file. Neutrals plus the semantic inks below cover everything else.
 enum YankInk {
+    private static let byteRadix = 256
+
     // MARK: Neutral "paper" surfaces
 
     /// Warm base surface (window / list background).
@@ -40,14 +43,20 @@ enum YankInk {
     static let danger = (light: 0xC2371F, dark: 0xFF6B5A)
     /// Success semantics — used for positive status glyphs and confirmations.
     static let success = (light: 0x2F855A, dark: 0x48BB78)
+    /// Success as a badge fill. Its paired `onSuccess` ink clears WCAG AA for small text:
+    /// 5.23:1 in light appearance and 7.25:1 in dark appearance.
+    static let successFill = (light: 0x2C7A52, dark: 0x48BB78)
+    /// Text and glyph ink drawn directly on `successFill`.
+    static let onSuccess = (light: 0xFFFFFF, dark: 0x1A1916)
     /// "Large" badge background; pairs with white text at full opacity (5.02:1 light,
     /// 5.18:1 dark — both clear AA for small text). The dark variant is lifted a touch
     /// so the badge sits warmer on the dark surface instead of reading as a flat block.
     static let oversize = (light: 0xB45309, dark: 0xC2410C)
 
-    /// Tag-pill hues — a muted, warm-leaning palette indexed by the tag's hash (identity
-    /// without a saturated rainbow). Dark variants are lifted so the dot + wash stay legible
-    /// on the dark surface. Pill text is `.primary`, so colour never carries meaning alone.
+    /// Tag-pill hues — a muted, warm-leaning palette indexed by a stable SHA-256 digest
+    /// (identity without a saturated rainbow). Dark variants are lifted so the dot + wash
+    /// stay legible on the dark surface. Pill text is `.primary`, so colour never carries
+    /// meaning alone.
     static let tagPalette: [(light: Int, dark: Int)] = [
         (light: 0x6B8CC7, dark: 0x8FAEDB), // dusty blue
         (light: 0x669E80, dark: 0x86C0A0), // sage
@@ -56,4 +65,13 @@ enum YankInk {
         (light: 0x8C7DB3, dark: 0xA89DD0), // muted violet
         (light: 0x6B999E, dark: 0x8AB8BD) // teal-slate
     ]
+
+    /// Stable identity for a tag's palette slot. Swift's `hashValue` is intentionally
+    /// randomized between process launches, so it cannot preserve a tag's colour.
+    static func tagPaletteIndex(for tag: String) -> Int {
+        let digest = SHA256.hash(data: Data(tag.utf8))
+        return digest.reduce(0) { remainder, byte in
+            (remainder * byteRadix + Int(byte)) % tagPalette.count
+        }
+    }
 }

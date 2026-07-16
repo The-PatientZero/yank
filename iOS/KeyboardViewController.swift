@@ -1,12 +1,15 @@
 import SwiftUI
 import UIKit
+import os
 
 private enum KeyboardMotion {
     static let pressDuration: TimeInterval = 0.14
 }
 
 final class KeyboardViewController: UIInputViewController {
-    private let store = ClipStore()
+    private static let log = Logger(subsystem: "com.thepatientzero.yank", category: "keyboard")
+    private let appGroup = AppGroupContainer.live()
+    private var items: [ClipboardItem] = []
 
     private let maxVisibleClips = 10
     private let maxSearchResults = 25
@@ -40,10 +43,6 @@ final class KeyboardViewController: UIInputViewController {
         render()
     }
 
-    override func textDidChange(_ textInput: UITextInput?) {
-        super.textDidChange(textInput)
-    }
-
     // MARK: - Layout scaffold
 
     private func configureLayout() {
@@ -61,7 +60,12 @@ final class KeyboardViewController: UIInputViewController {
         stack.alignment = .fill
         stack.spacing = Space.sm
         stack.isLayoutMarginsRelativeArrangement = true
-        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: Space.sm, leading: Space.md, bottom: Space.sm, trailing: Space.md)
+        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: Space.sm,
+            leading: Space.md,
+            bottom: Space.sm,
+            trailing: Space.md
+        )
         stack.translatesAutoresizingMaskIntoConstraints = false
         scrollView.addSubview(stack)
 
@@ -90,24 +94,14 @@ final class KeyboardViewController: UIInputViewController {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         searchField = nil
 
-        if store.storageUnavailable {
+        guard reloadHistory() else {
             presentStatusCard(.storageError)
             return
         }
 
-        guard hasFullAccess else {
-            presentStatusCard(.needsFullAccess)
-            return
-        }
-
-        let hasInsertableClips = !KeyboardClipSearch.insertableItems(from: store.items).isEmpty
-        let hasAnyClip = store.items.contains { !$0.isDeleted }
-        if !hasInsertableClips && !hasAnyClip {
-            presentStatusCard(.empty)
-            return
-        }
+        let hasInsertableClips = !KeyboardClipSearch.insertableItems(from: items).isEmpty
         if !hasInsertableClips {
-            presentNonInsertablePlaceholder()
+            presentStatusCard(.empty)
             return
         }
 
@@ -123,7 +117,7 @@ final class KeyboardViewController: UIInputViewController {
     private func updateSearchResults() {
         resultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let filtered = KeyboardClipSearch.results(
-            from: store.items,
+            from: items,
             query: searchQuery,
             emptyLimit: maxVisibleClips,
             searchLimit: maxSearchResults
@@ -144,6 +138,24 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// The keyboard is intentionally a read-only App Group consumer. It reads only the
+    /// host's bounded projection without creating directories or scanning pending payloads.
+    private func reloadHistory() -> Bool {
+        guard let appGroup else {
+            items = []
+            Self.log.error("App Group container is unavailable; keyboard history cannot be read.")
+            return false
+        }
+        do {
+            items = try KeyboardHistoryReader(projectionURL: appGroup.keyboardProjectionURL).load()
+            return true
+        } catch {
+            items = []
+            Self.log.error("Failed to read keyboard history: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     private func presentStatusCard(_ mode: KeyboardStatusView.Mode) {
         let host = UIHostingController(rootView: KeyboardStatusView(mode: mode))
         host.view.backgroundColor = .clear
@@ -151,22 +163,6 @@ final class KeyboardViewController: UIInputViewController {
         stack.addArrangedSubview(host.view)
         host.didMove(toParent: self)
         statusHost = host
-        if needsInputModeSwitchKey {
-            stack.addArrangedSubview(switchButton())
-        }
-    }
-
-    private func presentNonInsertablePlaceholder() {
-        let label = UILabel()
-        label.text = "Your clips are images — open Yank to copy text."
-        label.font = .preferredFont(forTextStyle: .footnote)
-        label.textColor = UIColor(Color.yankTextTertiary)
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.isAccessibilityElement = true
-        label.accessibilityLabel = label.text
-        stack.addArrangedSubview(label)
         if needsInputModeSwitchKey {
             stack.addArrangedSubview(switchButton())
         }
@@ -260,7 +256,12 @@ final class KeyboardViewController: UIInputViewController {
         configuration.image = UIImage(systemName: "globe")
         configuration.imagePadding = Space.sm
         configuration.baseForegroundColor = .secondaryLabel
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: Space.sm, leading: Space.lg, bottom: Space.sm, trailing: Space.lg)
+        configuration.contentInsets = NSDirectionalEdgeInsets(
+            top: Space.sm,
+            leading: Space.lg,
+            bottom: Space.sm,
+            trailing: Space.lg
+        )
         configuration.background.backgroundColor = UIColor(Color.yankRaised).withAlphaComponent(0.6)
         configuration.background.cornerRadius = Metrics.rowCornerRadius
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in

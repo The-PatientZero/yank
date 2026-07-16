@@ -2,6 +2,7 @@ import Testing
 @testable import Yank
 
 @Suite("Status Menu View")
+@MainActor
 struct StatusMenuViewTests {
     @Test("Actionable update row is keyboard focusable")
     func actionableUpdateRowIsKeyboardFocusable() throws {

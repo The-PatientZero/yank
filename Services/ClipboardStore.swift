@@ -6,6 +6,14 @@ import Observation
 @MainActor
 @Observable
 final class ClipboardStore {
+    private enum PersistenceError: LocalizedError {
+        case writesDisabled
+
+        var errorDescription: String? {
+            "History writes are disabled because the saved snapshot could not be loaded."
+        }
+    }
+
     var items: [ClipboardItem] = [] {
         didSet {
             filterCache = nil
@@ -41,6 +49,10 @@ final class ClipboardStore {
 
     @ObservationIgnored private var tombstones: [UUID: Date] = [:]
     @ObservationIgnored private var historyWritesDisabled = false
+    /// Reconcile may discover blobs that are no longer referenced before the replacement
+    /// snapshot is durable. Keep those files until a successful flush, including across a
+    /// failed sync retry, so the last durable snapshot never points at deleted content.
+    @ObservationIgnored private var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
 
     private(set) var pendingDeletion: PendingDeletion? {
         didSet { filterCache = nil }
@@ -291,13 +303,6 @@ final class ClipboardStore {
         blobStore.saveRichArchive(archive)
     }
 
-    /// Load the full pasteboard archive for an item, if it has one.
-    func richArchive(for item: ClipboardItem) -> PasteboardArchive? {
-        guard let url = blobStore.richArchiveURL(for: item) else { return nil }
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? PropertyListDecoder().decode(PasteboardArchive.self, from: data)
-    }
-
     func richArchiveAsync(for item: ClipboardItem) async -> PasteboardArchive? {
         guard let url = blobStore.richArchiveURL(for: item) else { return nil }
         do {
@@ -306,11 +311,6 @@ final class ClipboardStore {
             Log.store.error("Failed to load rich archive: \(error.localizedDescription)")
             return nil
         }
-    }
-
-    /// Save large text to a file and return the filename
-    func saveText(_ text: String) -> String? {
-        blobStore.saveText(text)
     }
 
     /// Save large text off the main actor and return the filename. Used by clipboard
@@ -515,21 +515,26 @@ final class ClipboardStore {
         )
         if result.cappedVisibleCount > 0 {
             Log.store.info(
-                "Reconcile cap dropped \(result.cappedVisibleCount) synced clip(s) — local history limit is \(self.maxItems)."
+                "Reconcile cap dropped \(result.cappedVisibleCount) clip(s); local limit is \(self.maxItems)."
             )
         }
         if result.expiredVisibleCount > 0 {
             Log.store.info("Reconcile retention expired \(result.expiredVisibleCount) synced clip(s).")
         }
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        pendingReconciledBlobDeletions.formUnion(result.blobReferencesToDelete)
         items = result.visibleItems
         tombstones = result.tombstones
         persist(notify: result.expiredVisibleCount > 0)
     }
 
-    func applyReconciledDurably(_ canonical: [ClipboardItem]) {
+    func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
+        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
         applyReconciled(canonical)
-        flushPendingWrites()
+        try historyWriter.flush().get()
+        let referencedBlobs = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
+        let orphanedBlobs = pendingReconciledBlobDeletions.subtracting(referencedBlobs)
+        blobStore.deleteBlobReferences(Array(orphanedBlobs))
+        pendingReconciledBlobDeletions.removeAll()
     }
 
     func blobURL(for reference: SyncBlobReference) -> URL? {

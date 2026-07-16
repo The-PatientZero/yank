@@ -1,71 +1,209 @@
-import Foundation
 import CoreSpotlight
+import Foundation
 import UniformTypeIdentifiers
+import os
 
-/// Index text clips into Core Spotlight so they're searchable system-wide without
-/// opening the app. Incremental: each pass indexes only the clips that are
-/// new since the last pass and removes the ones that disappeared, instead of rebuilding
-/// the whole set every time the history changes. State and the CSSearchableIndex calls
-/// are confined to a private serial queue, so it's safe to call from any thread.
-private final class SpotlightIndexStorage: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.thepatientzero.yank.spotlight", qos: .utility)
-    private var indexedIDs: Set<String> = []
-    private var debounced: DispatchWorkItem?
+struct SpotlightDocument: Equatable, Sendable {
+    let identifier: String
+    let title: String
+    let contentDescription: String
+}
 
-    func index(_ items: [ClipboardItem]) {
-        let snapshot = items
-        queue.async { self.reconcile(snapshot) }
+protocol SpotlightIndexClient: Sendable {
+    func index(_ documents: [SpotlightDocument]) async throws
+    func delete(identifiers: [String]) async throws
+    func delete(domainIdentifiers: [String]) async throws
+}
+
+private struct SystemSpotlightIndexClient: SpotlightIndexClient, @unchecked Sendable {
+    let index: CSSearchableIndex
+
+    init(index: CSSearchableIndex = .default()) {
+        self.index = index
+    }
+
+    func index(_ documents: [SpotlightDocument]) async throws {
+        let items = documents.map { document in
+            let attributes = CSSearchableItemAttributeSet(contentType: .text)
+            attributes.title = document.title
+            attributes.contentDescription = document.contentDescription
+            return CSSearchableItem(
+                uniqueIdentifier: document.identifier,
+                domainIdentifier: SpotlightIndexStorage.domainIdentifier,
+                attributeSet: attributes
+            )
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            index.indexSearchableItems(items) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    func delete(identifiers: [String]) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            index.deleteSearchableItems(withIdentifiers: identifiers) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    func delete(domainIdentifiers: [String]) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            index.deleteSearchableItems(withDomainIdentifiers: domainIdentifiers) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+}
+
+/// Reconciles Yank's opt-in Spotlight domain. State advances only after the corresponding
+/// system operation succeeds, so failed updates and deletions remain eligible for retry.
+actor SpotlightIndexStorage {
+    static let domainIdentifier = "yank.clips"
+    private static let log = Logger(subsystem: "com.thepatientzero.yank", category: "spotlight")
+
+    private let client: any SpotlightIndexClient
+    private var indexedRevisions: [String: String] = [:]
+    private var hasCleanProcessBaseline = false
+    private var debounced: Task<Void, Never>?
+    private var operationTask: Task<Void, any Error>?
+    private var operationID: UInt64 = 0
+
+    private enum Operation: Sendable {
+        case reconcile([ClipboardItem])
+        case clear
+    }
+
+    init(client: any SpotlightIndexClient = SystemSpotlightIndexClient()) {
+        self.client = client
+    }
+
+    func index(_ items: [ClipboardItem]) async throws {
+        debounced?.cancel()
+        debounced = nil
+        try await enqueue(.reconcile(items)).value
     }
 
     func schedule(_ items: [ClipboardItem], delay: TimeInterval = 0.6) {
         let snapshot = items
-        queue.async {
-            self.debounced?.cancel()
-            let work = DispatchWorkItem { self.reconcile(snapshot) }
-            self.debounced = work
-            self.queue.asyncAfter(deadline: .now() + delay, execute: work)
+        debounced?.cancel()
+        debounced = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(max(0, delay)))
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                try await self.enqueue(.reconcile(snapshot)).value
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.error("Spotlight reconciliation failed: \(error.localizedDescription)")
+            }
         }
     }
 
-    /// Remove every Yank clip from the system index and forget what's been indexed.
-    /// Used when the user turns Spotlight indexing off.
-    func clear() {
-        queue.async {
-            self.debounced?.cancel()
-            CSSearchableIndex.default().deleteSearchableItems(withDomainIdentifiers: ["yank.clips"])
-            self.indexedIDs = []
+    func clear() async throws {
+        debounced?.cancel()
+        debounced = nil
+        try await enqueue(.clear).value
+    }
+
+    private func enqueue(_ operation: Operation) -> Task<Void, any Error> {
+        let prior = operationTask
+        operationID &+= 1
+        let id = operationID
+        let task = Task { [weak self] in
+            if let prior { _ = await prior.result }
+            guard let self else { return }
+            do {
+                switch operation {
+                case .reconcile(let items):
+                    try await self.reconcile(items)
+                case .clear:
+                    try await self.client.delete(domainIdentifiers: [Self.domainIdentifier])
+                    await self.markCleared()
+                }
+                await self.finishOperation(id: id)
+            } catch {
+                await self.finishOperation(id: id)
+                throw error
+            }
+        }
+        operationTask = task
+        return task
+    }
+
+    private func markCleared() {
+        indexedRevisions.removeAll()
+        hasCleanProcessBaseline = true
+    }
+
+    private func finishOperation(id: UInt64) {
+        if operationID == id { operationTask = nil }
+    }
+
+    private func reconcile(_ items: [ClipboardItem]) async throws {
+        // In-memory revision tracking cannot know which Yank records survived a prior app
+        // process. Clear only Yank's domain once per process before rebuilding the desired
+        // set, preventing a clip deleted just before termination from lingering in Spotlight.
+        if !hasCleanProcessBaseline {
+            try await client.delete(domainIdentifiers: [Self.domainIdentifier])
+            indexedRevisions.removeAll()
+            hasCleanProcessBaseline = true
+        }
+        var documents: [String: SpotlightDocument] = [:]
+        for item in items {
+            guard let document = Self.document(for: item) else { continue }
+            documents[document.identifier] = document
+        }
+        let desiredRevisions = documents.mapValues(Self.revision(for:))
+        let changed = documents.values.filter {
+            indexedRevisions[$0.identifier] != desiredRevisions[$0.identifier]
+        }
+        let removed = indexedRevisions.keys.filter { documents[$0] == nil }
+
+        if !changed.isEmpty {
+            try await client.index(changed.sorted { $0.identifier < $1.identifier })
+            for document in changed {
+                indexedRevisions[document.identifier] = desiredRevisions[document.identifier]
+            }
+        }
+        if !removed.isEmpty {
+            try await client.delete(identifiers: removed.sorted())
+            for identifier in removed {
+                indexedRevisions.removeValue(forKey: identifier)
+            }
         }
     }
 
-    private func reconcile(_ items: [ClipboardItem]) {
-        let textItems = items.filter { ($0.textContent?.isEmpty == false) }
-        let currentIDs = Set(textItems.map { $0.id.uuidString })
-
-        let added = textItems.filter { !indexedIDs.contains($0.id.uuidString) }
-        let removed = indexedIDs.subtracting(currentIDs)
-
-        let index = CSSearchableIndex.default()
-        if !added.isEmpty { index.indexSearchableItems(added.map(searchableItem)) }
-        if !removed.isEmpty { index.deleteSearchableItems(withIdentifiers: Array(removed)) }
-        indexedIDs = currentIDs
-    }
-
-    private func searchableItem(for item: ClipboardItem) -> CSSearchableItem {
-        let attributes = CSSearchableItemAttributeSet(contentType: .text)
-        // Index only a short first-line snippet, never the full clip body: a distinguishable title
-        // in results and a bounded lock-screen / Spotlight preview rather than the whole (possibly
-        // sensitive) content. Indexing is opt-in and off by default.
-        let snippet = Self.snippet(from: item.textContent ?? "")
-        attributes.title = snippet.isEmpty ? "Yank clip" : snippet
-        attributes.contentDescription = snippet
-        return CSSearchableItem(
-            uniqueIdentifier: item.id.uuidString,
-            domainIdentifier: "yank.clips",
-            attributeSet: attributes
+    private static func document(for item: ClipboardItem) -> SpotlightDocument? {
+        guard !item.isDeleted, let text = item.textContent, !text.isEmpty else { return nil }
+        let snippet = snippet(from: text)
+        return SpotlightDocument(
+            identifier: item.id.uuidString,
+            title: snippet.isEmpty ? "Yank clip" : snippet,
+            contentDescription: snippet
         )
     }
 
-    /// First non-empty line, trimmed and length-capped — what's safe to expose to the system index.
+    private static func revision(for document: SpotlightDocument) -> String {
+        document.title + "\u{1F}" + document.contentDescription
+    }
+
+    /// First non-empty line, trimmed and length-capped: a useful result without exposing
+    /// a full clipboard body to the system index or lock-screen suggestions.
     private static func snippet(from text: String, limit: Int = 100) -> String {
         let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         return String(firstLine.trimmingCharacters(in: .whitespaces).prefix(limit))
@@ -75,20 +213,31 @@ private final class SpotlightIndexStorage: @unchecked Sendable {
 enum SpotlightIndexer {
     private static let storage = SpotlightIndexStorage()
 
-    /// Index immediately (incrementally). Use when the caller already coalesces calls,
-    /// or for the one-shot pass on launch.
     static func index(_ items: [ClipboardItem]) {
-        storage.index(items)
+        Task {
+            do {
+                try await storage.index(items)
+            } catch {
+                Logger.spotlight.error("Spotlight indexing failed: \(error.localizedDescription)")
+            }
+        }
     }
 
-    /// Debounced incremental index — coalesces a burst of changes (captures, a sync
-    /// landing many clips) into a single reconcile. Use from per-change hooks.
     static func schedule(_ items: [ClipboardItem], delay: TimeInterval = 0.6) {
-        storage.schedule(items, delay: delay)
+        Task { await storage.schedule(items, delay: delay) }
     }
 
-    /// Purge every Yank clip from the system index (when the user disables indexing).
     static func clear() {
-        storage.clear()
+        Task {
+            do {
+                try await storage.clear()
+            } catch {
+                Logger.spotlight.error("Spotlight clear failed: \(error.localizedDescription)")
+            }
+        }
     }
+}
+
+private extension Logger {
+    static let spotlight = Logger(subsystem: "com.thepatientzero.yank", category: "spotlight")
 }

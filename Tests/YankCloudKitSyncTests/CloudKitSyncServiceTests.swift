@@ -89,6 +89,64 @@ struct CloudKitSyncServiceTests {
         #expect(applied.contains { $0.id == second.id })
     }
 
+    @Test func pullDoesNotApplyOrAdvanceTokenPastAPartialRecordFailure() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let remote = makeTextItem(text: "partial-page-success", modifiedAt: 500)
+        let failedID = UUID().uuidString
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(
+            changed: [try record(for: remote)],
+            failedRecordNames: [failedID],
+            moreComing: false
+        )]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected a partial pull page to fail sync")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func partialLaterPageCleansUpPreviouslyDownloadedUnreferencedBlobs() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let remote = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let assetURL = try writeAsset("pending blob")
+        defer { try? FileManager.default.removeItem(at: assetURL) }
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(changed: [try record(for: remote, blobURL: assetURL)], moreComing: true),
+            page(failedRecordNames: [UUID().uuidString], moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        let service = makeService(database: database, store: store)
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the partial later page to fail sync")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(store.writtenBlobs == [blob])
+        #expect(store.deletedBlobs == [blob])
+    }
+
     @Test func pullDeletesDownloadedBlobWhenReconcileDropsRemoteItem() async throws {
         let id = UUID()
         let filename = "\(UUID().uuidString).txt"
@@ -259,6 +317,33 @@ struct CloudKitSyncServiceTests {
         #expect(defaults.data(forKey: tokenKey) == nil)
     }
 
+    @Test func pullDoesNotAdvanceTokenWhenDurableStoreApplyFails() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let remote = makeTextItem(text: "cannot-persist", modifiedAt: 500)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.durableApplyError = TestError.boom
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected a durable local apply failure to fail sync")
+            return
+        }
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+    }
+
     @Test func startRetriesFromScratchAndReuploadsLocalItemsWhenChangeTokenExpired() async throws {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
@@ -367,11 +452,13 @@ struct CloudKitSyncServiceTests {
     private func page(
         changed: [CKRecord] = [],
         deletedNames: [String] = [],
+        failedRecordNames: [String] = [],
         moreComing: Bool
     ) -> CloudKitZoneChanges {
         CloudKitZoneChanges(
             changedRecords: changed,
             deletedRecordNames: deletedNames,
+            failedRecordNames: failedRecordNames,
             changeToken: nil,
             moreComing: moreComing
         )
@@ -436,6 +523,7 @@ private final class FakeSyncableStore: SyncableStore {
     private(set) var deletedBlobs: [SyncBlobReference] = []
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
     var writeBlobError: (any Error)?
+    var durableApplyError: (any Error)?
 
     func itemsForSync() -> [ClipboardItem] { items }
 
@@ -444,7 +532,8 @@ private final class FakeSyncableStore: SyncableStore {
         items = canonical
     }
 
-    func applyReconciledDurably(_ canonical: [ClipboardItem]) {
+    func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
+        if let durableApplyError { throw durableApplyError }
         applyReconciled(canonical)
         onApplyReconciledDurably?()
     }

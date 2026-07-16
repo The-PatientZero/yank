@@ -110,18 +110,25 @@ struct QuickPickerView: View {
                 } else {
                     LazyVStack(spacing: Space.xs) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            QuickPickerRow(
-                                item: item,
-                                store: store,
-                                isSelected: item.id == selection.focusedID,
-                                quickIndex: index < 9 ? index + 1 : nil
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                select(item)
+                            Button {
+                                selection.selectSingle(item.id, in: items)
                                 onPaste(item)
+                            } label: {
+                                QuickPickerRow(
+                                    item: item,
+                                    store: store,
+                                    isSelected: item.id == selection.focusedID,
+                                    quickIndex: index < 9 ? index + 1 : nil
+                                )
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
                             .contextMenu { rowMenu(for: item) }
+                            .accessibilityLabel(
+                                item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt)
+                            )
+                            .accessibilityAddTraits(item.id == selection.focusedID ? .isSelected : [])
+                            .accessibilityHint("Pastes this clip")
                             .id(item.id)
                         }
                     }
@@ -157,7 +164,11 @@ struct QuickPickerView: View {
 
     private var footer: some View {
         HStack {
-            Text(smartResults != nil ? "Smart results · \(items.count)" : "\(items.count) \(items.count == 1 ? "clip" : "clips")")
+            Text(
+                smartResults != nil
+                    ? "Smart results · \(items.count)"
+                    : "\(items.count) \(items.count == 1 ? "clip" : "clips")"
+            )
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
             Spacer()
@@ -209,6 +220,9 @@ struct QuickPickerView: View {
     private func rowMenu(for item: ClipboardItem) -> some View {
         Button("Paste") { onPaste(item) }
         Button("Copy") { onCopy(item) }
+        ForEach(item.aiTags.filter { !item.tags.contains($0) }, id: \.self) { tag in
+            Button("Add “\(tag)” Tag") { store.addTag(tag, to: item) }
+        }
         if item.type == .text, FoundationModelEnricher.isAvailable {
             Menu("Smart Paste") {
                 ForEach(TextTransform.allCases) { transform in
@@ -231,10 +245,6 @@ struct QuickPickerView: View {
         if selection.focusedID == nil {
             selection.selectDefault(in: items)
         }
-    }
-
-    private func select(_ item: ClipboardItem) {
-        selection.selectSingle(item.id, in: items)
     }
 
     private func moveSelection(by delta: Int) {
@@ -297,7 +307,7 @@ private struct QuickPickerRow: View {
                 if !suggested.isEmpty {
                     HStack(spacing: Space.xs) {
                         ForEach(Array(suggested), id: \.self) { tag in
-                            AITagChip(label: tag) { store.addTag(tag, to: item) }
+                            AITagChip(label: tag)
                         }
                     }
                 }
@@ -322,10 +332,6 @@ private struct QuickPickerRow: View {
         .onHover { isHovered = $0 }
         .animation(YankMotion.quick(reduceMotion), value: isHovered)
         .animation(YankMotion.state(reduceMotion), value: isSelected)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.accessibilityDescription(kindLabel: kind.label, excerpt: item.excerpt))
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Pastes this clip")
     }
 
     @ViewBuilder

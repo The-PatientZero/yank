@@ -2,13 +2,14 @@
 
 ## Supported Versions
 
-Yank has not shipped a stable 1.0 release yet. Until then, security fixes land on `main`
-and in the latest public prerelease, if one exists.
+Yank publishes stable releases. Security fixes land on `main` and in the latest stable
+release when they affect shipped code. Install the newest release before reporting an issue.
 
 | Version | Supported |
 | ------- | --------- |
-| `main` / latest prerelease | Security fixes before 1.0 |
-| Stable releases | Not available yet |
+| Latest stable release | Yes |
+| `main` | Yes, as the next-release development line |
+| Older releases | No |
 
 ## Reporting a Vulnerability
 
@@ -39,6 +40,9 @@ without posting exploit details publicly.
 ## Scope
 
 Yank is a macOS and iOS clipboard manager. Clipboard history is local by default; cross-device sync is opt-in and uses the user's private CloudKit database. macOS clipboard data is stored in `~/Library/Application Support/Yank/`.
+
+For a plain-language description of the data Yank processes and the controls available to
+users, see the [Privacy Policy](PRIVACY.md).
 
 ### macOS Sandbox Posture
 

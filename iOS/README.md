@@ -33,7 +33,7 @@ Before a public iOS build or release candidate, run the physical-device matrix i
 | `iOS/HistoryView.swift` | Browse/search synced clips, tap to open details, batch actions |
 | `iOS/ClipStore.swift` | iOS store backed by App Group JSON, conforms to `SyncableStore` |
 | `iOS/KeyboardViewController.swift` | Keyboard extension for inserting recent clips |
-| `iOS/ShareViewController.swift` | Share extension for capturing shared text and URLs |
+| `iOS/ShareViewController.swift` | Share extension for capturing shared text, URLs, and images |
 | `iOS/CaptureClipIntent.swift` | App Intent for Shortcuts, Action Button, and Back Tap flows |
 | `Shared/SpotlightIndexer.swift` | Core Spotlight indexing shared with iOS app code |
 
@@ -47,7 +47,8 @@ The iOS targets are declared in `project.yml`; `Yank.xcodeproj` is generated and
 | `YankKeyboard` | App extension | `com.thepatientzero.yank.keyboard` | Lean core, no CloudKit | Keyboard controller | `iOS/Yank-iOS-Extension.entitlements` |
 | `YankShare` | App extension | `com.thepatientzero.yank.share` | Lean core, no CloudKit | Share controller | `iOS/Yank-iOS-Extension.entitlements` |
 
-The extensions use the App Group store and intentionally avoid CloudKit. The container app owns sync.
+The keyboard reads a bounded App Group projection, the share extension writes bounded handoff
+entries, and the container app alone owns canonical history and CloudKit sync.
 
 ## External Gates
 

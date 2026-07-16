@@ -45,6 +45,7 @@ targets:
       - Sources/YankCloudKitSync
       - Services
       - Views
+      - path: Privacy/Yank/PrivacyInfo.xcprivacy
       - path: Assets.xcassets
     # Xcode 17 runs App Intents metadata extraction on application targets even
     # when they do not declare shortcuts. An explicit system-framework link keeps
@@ -98,6 +99,8 @@ targets:
       - Shared/AppNotifications.swift
       - Sources/YankCore
       - Sources/YankCloudKitSync
+      - iOS/AppGroupContainer.swift
+      - iOS/AppGroupContext.swift
       - iOS/ClipStore.swift
       - iOS/ClipStore+Mutations.swift
       - iOS/IOSSettings.swift
@@ -117,6 +120,7 @@ targets:
       - iOS/CaptureClipIntent.swift
       - Shared/SpotlightIndexer.swift
       - iOS/YankAppDelegate.swift
+      - path: Privacy/YankiOS/PrivacyInfo.xcprivacy
       - path: iOS/Assets.xcassets
     dependencies:
       - sdk: AppIntents.framework
@@ -136,23 +140,31 @@ targets:
 
   # ---- iOS keyboard extension (lean core, no CloudKit) ----------------------
   # The design tokens, ClipKind, and the iOS brand bridges are pulled in (in place,
-  # no module import — the project's no-duplication pattern) so the keyboard's rows,
-  # Full-Access card, and empty hint render in real Yank brand instead of system chrome.
+  # no module import — the project's no-duplication pattern) so the keyboard's rows
+  # and empty hint render in real Yank brand instead of system chrome.
   YankKeyboard:
     type: app-extension
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - Sources/YankCore
+      - Sources/YankCore/ClipboardItem.swift
+      - Sources/YankCore/ClipboardSearchIndex.swift
+      - Sources/YankCore/ContentClassifier.swift
+      - Sources/YankCore/KeyboardClipSearch.swift
+      - Sources/YankCore/KeyboardHistoryProjection.swift
+      - Sources/YankCore/KeyboardHistoryReader.swift
+      - Sources/YankCore/ShareCaptureInbox.swift
+      - Sources/YankCore/SyncBlobPolicy.swift
       - Shared/DesignScale.swift
       - Shared/YankInk.swift
       - Shared/ClipKind.swift
       - Shared/ClipPresentationCache.swift
       - Shared/YankWordmark.swift
       - iOS/YankIOSDesignSystem.swift
-      - iOS/ClipStore.swift
+      - iOS/AppGroupContainer.swift
       - iOS/KeyboardStatusView.swift
       - iOS/KeyboardViewController.swift
+      - path: Privacy/Extensions/PrivacyInfo.xcprivacy
     dependencies:
       - sdk: AppIntents.framework
     settings:
@@ -172,16 +184,23 @@ targets:
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - Sources/YankCore
+      - Sources/YankCore/ClipboardItem.swift
+      - Sources/YankCore/ClipboardSearchIndex.swift
+      - Sources/YankCore/ContentClassifier.swift
+      - Sources/YankCore/KeyboardHistoryProjection.swift
+      - Sources/YankCore/ShareCaptureInbox.swift
+      - Sources/YankCore/ShareImageImportPolicy.swift
+      - Sources/YankCore/SyncBlobPolicy.swift
       - Shared/DesignScale.swift
       - Shared/YankInk.swift
       - Shared/ClipKind.swift
       - Shared/ClipPresentationCache.swift
       - Shared/YankWordmark.swift
       - iOS/YankIOSDesignSystem.swift
-      - iOS/ClipStore.swift
+      - iOS/AppGroupContainer.swift
       - iOS/ShareConfirmationView.swift
       - iOS/ShareViewController.swift
+      - path: Privacy/Extensions/PrivacyInfo.xcprivacy
     dependencies:
       - sdk: AppIntents.framework
     settings:

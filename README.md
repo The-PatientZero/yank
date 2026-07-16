@@ -37,6 +37,9 @@
 - **Large‑content friendly** — chunked previews and disk‑backed storage for multi‑MB text.
 - **Native feel** — SwiftUI + AppKit menu‑bar app; quick access with **⇧⌘V**.
 
+Read the [Privacy Policy](PRIVACY.md) for a complete description of local storage, optional
+iCloud sync, extensions, on-device intelligence, permissions, and deletion controls.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
