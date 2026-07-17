@@ -87,9 +87,9 @@ capture exclusions. These safeguards reduce accidental capture but cannot classi
 piece of sensitive content, so review clipboard history before sharing a device or backup.
 
 For security vulnerabilities, use the private reporting instructions in
-[`SECURITY.md`](SECURITY.md). For general privacy questions, open an issue in the
-[Yank repository](https://github.com/The-PatientZero/yank/issues/new) without including
-private clipboard content.
+[`SECURITY.md`](SECURITY.md). For general privacy questions or product support, follow the
+contact instructions in [`SUPPORT.md`](SUPPORT.md) without including private clipboard
+content in a public issue.
 
 Material changes to this policy will be published in this repository with a revised
 effective date.

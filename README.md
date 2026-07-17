@@ -39,6 +39,7 @@
 
 Read the [Privacy Policy](PRIVACY.md) for a complete description of local storage, optional
 iCloud sync, extensions, on-device intelligence, permissions, and deletion controls.
+For help or to report a problem, see [Yank Support](SUPPORT.md).
 
 ## Keyboard Shortcuts
 
