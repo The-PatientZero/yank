@@ -4,6 +4,19 @@ import ImageIO
 import Observation
 import UniformTypeIdentifiers
 
+struct PasteboardChangeSuppression {
+    private var generations: Set<Int> = []
+
+    mutating func register(_ generation: Int) {
+        generations.insert(generation)
+    }
+
+    mutating func shouldSuppress(_ observedGeneration: Int) -> Bool {
+        generations = Set(generations.filter { $0 >= observedGeneration })
+        return generations.remove(observedGeneration) != nil
+    }
+}
+
 /// Monitors the system clipboard for changes and captures new content
 @MainActor
 @Observable
@@ -23,6 +36,8 @@ final class ClipboardWatcher {
     private var lastChangeCount: Int = 0
     private var lastContentFingerprint: ClipboardContentFingerprint?
     private var textCaptureChain: Task<Void, Never>?
+    private var changeSuppression = PasteboardChangeSuppression()
+    private var newestExactSuppressionGeneration: Int?
 
     private(set) var ignoreNextChange = false
 
@@ -42,7 +57,7 @@ final class ClipboardWatcher {
         // Listen for ignore notification (when copying from history)
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(handleIgnoreNextChange),
+            selector: #selector(handleIgnoreNextChange(_:)),
             name: .yankIgnoreNextChange,
             object: nil
         )
@@ -52,8 +67,24 @@ final class ClipboardWatcher {
         NotificationCenter.default.removeObserver(self)
     }
     
-    @objc private func handleIgnoreNextChange() {
-        ignoreNextChange = true
+    @objc private func handleIgnoreNextChange(_ notification: Notification) {
+        if let generation = notification.object as? Int {
+            changeSuppression.register(generation)
+            newestExactSuppressionGeneration = max(newestExactSuppressionGeneration ?? generation, generation)
+            return
+        }
+
+        // Older synchronous callers announce immediately before writing. Observe their
+        // resulting generation on the next main-queue turn without arming a broad skip.
+        let generationBeforeWrite = NSPasteboard.general.changeCount
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let newestExactGeneration = self.newestExactSuppressionGeneration ?? generationBeforeWrite
+            guard newestExactGeneration <= generationBeforeWrite else { return }
+            let generationAfterWrite = NSPasteboard.general.changeCount
+            guard generationAfterWrite != generationBeforeWrite else { return }
+            self.changeSuppression.register(generationAfterWrite)
+        }
     }
     
     func startWatching() {
@@ -111,7 +142,11 @@ final class ClipboardWatcher {
         guard currentChangeCount != lastChangeCount else { return }
         lastChangeCount = currentChangeCount
 
-        // Skip if this is a copy from our own history
+        // App-owned writes identify the exact pasteboard generation they created. A newer
+        // user copy must still be captured even if the watcher did not poll in between.
+        if changeSuppression.shouldSuppress(currentChangeCount) { return }
+
+        // The explicit user-facing "ignore next copy" action remains a one-change arm.
         if ignoreNextChange {
             ignoreNextChange = false
             return

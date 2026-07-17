@@ -8,23 +8,35 @@ import SwiftUI
 @MainActor
 @Observable
 final class IOSSettings {
-    var themeID: String { didSet { defaults.set(themeID, forKey: SettingsKeys.themeID) } }
-    var viewMode: ClipViewMode { didSet { defaults.set(viewMode.rawValue, forKey: SettingsKeys.viewMode) } }
-    var density: ClipDensity { didSet { defaults.set(density.rawValue, forKey: SettingsKeys.density) } }
-    var historyLimit: HistoryLimit { didSet { defaults.set(historyLimit.rawValue, forKey: SettingsKeys.historyLimit) } }
-    var retentionDays: Int { didSet { defaults.set(retentionDays, forKey: SettingsKeys.retentionDays) } }
-    var syncEnabled: Bool { didSet { defaults.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
+    var themeID: String { didSet { defaults?.set(themeID, forKey: SettingsKeys.themeID) } }
+    var viewMode: ClipViewMode { didSet { defaults?.set(viewMode.rawValue, forKey: SettingsKeys.viewMode) } }
+    var density: ClipDensity { didSet { defaults?.set(density.rawValue, forKey: SettingsKeys.density) } }
+    var historyLimit: HistoryLimit {
+        didSet { defaults?.set(historyLimit.rawValue, forKey: SettingsKeys.historyLimit) }
+    }
+    var retentionDays: Int { didSet { defaults?.set(retentionDays, forKey: SettingsKeys.retentionDays) } }
+    var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
+    var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
+    let storageUnavailable: Bool
 
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
 
-    init(defaults: UserDefaults = UserDefaults(suiteName: ClipStore.appGroup) ?? .standard) {
+    init(defaults: UserDefaults? = AppGroupContext.live()?.defaults) {
         self.defaults = defaults
-        self.themeID = defaults.string(forKey: SettingsKeys.themeID) ?? SettingsDefaults.themeID
-        self.viewMode = ClipViewMode(rawValue: defaults.string(forKey: SettingsKeys.viewMode) ?? "") ?? SettingsDefaults.viewMode
-        self.density = ClipDensity(rawValue: defaults.string(forKey: SettingsKeys.density) ?? "") ?? SettingsDefaults.density
-        self.historyLimit = HistoryLimit(rawValue: defaults.integer(forKey: SettingsKeys.historyLimit)) ?? SettingsDefaults.historyLimit
-        self.retentionDays = defaults.integer(forKey: SettingsKeys.retentionDays)
-        self.syncEnabled = defaults.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
+        self.storageUnavailable = defaults == nil
+        self.themeID = defaults?.string(forKey: SettingsKeys.themeID) ?? SettingsDefaults.themeID
+        self.viewMode = ClipViewMode(
+            rawValue: defaults?.string(forKey: SettingsKeys.viewMode) ?? ""
+        ) ?? SettingsDefaults.viewMode
+        self.density = ClipDensity(
+            rawValue: defaults?.string(forKey: SettingsKeys.density) ?? ""
+        ) ?? SettingsDefaults.density
+        self.historyLimit = HistoryLimit(
+            rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
+        ) ?? SettingsDefaults.historyLimit
+        self.retentionDays = defaults?.integer(forKey: SettingsKeys.retentionDays) ?? SettingsDefaults.retentionDays
+        self.syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
+        self.spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
         seedDefaults()
     }
 
@@ -33,6 +45,7 @@ final class IOSSettings {
     /// retention the UI shows, rather than falling back to "unlimited" until the user
     /// first opens Settings. Only seeds missing keys, so it never clobbers a real choice.
     private func seedDefaults() {
+        guard let defaults else { return }
         if defaults.object(forKey: SettingsKeys.historyLimit) == nil {
             defaults.set(historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
         }
@@ -50,6 +63,9 @@ final class IOSSettings {
         }
         if defaults.object(forKey: SettingsKeys.syncEnabled) == nil {
             defaults.set(syncEnabled, forKey: SettingsKeys.syncEnabled)
+        }
+        if defaults.object(forKey: SettingsKeys.spotlightIndexing) == nil {
+            defaults.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing)
         }
     }
 

@@ -5,6 +5,15 @@ import Testing
 @Suite("iOS Settings")
 @MainActor
 struct IOSSettingsTests {
+    @Test("Missing App Group defaults is surfaced without a standard-defaults fallback")
+    func missingSharedDefaultsFailsClosed() {
+        let settings = IOSSettings(defaults: nil)
+
+        #expect(settings.storageUnavailable)
+        #expect(!settings.syncEnabled)
+        #expect(!settings.spotlightIndexing)
+    }
+
     @Test("iCloud sync defaults off and persists explicit opt-in")
     func syncDefaultsOffAndPersistsOptIn() throws {
         let suiteName = "IOSSettingsTests.\(UUID().uuidString)"
@@ -36,6 +45,7 @@ struct IOSSettingsTests {
         #expect(defaults.string(forKey: SettingsKeys.viewMode) == settings.viewMode.rawValue)
         #expect(defaults.string(forKey: SettingsKeys.density) == settings.density.rawValue)
         #expect(defaults.object(forKey: SettingsKeys.syncEnabled) != nil)
+        #expect(defaults.object(forKey: SettingsKeys.spotlightIndexing) != nil)
     }
 
     @Test("Appearance and retention choices persist")
@@ -51,6 +61,7 @@ struct IOSSettingsTests {
         settings.density = .snug
         settings.historyLimit = .essential
         settings.retentionDays = 30
+        settings.spotlightIndexing = true
 
         let reloaded = IOSSettings(defaults: defaults)
         #expect(reloaded.themeID == "mint")
@@ -58,5 +69,6 @@ struct IOSSettingsTests {
         #expect(reloaded.density == .snug)
         #expect(reloaded.historyLimit == .essential)
         #expect(reloaded.retentionDays == 30)
+        #expect(reloaded.spotlightIndexing)
     }
 }

@@ -2,10 +2,9 @@ import ImageIO
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-
 @MainActor
 final class ShareViewController: UIViewController {
-    private let store = ClipStore()
+    private let appGroup = AppGroupContainer.live()
 
     private static let confirmationDuration: Duration = .milliseconds(800)
     private static let failureDuration: Duration = .milliseconds(1400)
@@ -17,14 +16,20 @@ final class ShareViewController: UIViewController {
         case malformedItem
         case imageTooLarge
         case imageWriteFailed
+        case captureQueueFull
+        case textTooLarge
 
         var errorDescription: String? {
             switch self {
-            case .storageUnavailable: return "Yank's storage is unavailable. Reinstall the app to restore access."
+            case .storageUnavailable:
+                return "Yank's shared storage is unavailable. " +
+                    "Open Yank to check its status, then try again."
             case .unsupportedContent: return "The shared item isn't text, a URL, or an image."
             case .malformedItem: return "The shared item couldn't be read."
             case .imageTooLarge: return "The shared image is too large to save."
             case .imageWriteFailed: return "The shared image couldn't be saved."
+            case .captureQueueFull: return "Yank has pending shared items. Open the app, then try again."
+            case .textTooLarge: return "The shared text is too large to save."
             }
         }
     }
@@ -45,9 +50,8 @@ final class ShareViewController: UIViewController {
     }
 
     // MARK: - Pipeline
-
     private func run() async {
-        if store.storageUnavailable {
+        guard let appGroup else {
             let error = ShareError.storageUnavailable
             present(.failed(reason: error.errorDescription))
             await holdForFailure()
@@ -60,15 +64,12 @@ final class ShareViewController: UIViewController {
             let excerpt: String
             switch content {
             case let .text(text):
-                await store.capture(text: text, sourceApp: "Share")
+                try await enqueue(text: text, in: appGroup.shareInbox)
                 excerpt = self.excerpt(of: text)
             case let .image(pngData):
-                guard await store.captureImage(pngData: pngData, sourceApp: "Share") else {
-                    throw ShareError.imageWriteFailed
-                }
+                try await enqueue(imagePNG: pngData, in: appGroup.shareInbox)
                 excerpt = "Image"
             }
-            store.flushPendingWrites()
             IOSMotion.successFeedback()
             let outcome = ShareConfirmationView.Outcome.saved(excerpt: excerpt)
             present(outcome)
@@ -116,16 +117,24 @@ final class ShareViewController: UIViewController {
             return .image(try await loadImagePNG(from: provider))
         }
         if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            return .text(try await provider.loadText(forTypeIdentifier: UTType.plainText.identifier) { $0 as? String })
+            return .text(
+                try await provider.loadText(forTypeIdentifier: UTType.plainText.identifier) {
+                    $0 as? String
+                }
+            )
         }
         if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            return .text(try await provider.loadText(forTypeIdentifier: UTType.url.identifier) { ($0 as? URL)?.absoluteString })
+            return .text(
+                try await provider.loadText(forTypeIdentifier: UTType.url.identifier) {
+                    ($0 as? URL)?.absoluteString
+                }
+            )
         }
         throw ShareError.unsupportedContent
     }
 
     private nonisolated func loadImagePNG(from provider: NSItemProvider) async throws -> Data {
-        if let fileURL = await provider.loadTemporaryImageFileRepresentation(
+        if let fileURL = try await provider.loadTemporaryImageFileRepresentation(
             forTypeIdentifier: UTType.image.identifier
         ) {
             defer { Self.removeTemporaryImageFile(at: fileURL) }
@@ -214,7 +223,7 @@ final class ShareViewController: UIViewController {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return nil
@@ -259,6 +268,36 @@ final class ShareViewController: UIViewController {
     }
 }
 
+private extension ShareViewController {
+    func enqueue(text: String, in inbox: ShareCaptureInbox) async throws {
+        do {
+            _ = try await Task.detached(priority: .userInitiated) {
+                try inbox.enqueue(text: text, sourceApp: "Share")
+            }.value
+        } catch ShareCaptureInbox.Error.quotaExceeded {
+            throw ShareError.captureQueueFull
+        } catch ShareCaptureInbox.Error.textTooLarge {
+            throw ShareError.textTooLarge
+        } catch {
+            throw ShareError.storageUnavailable
+        }
+    }
+
+    func enqueue(imagePNG: Data, in inbox: ShareCaptureInbox) async throws {
+        do {
+            _ = try await Task.detached(priority: .userInitiated) {
+                try inbox.enqueue(imagePNG: imagePNG, sourceApp: "Share")
+            }.value
+        } catch ShareCaptureInbox.Error.quotaExceeded {
+            throw ShareError.captureQueueFull
+        } catch ShareCaptureInbox.Error.payloadTooLarge {
+            throw ShareError.imageTooLarge
+        } catch {
+            throw ShareError.imageWriteFailed
+        }
+    }
+}
+
 private enum ProviderImageSource: Sendable {
     case temporaryFile(URL)
     case encodedData(Data)
@@ -283,16 +322,22 @@ private extension NSItemProvider {
         }
     }
 
-    func loadTemporaryImageFileRepresentation(forTypeIdentifier identifier: String) async -> URL? {
-        await withCheckedContinuation { continuation in
-            loadFileRepresentation(forTypeIdentifier: identifier) { url, _ in
-                guard let url,
-                      url.isFileURL,
-                      let temporaryURL = try? Self.copyTemporaryImageFile(at: url) else {
+    func loadTemporaryImageFileRepresentation(forTypeIdentifier identifier: String) async throws -> URL? {
+        try await withCheckedThrowingContinuation { continuation in
+            loadFileRepresentation(forTypeIdentifier: identifier) { url, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let url else {
                     continuation.resume(returning: nil)
                     return
                 }
-                continuation.resume(returning: temporaryURL)
+                do {
+                    continuation.resume(returning: try Self.copyTemporaryImageFile(at: url))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }
@@ -306,12 +351,17 @@ private extension NSItemProvider {
                 }
                 switch value {
                 case let url as URL:
-                    guard url.isFileURL,
-                          let temporaryURL = try? Self.copyTemporaryImageFile(at: url) else {
+                    guard url.isFileURL else {
                         continuation.resume(throwing: ShareViewController.ShareError.malformedItem)
                         return
                     }
-                    continuation.resume(returning: .temporaryFile(temporaryURL))
+                    do {
+                        continuation.resume(
+                            returning: .temporaryFile(try Self.copyTemporaryImageFile(at: url))
+                        )
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 case let data as Data:
                     continuation.resume(returning: .encodedData(data))
                 case let image as UIImage:
@@ -331,8 +381,11 @@ private extension NSItemProvider {
     }
 
     private static func copyTemporaryImageFile(at url: URL) throws -> URL {
-        let resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey])
-        guard resourceValues.isRegularFile == true else {
+        do {
+            try ShareImageImportPolicy.validateEncodedSourceFile(at: url)
+        } catch ShareImageImportPolicy.SourceFileError.tooLarge {
+            throw ShareViewController.ShareError.imageTooLarge
+        } catch {
             throw ShareViewController.ShareError.malformedItem
         }
 

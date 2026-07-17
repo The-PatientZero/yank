@@ -13,12 +13,6 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
     }
 
-    private var spotlightEnabled: Bool {
-        get {
-            (UserDefaults(suiteName: ClipStore.appGroup) ?? .standard).bool(forKey: SettingsKeys.spotlightIndexing)
-        }
-    }
-
     private var syncSectionDescription: String {
         if case .localOnly(.notProvisioned) = store.syncStatus {
             return SyncCopy.localOnlySectionDescription
@@ -247,9 +241,9 @@ struct SettingsView: View {
                 Text("After 90 days").tag(90)
             }
             Toggle(isOn: Binding(
-                get: { (UserDefaults(suiteName: ClipStore.appGroup) ?? .standard).bool(forKey: SettingsKeys.spotlightIndexing) },
+                get: { settings.spotlightIndexing },
                 set: { newValue in
-                    (UserDefaults(suiteName: ClipStore.appGroup) ?? .standard).set(newValue, forKey: SettingsKeys.spotlightIndexing)
+                    settings.spotlightIndexing = newValue
                     if newValue {
                         SpotlightIndexer.index(store.items)
                     } else {
@@ -295,6 +289,7 @@ struct SettingsView: View {
         Section("About") {
             LabeledContent("Version", value: appVersion)
             Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
+            Link("Privacy Policy", destination: YankLinks.privacyPolicy)
             Link("Report an Issue", destination: URL(string: "https://github.com/The-PatientZero/yank/issues/new")!)
             Link("Sponsor Yank", destination: URL(string: "https://github.com/sponsors/The-PatientZero")!)
             Text("Designed to disappear. Built to remember.")

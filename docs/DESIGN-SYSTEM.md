@@ -70,6 +70,8 @@ All tuned per-appearance to clear WCAG-AA; ratios are recorded in the source.
 | `codeText` | `#4A453E` | `#C4BCB2` | Monospaced previews & long-text body, ~8:1 light / ~7:1 dark |
 | `danger` | `#C2371F` | `#FF6B5A` | Destructive / error (warm-leaning red) |
 | `success` | `#2F855A` | `#48BB78` | Positive status / confirmations |
+| `successFill` | `#2C7A52` | `#48BB78` | Success badge fill; use only with `onSuccess` |
+| `onSuccess` | `#FFFFFF` | `#1A1916` | Small text/glyph on `successFill`; 5.23:1 / 7.25:1 |
 | `oversize` | `#B45309` | `#C2410C` | "Large" badge fill; white → 5.02:1 / 5.18:1 |
 
 ### Neutral opacity tokens
@@ -91,9 +93,10 @@ Appearance-agnostic fills/borders derived from `.primary`/`.secondary`. Source:
 
 ### Tag palette
 
-Six muted, warm-leaning hues indexed by `tag.hashValue % 6` — identity without a saturated
-rainbow. Dark variants are lifted for legibility. **Pill text is `.primary`**, so colour never
-carries meaning alone. Source: [`Shared/YankInk.swift`](../Shared/YankInk.swift).
+Six muted, warm-leaning hues indexed by a SHA-256 digest of the tag's exact UTF-8 value,
+reduced to the six palette slots. The mapping is stable across launches and devices. Dark
+variants are lifted for legibility. **Pill text is `.primary`**, so colour never carries
+meaning alone. Source: [`Shared/YankInk.swift`](../Shared/YankInk.swift).
 
 | # | Name | Light | Dark |
 |---|---|---|---|
@@ -219,7 +222,7 @@ Reusable SwiftUI primitives, shared across macOS and iOS unless noted.
 Compact icon-only button with two guarantees the loose `Button { Image }` pattern kept missing: a **required `label`** (never ships without a VoiceOver name) and a **≥24×24pt hit target** (WCAG 2.5.8) regardless of glyph size. `help` defaults to the label, so every button gets a tooltip. Hover → `yankHover` fill + scale `1.04` (`quick` motion), `Radius.sm` corners.
 
 ### `TagChip` — [`Shared/TagChip.swift`](../Shared/TagChip.swift)
-A tag pill: a 6×6 hue dot for identity, a same-hue wash (fill `0.14`, border `0.28`), and `.primary` text so legibility never depends on the (light) tag colour. Padding `sm`×`xxs`, `Capsule` shape. Optionally tappable (filter) or removable (`xmark`). Hue = `YankInk.tagPalette[hash % 6]`.
+A tag pill: a 6×6 hue dot for identity, a same-hue wash (fill `0.14`, border `0.28`), and `.primary` text so legibility never depends on the (light) tag colour. Padding `sm`×`xxs`, `Capsule` shape. Optionally tappable (filter) or removable (`xmark`). Hue = `YankInk.tagPalette[YankInk.tagPaletteIndex(for: tag)]`.
 **`TagChip.normalize`**: lowercase → collapse whitespace to `-` → trim leading/trailing `-` → cap at 32 chars.
 
 ### `ClipStatusBadge` / `RichContentBadge` — [`Shared/ClipStatusBadge.swift`](../Shared/ClipStatusBadge.swift)

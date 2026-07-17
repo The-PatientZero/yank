@@ -15,7 +15,7 @@ struct CaptureClipIntent: AppIntent {
             case .emptyClipboard:
                 return "The clipboard is empty. Copy some text first, then run this action."
             case .storageUnavailable:
-                return "Yank's storage is unavailable. Open Yank to resolve the issue, then try again."
+                return "Yank's storage is unavailable. Open Yank to check its status before retrying."
             }
         }
     }
@@ -31,7 +31,11 @@ struct CaptureClipIntent: AppIntent {
             throw CaptureError.storageUnavailable
         }
         await store.capture(text: text, sourceApp: "Action Button")
-        store.flushPendingWrites()
+        do {
+            try store.flushPendingWrites()
+        } catch {
+            throw CaptureError.storageUnavailable
+        }
         return .result(dialog: IntentDialog(stringLiteral: "Saved to Yank"))
     }
 }

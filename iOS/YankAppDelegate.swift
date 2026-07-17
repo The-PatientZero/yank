@@ -38,7 +38,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
     }
 
     private static func syncEnabledFromDefaults() -> Bool {
-        let defaults = UserDefaults(suiteName: ClipStore.appGroup) ?? .standard
+        guard let defaults = AppGroupContext.live()?.defaults else { return false }
         return defaults.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
     }
 }

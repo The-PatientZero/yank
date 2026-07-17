@@ -28,7 +28,7 @@ struct TagChip: View {
     }
 
     static func color(for tag: String) -> Color {
-        let index = Int(tag.hashValue.magnitude % UInt(YankInk.tagPalette.count))
+        let index = YankInk.tagPaletteIndex(for: tag)
         let pair = YankInk.tagPalette[index]
         return .yankDynamic(light: pair.light, dark: pair.dark)
     }

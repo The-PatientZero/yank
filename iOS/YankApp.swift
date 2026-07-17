@@ -6,19 +6,23 @@ struct YankApp: App {
     private static let containerID = "iCloud.com.thepatientzero.yank"
 
     @UIApplicationDelegateAdaptor(YankAppDelegate.self) private var appDelegate
-    @State private var store = ClipStore()
-    @State private var settings = IOSSettings()
+    @State private var store: ClipStore
+    @State private var settings: IOSSettings
     @State private var cloudContainer: CKContainer?
     @State private var sync: CloudKitSyncService?
     @State private var iCloudSignedOut = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        _cloudContainer = State(initialValue: Self.syncEnabledFromDefaults() ? Self.makeCloudContainer() : nil)
+        let appGroup = AppGroupContext.live()
+        _store = State(initialValue: ClipStore(context: appGroup))
+        _settings = State(initialValue: IOSSettings(defaults: appGroup?.defaults))
+        let syncEnabled = Self.syncEnabled(in: appGroup?.defaults)
+        _cloudContainer = State(initialValue: syncEnabled ? Self.makeCloudContainer() : nil)
     }
 
     private var spotlightEnabled: Bool {
-        (UserDefaults(suiteName: ClipStore.appGroup) ?? .standard).bool(forKey: SettingsKeys.spotlightIndexing)
+        settings.spotlightIndexing
     }
 
     var body: some Scene {
@@ -32,13 +36,18 @@ struct YankApp: App {
                 .tint(settings.theme.foreground)
                 .task {
                     appDelegate.remoteChangeHandler = { await handleRemoteChange() }
+                    await store.drainShareInbox()
                     store.enforceRetentionAndLimit()
                     await checkAccountAndStartSync()
-                    if spotlightEnabled { SpotlightIndexer.index(store.items) }
+                    refreshSpotlightIndex()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
-                        Task { await checkAccountAndStartSync() }
+                        Task {
+                            await store.drainShareInbox()
+                            await checkAccountAndStartSync()
+                            refreshSpotlightIndex()
+                        }
                     }
                 }
                 .onChange(of: settings.syncEnabled) { _, enabled in
@@ -48,7 +57,7 @@ struct YankApp: App {
                         stopSync()
                     }
                 }
-                .onChange(of: store.items.count) {
+                .onChange(of: store.contentRevision) {
                     if spotlightEnabled { SpotlightIndexer.schedule(store.items) }
                 }
         }
@@ -125,6 +134,16 @@ struct YankApp: App {
         store.markSyncUnavailable(reason: .disabled)
     }
 
+    private func refreshSpotlightIndex() {
+        if spotlightEnabled {
+            SpotlightIndexer.index(store.items)
+        } else {
+            // A scoped clear is safe to retry and removes stale Yank results left by a
+            // previously failed deletion or a prior app process.
+            SpotlightIndexer.clear()
+        }
+    }
+
     private static func makeCloudContainer() -> CKContainer? {
         guard syncEnabledFromDefaults() else { return nil }
         guard CloudContainerProvisioning.isProvisioned(for: containerID) else { return nil }
@@ -132,7 +151,11 @@ struct YankApp: App {
     }
 
     private static func syncEnabledFromDefaults() -> Bool {
-        let defaults = UserDefaults(suiteName: ClipStore.appGroup) ?? .standard
+        syncEnabled(in: AppGroupContext.live()?.defaults)
+    }
+
+    private static func syncEnabled(in defaults: UserDefaults?) -> Bool {
+        guard let defaults else { return false }
         return defaults.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
     }
 }

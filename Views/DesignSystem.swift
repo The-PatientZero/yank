@@ -96,6 +96,10 @@ extension Color {
     static let yankDanger = yankDynamic(light: YankInk.danger.light, dark: YankInk.danger.dark)
     /// Success semantics — verified-update confirmation and similar positive states.
     static let yankSuccess = yankDynamic(light: YankInk.success.light, dark: YankInk.success.dark)
+    /// Matched success-badge pair; unlike the foreground success ink, this remains
+    /// contrast-safe when one token is drawn directly on the other.
+    static let yankSuccessFill = yankDynamic(light: YankInk.successFill.light, dark: YankInk.successFill.dark)
+    static let yankOnSuccess = yankDynamic(light: YankInk.onSuccess.light, dark: YankInk.onSuccess.dark)
 }
 
 extension NSColor {
@@ -113,6 +117,12 @@ extension NSColor {
     }
 
     static var yankSuccess: NSColor { yankDynamic(light: YankInk.success.light, dark: YankInk.success.dark) }
+    static var yankSuccessFill: NSColor {
+        yankDynamic(light: YankInk.successFill.light, dark: YankInk.successFill.dark)
+    }
+    static var yankOnSuccess: NSColor {
+        yankDynamic(light: YankInk.onSuccess.light, dark: YankInk.onSuccess.dark)
+    }
     static var yankTextTertiary: NSColor {
         yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
     }

@@ -397,10 +397,10 @@ struct HistoryView: View {
     private var copiedFlash: some View {
         Label("Copied", systemImage: "checkmark.circle.fill")
             .font(.yank(.caption, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Color.yankOnSuccess)
             .padding(.horizontal, Space.md)
             .padding(.vertical, Space.xs)
-            .background(Color.yankSuccess.opacity(0.9), in: Capsule())
+            .background(Color.yankSuccessFill, in: Capsule())
     }
 
     private func selectionMark(_ id: UUID) -> some View {

@@ -76,6 +76,9 @@ extension Color {
     /// with the Mac so the oversize marker carries the same warm brand intent on iOS.
     static let yankOversize = yankDynamic(light: YankInk.oversize.light, dark: YankInk.oversize.dark)
     static let yankSuccess = yankDynamic(light: YankInk.success.light, dark: YankInk.success.dark)
+    /// Matched success-badge pair for small text and glyphs on a success fill.
+    static let yankSuccessFill = yankDynamic(light: YankInk.successFill.light, dark: YankInk.successFill.dark)
+    static let yankOnSuccess = yankDynamic(light: YankInk.onSuccess.light, dark: YankInk.onSuccess.dark)
 }
 
 // MARK: - Motion

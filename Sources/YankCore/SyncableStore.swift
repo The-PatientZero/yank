@@ -8,7 +8,8 @@ public protocol SyncableStore: AnyObject {
     /// Apply canonical sync state in memory.
     func applyReconciled(_ canonical: [ClipboardItem])
     /// Apply canonical sync state and make the resulting snapshot durable before returning.
-    func applyReconciledDurably(_ canonical: [ClipboardItem])
+    /// A failure must leave the caller's remote checkpoint unchanged so the state can be retried.
+    func applyReconciledDurably(_ canonical: [ClipboardItem]) throws
     /// Resolve a validated blob reference to a local file URL, if present.
     func blobURL(for reference: SyncBlobReference) -> URL?
     /// Persist blob bytes for a validated reference.
