@@ -8,6 +8,26 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-26
+
+### Added
+
+- Added explicit automatic or manual-only foreground clipboard choices on iPhone and iPad.
+- Added a cancellable Paste Sequence workflow with an accessible command surface.
+
+### Changed
+
+- Kept iOS keyboard history bounded, read-only, and generated away from the main UI path.
+- Made clipboard and CloudKit persistence checkpoints transactional and retry-safe.
+
+### Fixed
+
+- Prevented stale async search, paste, sync, and lifecycle completions from mutating newer state.
+- Preserved rich/plain capture identity and suppressed Yank-authored clipboard generations across relaunches.
+- Bounded macOS pasteboard materialization and moved it off the main actor.
+- Made CloudKit recovery commands return reliable process exit status.
+- Corrected image preview accessibility labels and iOS setup copy.
+
 ## [1.0.2] - 2026-07-12
 
 ### Fixed
