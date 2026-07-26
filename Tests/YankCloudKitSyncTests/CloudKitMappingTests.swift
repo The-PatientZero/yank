@@ -54,7 +54,7 @@ import Testing
         #expect(ClipboardCloudMapping.item(from: record)?.isDeleted == true)
     }
 
-    @Test func itemsNeedingPushUsesPersistedWatermark() {
+    @Test func itemsNeedingPushRequiresAnExactPerRecordReceipt() {
         let old = ClipboardItem(
             id: UUID(),
             type: .text,
@@ -72,14 +72,21 @@ import Testing
 
         let dirty = CloudKitSyncService.itemsNeedingPush(
             [old, fresh],
-            since: Date(timeIntervalSinceReferenceDate: 150)
+            receipts: [old.id: old.modifiedAt]
         )
 
         #expect(dirty == [fresh])
-        #expect(CloudKitSyncService.itemsNeedingPush([old, fresh], since: nil) == [old, fresh])
+        #expect(CloudKitSyncService.itemsNeedingPush([old, fresh], receipts: nil) == [old, fresh])
+        #expect(CloudKitSyncService.itemsNeedingPush(
+            [old, fresh],
+            receipts: [
+                old.id: old.modifiedAt.addingTimeInterval(1),
+                fresh.id: fresh.modifiedAt
+            ]
+        ) == [old])
     }
 
-    @Test func pushWatermarkOnlyAdvancesOverMappedRecords() {
+    @Test func preparedRecordsKeepTheSourceIdentityAndVersion() {
         let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
         let valid = ClipboardItem(
             id: clipID(1),
@@ -99,9 +106,64 @@ import Testing
         let prepared = CloudKitSyncService.preparePushRecords([valid, invalidNewer], in: zoneID) { _ in nil }
 
         #expect(prepared.records.count == 1)
+        #expect(prepared.records.first?.itemID == valid.id)
         #expect(prepared.records.first?.record.recordID.recordName == valid.id.uuidString)
+        #expect(prepared.records.first?.modifiedAt == valid.modifiedAt)
         #expect(prepared.skippedItemIDs == [invalidNewer.id])
-        #expect(CloudKitSyncService.pushedWatermark(afterPushing: prepared.records) == valid.modifiedAt)
+    }
+
+    @Test func pushReceiptCodecRoundTripsRecordVersionsStrictly() throws {
+        let receipts = [
+            clipID(10): Date(timeIntervalSinceReferenceDate: 10),
+            clipID(11): Date(timeIntervalSinceReferenceDate: 11)
+        ]
+
+        let decoded = try CloudKitPushReceiptCodec.decode(
+            CloudKitPushReceiptCodec.encode(receipts)
+        )
+
+        #expect(decoded == receipts)
+    }
+
+    @Test func pushReceiptCodecRejectsUnknownVersionInvalidIdentityAndOversizedPayload() {
+        #expect(throws: CloudKitPushReceiptCodec.Error.unsupportedVersion(2)) {
+            try CloudKitPushReceiptCodec.decode(
+                Data(#"{"version":2,"receipts":{}}"#.utf8)
+            )
+        }
+        #expect(throws: CloudKitPushReceiptCodec.Error.invalidRecordID("not-a-uuid")) {
+            try CloudKitPushReceiptCodec.decode(
+                Data(#"{"version":1,"receipts":{"not-a-uuid":1}}"#.utf8)
+            )
+        }
+        #expect(
+            throws: CloudKitPushReceiptCodec.Error.payloadTooLarge(
+                CloudKitPushReceiptCodec.maximumPayloadBytes + 1
+            )
+        ) {
+            try CloudKitPushReceiptCodec.decode(
+                Data(
+                    repeating: 0,
+                    count: CloudKitPushReceiptCodec.maximumPayloadBytes + 1
+                )
+            )
+        }
+    }
+
+    @Test func pushSkipsFileBackedItemsWhenTheLocalBlobIsMissing() {
+        let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+        let item = ClipboardItem(
+            id: UUID(),
+            type: .text,
+            timestamp: Date(timeIntervalSinceReferenceDate: 100),
+            textFilename: safeTextFilename,
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 200)
+        )
+
+        let prepared = CloudKitSyncService.preparePushRecords([item], in: zoneID) { _ in nil }
+
+        #expect(prepared.records.isEmpty)
+        #expect(prepared.skippedItemIDs == [item.id])
     }
 
     @Test func rejectsPathBearingBlobFilenamesFromCloudKit() {
