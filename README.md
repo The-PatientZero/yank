@@ -10,25 +10,24 @@
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT">
 </p>
 
-> **Status: 1.0.0 is the first public macOS release.** Yank started as a clean‑slate
-> evolution of [Buffer](https://github.com/samirpatil2000/Buffer) (MIT, by Samir Patil).
-> The macOS app ships as a signed, notarized release. The iOS app + keyboard/share
-> extensions and private CloudKit sync are **built** and reach the App Store on their
-> own review track.
+> **Status: Yank is publicly available for macOS, iPhone, and iPad.** Yank started as a
+> clean-slate evolution of [Buffer](https://github.com/samirpatil2000/Buffer) (MIT, by
+> Samir Patil). The Mac ships as a signed, notarized app; the iOS app and its read-only
+> keyboard and Share extensions ship through the App Store.
 
 ---
 
 ## Why Yank?
 
-- **Fast & lightweight** — small footprint, minimal RAM/CPU, zero third‑party dependencies.
+- **Fast & lightweight** — small footprint, minimal RAM/CPU, zero third-party runtime libraries.
 - **Private by design** — your history stays yours. The local clipboard is on‑device; optional
   **cross‑device sync uses your own iCloud** (CloudKit private database), never our servers, and
   known password managers are excluded by default while secret‑marked pasteboard copies are skipped.
 - **Free & open source** — everything is free, including cross‑device sync (Mac ↔ iPhone).
   No purchase, no subscription, no account to create. If Yank saves you time, consider
   [sponsoring development](https://github.com/sponsors/The-PatientZero).
-- **Text + Images + OCR** — captures anything; extracts searchable text from images/screenshots
-  on‑device with Apple Vision.
+- **Text + Images + OCR** — captures plain text, links, rich text, images, and screenshots;
+  extracts searchable text from images on-device with Apple Vision.
 - **Purposeful, on-device intelligence** — optional Apple Intelligence (macOS 26+): tag
   suggestions, Smart Paste rewrites, and natural-language search. On-device via Foundation Models,
   opt-in, no cloud, no account — intelligence stays purposeful, never a gimmick.
@@ -66,7 +65,11 @@ Grab the notarized DMG from
 brew install --cask The-PatientZero/tap/yank
 ```
 
-The iPhone app ships separately on the App Store (manual submission, on its own review track).
+The iPhone and iPad app is available on the
+[App Store](https://apps.apple.com/app/id6791990020). On iOS, you choose whether Yank may
+check the latest eligible plain-text clipboard value while the app is in the foreground.
+Share and Save Clipboard remain explicit capture paths in either mode. The keyboard only
+reads a bounded view of clips already saved by the app; it never captures the current clipboard.
 See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 ## Building from Source
@@ -74,17 +77,21 @@ See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 ```bash
 git clone https://github.com/The-PatientZero/yank.git
 cd yank
-brew install xcodegen      # the Xcode project is generated from project.yml
-xcodegen generate
+XCODEGEN_BIN="$(scripts/install_xcodegen.sh)"
+"$XCODEGEN_BIN" generate   # project.yml is the source of truth
 open Yank.xcodeproj
 # Build & run: ⌘R   (set your own Development Team in Signing & Capabilities)
 ```
 
 **Requirements:** macOS 14+ to run, Xcode 26+ to build (the UI adopts Liquid Glass with
-runtime fallbacks below macOS 26), Swift 6, and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-(`brew install xcodegen`); the iOS app targets iOS 17+. An unsigned source build runs **local‑only**:
+runtime fallbacks below macOS 26), and Swift 6. The repository installer builds and
+checksum-verifies the pinned [XcodeGen](https://github.com/yonaskolb/XcodeGen) release; the iOS app
+targets iOS 17+. An unsigned source build runs **local-only**:
 CloudKit sync needs the iCloud container entitlement, which only the signed builds (notarized DMG on
 Mac, App Store on iPhone) carry.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the complete unsigned package, generated-project,
+macOS, iOS simulator, privacy-manifest, and public-link gate matrix.
 
 ## Acknowledgments
 

@@ -1,15 +1,21 @@
 # Yank For iOS
 
 The iOS app is built on shared `YankCore` logic for the clipboard model, retention policy, capture
-rules, and CloudKit mapping. Capture on iOS is manual by design: the Mac captures continuously,
-while iOS adds clips through the app, keyboard extension, share extension, and App Intent.
+rules, and CloudKit mapping. The Mac captures continuously. On iOS, the user chooses automatic
+foreground capture or explicit-only capture. Automatic mode checks the latest eligible plain-text
+clipboard generation when the app launches or returns to the foreground, subject to the system's
+Paste from Other Apps permission; undecided and explicit-only modes do not inspect the pasteboard.
+The Share extension and Save Clipboard App Intent capture only content the user explicitly sends.
+The keyboard is read-only: it inserts a bounded projection of clips already saved by the host app
+and never captures the current clipboard. Concealed and transient generations are not captured.
 
 ## Build
 
 The iOS targets are generated from `project.yml` with XcodeGen. The project targets iOS 17+.
 
 ```bash
-xcodegen generate
+XCODEGEN_BIN="$(scripts/install_xcodegen.sh)"
+"$XCODEGEN_BIN" generate
 xcodebuild \
   -project Yank.xcodeproj \
   -scheme YankiOS \
@@ -48,7 +54,8 @@ The iOS targets are declared in `project.yml`; `Yank.xcodeproj` is generated and
 | `YankShare` | App extension | `com.thepatientzero.yank.share` | Lean core, no CloudKit | Share controller | `iOS/Yank-iOS-Extension.entitlements` |
 
 The keyboard reads a bounded App Group projection, the share extension writes bounded handoff
-entries, and the container app alone owns canonical history and CloudKit sync.
+entries, and the container app alone owns canonical history, foreground clipboard authorization,
+and CloudKit sync.
 
 ## External Gates
 

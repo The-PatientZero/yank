@@ -1,6 +1,6 @@
 # Yank Privacy Policy
 
-Effective: July 16, 2026
+Effective: July 26, 2026
 
 Yank is a private-by-design clipboard manager for macOS, iPhone, and iPad. It does not
 require an account, contain advertising, or include analytics or tracking SDKs. The Yank
@@ -18,6 +18,14 @@ Yank stores clipboard history on the device by default:
 - On macOS, history is stored in `~/Library/Application Support/Yank/`.
 - On iPhone and iPad, the app and its extensions use Yank's private App Group container.
 - Rich pasteboard archives are local to the Mac that captured them and are not synced.
+
+On iPhone and iPad, you choose between automatic foreground capture and explicit-only
+capture. Automatic mode checks the latest eligible plain-text clipboard generation when the
+app launches or returns to the foreground, subject to the system's Paste from Other Apps
+permission. Undecided and explicit-only modes do not inspect the clipboard. Yank does not
+continuously read the clipboard while suspended. The share extension and Save Clipboard
+action capture only the item you explicitly provide. The keyboard does not capture clipboard
+content.
 
 Retention limits and automatic deletion are controlled in Settings. Pinned, bookmarked, or
 tagged clips are retained until you remove their protection or delete them.
@@ -70,6 +78,7 @@ receives user content.
 You can:
 
 - pause clipboard capture or exclude selected Mac apps;
+- choose automatic foreground capture or explicit-only capture on iPhone and iPad;
 - keep iCloud sync, Spotlight indexing, and background tag suggestions off;
 - delete individual clips or clear history from Settings;
 - disable the keyboard or share extension in system settings; and
