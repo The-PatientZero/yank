@@ -1,24 +1,502 @@
 import SwiftUI
 import CloudKit
+import UIKit
+
+/// Coordinates the two foreground-only freshness jobs that iOS permits: importing the
+/// current plain-text pasteboard generation and pulling CloudKit. In-process generation
+/// tracking and the persisted installation marker both prevent Yank's own writes from
+/// being captured again.
+enum IOSForegroundCaptureOutcome: Equatable {
+    case durable
+    case terminalPolicyRejection
+    case retryableFailure
+}
+
+@MainActor
+final class IOSForegroundRefreshCoordinator {
+    private struct InFlightCapture {
+        let id: UUID
+        let pasteboardChangeCount: Int
+        let task: Task<IOSForegroundCaptureOutcome, Never>
+    }
+
+    static let shared = IOSForegroundRefreshCoordinator()
+
+    private var lastHandledPasteboardChangeCount: Int?
+    private var latestObservedPasteboardChangeCount: Int?
+    private var inFlightCapture: InFlightCapture?
+
+    func markPasteboardChangeHandled(_ changeCount: Int) {
+        latestObservedPasteboardChangeCount = changeCount
+        lastHandledPasteboardChangeCount = changeCount
+    }
+
+    @discardableResult
+    func refresh(
+        pasteboardChangeCount: Int,
+        pasteboardTypes: [String],
+        isAutomaticCaptureAuthorized: @escaping @MainActor () -> Bool,
+        currentPasteboardChangeCount: (@MainActor () -> Int)? = nil,
+        isPasteboardOwnedByThisInstallation: @escaping @MainActor () -> Bool = { false },
+        readText: @escaping @MainActor () -> String?,
+        capture: @escaping @MainActor (String, Int, Bool) async -> IOSForegroundCaptureOutcome,
+        refreshSync: @MainActor () async -> Void
+    ) async -> Bool {
+        let didCapture = await processPasteboard(
+            pasteboardChangeCount: pasteboardChangeCount,
+            pasteboardTypes: pasteboardTypes,
+            isAutomaticCaptureAuthorized: isAutomaticCaptureAuthorized,
+            currentPasteboardChangeCount: currentPasteboardChangeCount,
+            isPasteboardOwnedByThisInstallation: isPasteboardOwnedByThisInstallation,
+            readText: readText,
+            capture: capture
+        )
+        await refreshSync()
+        return didCapture
+    }
+
+    @discardableResult
+    func processPasteboard(
+        pasteboardChangeCount: Int,
+        pasteboardTypes: [String],
+        isAutomaticCaptureAuthorized: @escaping @MainActor () -> Bool,
+        currentPasteboardChangeCount: (@MainActor () -> Int)? = nil,
+        isPasteboardOwnedByThisInstallation: @escaping @MainActor () -> Bool = { false },
+        readText: @escaping @MainActor () -> String?,
+        capture: @escaping @MainActor (String, Int, Bool) async -> IOSForegroundCaptureOutcome
+    ) async -> Bool {
+        guard isAutomaticCaptureAuthorized() else { return false }
+        latestObservedPasteboardChangeCount = pasteboardChangeCount
+        let currentPasteboardChangeCount = currentPasteboardChangeCount ?? {
+            pasteboardChangeCount
+        }
+        guard pasteboardChangeCount != lastHandledPasteboardChangeCount else {
+            return false
+        }
+
+        while let existing = inFlightCapture {
+            if existing.pasteboardChangeCount == pasteboardChangeCount {
+                let outcome = await existing.task.value
+                clearInFlightCapture(existing)
+                guard isAutomaticCaptureAuthorized() else { return false }
+                return outcome == .durable
+            }
+            _ = await existing.task.value
+            clearInFlightCapture(existing)
+            guard isAutomaticCaptureAuthorized() else { return false }
+        }
+
+        guard isAutomaticCaptureAuthorized() else { return false }
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return IOSForegroundCaptureOutcome.retryableFailure }
+            return await self.resolve(
+                pasteboardChangeCount: pasteboardChangeCount,
+                pasteboardTypes: pasteboardTypes,
+                isAutomaticCaptureAuthorized: isAutomaticCaptureAuthorized,
+                currentPasteboardChangeCount: currentPasteboardChangeCount,
+                isPasteboardOwnedByThisInstallation: isPasteboardOwnedByThisInstallation,
+                readText: readText,
+                capture: capture
+            )
+        }
+        let inFlight = InFlightCapture(
+            id: id,
+            pasteboardChangeCount: pasteboardChangeCount,
+            task: task
+        )
+        inFlightCapture = inFlight
+        let outcome = await inFlight.task.value
+        clearInFlightCapture(inFlight)
+
+        return outcome == .durable
+    }
+
+    private func clearInFlightCapture(_ capture: InFlightCapture) {
+        guard inFlightCapture?.id == capture.id else { return }
+        inFlightCapture = nil
+    }
+
+    private func resolve(
+        pasteboardChangeCount: Int,
+        pasteboardTypes: [String],
+        isAutomaticCaptureAuthorized: @MainActor () -> Bool,
+        currentPasteboardChangeCount: @MainActor () -> Int,
+        isPasteboardOwnedByThisInstallation: @MainActor () -> Bool,
+        readText: @MainActor () -> String?,
+        capture: @MainActor (String, Int, Bool) async -> IOSForegroundCaptureOutcome
+    ) async -> IOSForegroundCaptureOutcome {
+        guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+        if isPasteboardOwnedByThisInstallation() {
+            guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            updateLatestObserved(using: currentPasteboardChangeCount)
+            guard latestObservedPasteboardChangeCount == pasteboardChangeCount else {
+                return .retryableFailure
+            }
+            markCurrentGenerationHandled(pasteboardChangeCount)
+            return .terminalPolicyRejection
+        }
+
+        let captureDecision = CapturePolicy(excludedBundleIDs: []).decide(
+            frontmostBundleID: nil,
+            pasteboardTypes: pasteboardTypes
+        )
+        switch captureDecision {
+        case .skipConcealed, .skipExcludedApp:
+            guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            updateLatestObserved(using: currentPasteboardChangeCount)
+            markCurrentGenerationHandled(pasteboardChangeCount)
+            return .terminalPolicyRejection
+        case .capture:
+            guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            let hasRichContent = PasteboardArchive.isRich(utis: pasteboardTypes)
+            guard let text = readText() else { return .retryableFailure }
+            guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            updateLatestObserved(using: currentPasteboardChangeCount)
+            guard latestObservedPasteboardChangeCount == pasteboardChangeCount else {
+                return .retryableFailure
+            }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                markCurrentGenerationHandled(pasteboardChangeCount)
+                return .terminalPolicyRejection
+            }
+
+            guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            let outcome = await capture(text, pasteboardChangeCount, hasRichContent)
+            guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            updateLatestObserved(using: currentPasteboardChangeCount)
+            if outcome != .retryableFailure {
+                markCurrentGenerationHandled(pasteboardChangeCount)
+            }
+            return outcome
+        }
+    }
+
+    private func updateLatestObserved(
+        using currentPasteboardChangeCount: @MainActor () -> Int
+    ) {
+        latestObservedPasteboardChangeCount = currentPasteboardChangeCount()
+    }
+
+    private func markCurrentGenerationHandled(_ changeCount: Int) {
+        guard latestObservedPasteboardChangeCount == changeCount else { return }
+        lastHandledPasteboardChangeCount = changeCount
+    }
+}
+
+/// Runs foreground work without touching the pasteboard unless the user selected
+/// automatic capture. Explicit extension handoffs and CloudKit refresh in every mode.
+@MainActor
+enum IOSForegroundRefreshPipeline {
+    static func refresh(
+        currentMode: @MainActor () -> IOSForegroundCaptureMode,
+        drainExplicitCaptures: @MainActor () async -> Set<String>,
+        recordSuccessfulCaptureMethods: @MainActor (Set<String>) -> Void,
+        captureAutomatically: @MainActor () async -> Void,
+        refreshSync: @MainActor () async -> Void
+    ) async {
+        let sources = await drainExplicitCaptures()
+        recordSuccessfulCaptureMethods(sources)
+        // `drainExplicitCaptures` can suspend. Re-read the live choice immediately
+        // before invoking the lazy pasteboard boundary so a queued automatic refresh
+        // cannot inspect after the user switches to explicit-only.
+        if currentMode() == .automatic {
+            await captureAutomatically()
+        }
+        await refreshSync()
+    }
+
+    static func refreshAfterModeChange(
+        from oldMode: IOSForegroundCaptureMode,
+        to newMode: IOSForegroundCaptureMode,
+        refresh: @MainActor () async -> Void
+    ) async {
+        guard oldMode != .automatic, newMode == .automatic else { return }
+        await refresh()
+    }
+}
+
+enum IOSForegroundCaptureDisclosurePresentation: Equatable {
+    case hidden
+    case prompt
+}
+
+struct IOSForegroundCaptureDisclosureSession: Equatable {
+    private(set) var deferredForCurrentSession = false
+
+    func presentation(
+        for mode: IOSForegroundCaptureMode
+    ) -> IOSForegroundCaptureDisclosurePresentation {
+        mode == .undecided && !deferredForCurrentSession ? .prompt : .hidden
+    }
+
+    mutating func deferForCurrentSession() {
+        deferredForCurrentSession = true
+    }
+}
+
+/// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
+/// A SwiftUI `App` is a value, so keeping the task here gives sync-disable a stable cancellation
+/// boundary and lets tests resume cancellation-ignoring account lookups deterministically.
+@MainActor
+@Observable
+final class IOSCloudSyncController {
+    struct ContainerHandle {
+        let database: any CloudKitDatabase
+        let accountStatus: @MainActor () async throws -> CKAccountStatus
+    }
+
+    private enum Request {
+        case foreground(refreshExisting: Bool)
+        case start(force: Bool)
+        case remote
+    }
+
+    private enum UnavailableStatus {
+        case unavailable(SyncStatus.Reason)
+        case failed(String)
+    }
+
+    private static let containerID = "iCloud.com.thepatientzero.yank"
+
+    private let store: ClipStore
+    private let settings: IOSSettings
+    @ObservationIgnored private let makeContainer: @MainActor () -> ContainerHandle?
+    @ObservationIgnored private let makeService:
+        @MainActor (any CloudKitDatabase, ClipStore) -> CloudKitSyncService
+    @ObservationIgnored private let registerForRemoteNotifications: @MainActor () -> Void
+    @ObservationIgnored private let unregisterForRemoteNotifications: @MainActor () -> Void
+
+    @ObservationIgnored private var container: ContainerHandle?
+    @ObservationIgnored private var sync: CloudKitSyncService?
+    @ObservationIgnored private var operation: (id: UUID, task: Task<Bool, Never>)?
+    @ObservationIgnored private var lifecycleGeneration: UInt64 = 0
+
+    private(set) var iCloudSignedOut = false
+
+    init(
+        store: ClipStore,
+        settings: IOSSettings,
+        makeContainer: @escaping @MainActor () -> ContainerHandle? = IOSCloudSyncController.makeLiveContainer,
+        makeService: @escaping @MainActor (any CloudKitDatabase, ClipStore) -> CloudKitSyncService = {
+            database,
+            store in
+            CloudKitSyncService(
+                containerIdentifier: IOSCloudSyncController.containerID,
+                store: store,
+                database: database
+            )
+        },
+        registerForRemoteNotifications: @escaping @MainActor () -> Void = {
+            UIApplication.shared.registerForRemoteNotifications()
+        },
+        unregisterForRemoteNotifications: @escaping @MainActor () -> Void = {
+            UIApplication.shared.unregisterForRemoteNotifications()
+        }
+    ) {
+        self.store = store
+        self.settings = settings
+        self.makeContainer = makeContainer
+        self.makeService = makeService
+        self.registerForRemoteNotifications = registerForRemoteNotifications
+        self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
+    }
+
+    func refreshForeground() async {
+        _ = await run(.foreground(refreshExisting: true))
+    }
+
+    func start(force: Bool = false) async {
+        _ = await run(.start(force: force))
+    }
+
+    func handleRemoteChange() async -> Bool {
+        await run(.remote)
+    }
+
+    func stop() {
+        lifecycleGeneration &+= 1
+        sync?.stop()
+        operation?.task.cancel()
+        operation = nil
+        sync = nil
+        container = nil
+        unregisterForRemoteNotifications()
+        store.markSyncUnavailable(reason: .disabled)
+    }
+
+    private func run(_ request: Request) async -> Bool {
+        if let operation {
+            return await operation.task.value
+        }
+        guard settings.syncEnabled else {
+            stop()
+            return false
+        }
+
+        let generation = lifecycleGeneration
+        let operationID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            return await self.perform(request, generation: generation)
+        }
+        operation = (operationID, task)
+        let result = await task.value
+        if operation?.id == operationID {
+            operation = nil
+        }
+        return result
+    }
+
+    private func perform(_ request: Request, generation: UInt64) async -> Bool {
+        guard isActive(generation) else { return false }
+        if case .remote = request, let sync {
+            return await performRemoteChange(using: sync, generation: generation)
+        }
+
+        if container == nil {
+            container = makeContainer()
+        }
+        guard isActive(generation) else { return false }
+        guard let container else {
+            tearDownService(
+                status: .unavailable(.notProvisioned),
+                generation: generation
+            )
+            return false
+        }
+
+        do {
+            let status = try await container.accountStatus()
+            guard isActive(generation) else { return false }
+            switch status {
+            case .available:
+                iCloudSignedOut = false
+                registerForRemoteNotifications()
+            case .noAccount, .restricted, .temporarilyUnavailable:
+                iCloudSignedOut = true
+                tearDownService(
+                    status: .unavailable(.notAuthenticated),
+                    generation: generation
+                )
+                return false
+            case .couldNotDetermine:
+                iCloudSignedOut = false
+                tearDownService(
+                    status: .failed("Could not determine iCloud account status"),
+                    generation: generation
+                )
+                return false
+            @unknown default:
+                iCloudSignedOut = false
+            }
+        } catch {
+            guard isActive(generation) else { return false }
+            tearDownService(
+                status: .failed(error.localizedDescription),
+                generation: generation
+            )
+            return false
+        }
+
+        guard isActive(generation) else { return false }
+        switch request {
+        case .foreground(let refreshExisting):
+            if refreshExisting, let sync {
+                return await performRemoteChange(using: sync, generation: generation)
+            }
+            return await performStart(force: false, container: container, generation: generation)
+        case .start(let force):
+            return await performStart(force: force, container: container, generation: generation)
+        case .remote:
+            guard await performStart(force: false, container: container, generation: generation),
+                  isActive(generation),
+                  let sync else { return false }
+            return await performRemoteChange(using: sync, generation: generation)
+        }
+    }
+
+    private func performStart(
+        force: Bool,
+        container: ContainerHandle,
+        generation: UInt64
+    ) async -> Bool {
+        guard isActive(generation) else { return false }
+        if sync != nil, !force { return true }
+        let service = sync ?? makeService(container.database, store)
+        guard isActive(generation) else { return false }
+        sync = service
+        let result = await service.start()
+        guard isActive(generation), sync === service else { return false }
+        if case .failed(let message) = result {
+            store.markSyncFailed(message)
+            return false
+        }
+        return true
+    }
+
+    private func performRemoteChange(
+        using service: CloudKitSyncService,
+        generation: UInt64
+    ) async -> Bool {
+        guard isActive(generation), sync === service else { return false }
+        let changed = await service.handleRemoteChange()
+        guard isActive(generation), sync === service else { return false }
+        return changed
+    }
+
+    private func isActive(_ generation: UInt64) -> Bool {
+        lifecycleGeneration == generation && settings.syncEnabled && !Task.isCancelled
+    }
+
+    private func tearDownService(
+        status: UnavailableStatus,
+        generation: UInt64
+    ) {
+        guard isActive(generation) else { return }
+        sync?.stop()
+        sync = nil
+        unregisterForRemoteNotifications()
+        switch status {
+        case .unavailable(let reason):
+            store.markSyncUnavailable(reason: reason)
+        case .failed(let message):
+            store.markSyncFailed(message)
+        }
+    }
+
+    private static func makeLiveContainer() -> ContainerHandle? {
+        guard CloudContainerProvisioning.isProvisioned(for: containerID) else { return nil }
+        let container = CKContainer(identifier: containerID)
+        return ContainerHandle(
+            database: container.privateCloudDatabase,
+            accountStatus: { try await container.accountStatus() }
+        )
+    }
+}
 
 @main
 struct YankApp: App {
-    private static let containerID = "iCloud.com.thepatientzero.yank"
-
     @UIApplicationDelegateAdaptor(YankAppDelegate.self) private var appDelegate
     @State private var store: ClipStore
     @State private var settings: IOSSettings
-    @State private var cloudContainer: CKContainer?
-    @State private var sync: CloudKitSyncService?
-    @State private var iCloudSignedOut = false
+    @State private var syncController: IOSCloudSyncController
+    @State private var foregroundCaptureDisclosureSession =
+        IOSForegroundCaptureDisclosureSession()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let appGroup = AppGroupContext.live()
-        _store = State(initialValue: ClipStore(context: appGroup))
-        _settings = State(initialValue: IOSSettings(defaults: appGroup?.defaults))
-        let syncEnabled = Self.syncEnabled(in: appGroup?.defaults)
-        _cloudContainer = State(initialValue: syncEnabled ? Self.makeCloudContainer() : nil)
+        let store = ClipStore(context: appGroup)
+        let settings = IOSSettings(defaults: appGroup?.defaults)
+        if !store.items.isEmpty {
+            settings.completeCaptureSetup()
+        }
+        _store = State(initialValue: store)
+        _settings = State(initialValue: settings)
+        _syncController = State(
+            initialValue: IOSCloudSyncController(store: store, settings: settings)
+        )
     }
 
     private var spotlightEnabled: Bool {
@@ -30,108 +508,123 @@ struct YankApp: App {
             HistoryView(
                 store: store,
                 settings: settings,
-                iCloudSignedOut: iCloudSignedOut,
-                onRetrySync: { await startSync(force: true) }
+                iCloudSignedOut: syncController.iCloudSignedOut,
+                onRetrySync: { await syncController.start(force: true) }
             )
+                .sheet(isPresented: Binding(
+                    get: {
+                        foregroundCaptureDisclosureSession.presentation(
+                            for: settings.foregroundCaptureMode
+                        ) == .prompt
+                    },
+                    set: { isPresented in
+                        if !isPresented {
+                            foregroundCaptureDisclosureSession.deferForCurrentSession()
+                        }
+                    }
+                )) {
+                    ForegroundCaptureDecisionView(
+                        onChoose: { mode in
+                            settings.setForegroundCaptureMode(mode)
+                        },
+                        onNotNow: {
+                            foregroundCaptureDisclosureSession.deferForCurrentSession()
+                        },
+                        choicesDisabled: settings.storageUnavailable
+                    )
+                }
                 .tint(settings.theme.foreground)
                 .task {
-                    appDelegate.remoteChangeHandler = { await handleRemoteChange() }
-                    await store.drainShareInbox()
+                    let syncController = syncController
+                    appDelegate.remoteChangeHandler = { [weak syncController] in
+                        await syncController?.handleRemoteChange() ?? false
+                    }
                     store.enforceRetentionAndLimit()
-                    await checkAccountAndStartSync()
+                    await refreshForeground()
                     refreshSpotlightIndex()
                 }
-                .onChange(of: scenePhase) { _, newPhase in
+                .onChange(of: scenePhase) { oldPhase, newPhase in
+                    if oldPhase == .active && newPhase != .active {
+                        appDelegate.flushHistoryWhenLeavingActive {
+                            try await store.flushPendingWritesBeforeSuspension()
+                        }
+                    }
                     if newPhase == .active {
                         Task {
-                            await store.drainShareInbox()
-                            await checkAccountAndStartSync()
+                            await refreshForeground()
                             refreshSpotlightIndex()
                         }
                     }
                 }
                 .onChange(of: settings.syncEnabled) { _, enabled in
                     if enabled {
-                        Task { await checkAccountAndStartSync() }
+                        Task { await syncController.start() }
                     } else {
-                        stopSync()
+                        syncController.stop()
+                        appDelegate.disableRemoteChanges()
+                    }
+                }
+                .onChange(of: settings.foregroundCaptureMode) { oldMode, newMode in
+                    if newMode == .undecided {
+                        foregroundCaptureDisclosureSession.deferForCurrentSession()
+                    }
+                    Task {
+                        await IOSForegroundRefreshPipeline.refreshAfterModeChange(
+                            from: oldMode,
+                            to: newMode,
+                            refresh: { await refreshForeground() }
+                        )
                     }
                 }
                 .onChange(of: store.contentRevision) {
+                    if !store.items.isEmpty && !settings.captureSetupCompleted {
+                        settings.completeCaptureSetup()
+                    }
                     if spotlightEnabled { SpotlightIndexer.schedule(store.items) }
                 }
         }
     }
 
-    private func checkAccountAndStartSync() async {
-        guard settings.syncEnabled else {
-            stopSync()
-            return
-        }
-        if cloudContainer == nil {
-            cloudContainer = Self.makeCloudContainer()
-        }
-        guard let container = cloudContainer else {
-            store.markSyncUnavailable(reason: .notProvisioned)
-            return
-        }
-        do {
-            let status = try await container.accountStatus()
-            switch status {
-            case .available:
-                iCloudSignedOut = false
-                UIApplication.shared.registerForRemoteNotifications()
-                await startSync()
-            case .noAccount, .restricted, .temporarilyUnavailable:
-                iCloudSignedOut = true
-                store.markSyncUnavailable(reason: .notAuthenticated)
-            case .couldNotDetermine:
-                iCloudSignedOut = false
-                store.markSyncFailed("Could not determine iCloud account status")
-            @unknown default:
-                iCloudSignedOut = false
-                await startSync()
-            }
-        } catch {
-            store.markSyncFailed(error.localizedDescription)
-        }
-    }
-
-    private func startSync(force: Bool = false) async {
-        guard settings.syncEnabled else {
-            stopSync()
-            return
-        }
-        guard let cloudContainer else { return }
-        guard sync == nil || force else { return }
-        let service = sync ?? CloudKitSyncService(
-            containerIdentifier: Self.containerID,
-            store: store,
-            database: cloudContainer.privateCloudDatabase
+    private func refreshForeground() async {
+        await IOSForegroundRefreshPipeline.refresh(
+            currentMode: { settings.foregroundCaptureMode },
+            drainExplicitCaptures: { await store.drainShareInbox() },
+            recordSuccessfulCaptureMethods: {
+                settings.recordSuccessfulCaptureMethods(from: $0)
+            },
+            captureAutomatically: { await refreshAutomaticPasteboard() },
+            refreshSync: { await syncController.refreshForeground() }
         )
-        sync = service
-        switch await service.start() {
-        case .started:
-            break
-        case .failed(let message):
-            store.markSyncFailed(message)
-        }
     }
 
-    private func handleRemoteChange() async -> Bool {
-        guard settings.syncEnabled else { return false }
-        if sync == nil {
-            await checkAccountAndStartSync()
-        }
-        guard let sync else { return false }
-        return await sync.handleRemoteChange()
-    }
-
-    private func stopSync() {
-        sync = nil
-        cloudContainer = nil
-        UIApplication.shared.unregisterForRemoteNotifications()
-        store.markSyncUnavailable(reason: .disabled)
+    private func refreshAutomaticPasteboard() async {
+        guard settings.foregroundCaptureMode == .automatic else { return }
+        let pasteboard = UIPasteboard.general
+        let pasteboardChangeCount = pasteboard.changeCount
+        let pasteboardTypes = pasteboard.types
+        await IOSForegroundRefreshCoordinator.shared.processPasteboard(
+            pasteboardChangeCount: pasteboardChangeCount,
+            pasteboardTypes: pasteboardTypes,
+            isAutomaticCaptureAuthorized: {
+                settings.foregroundCaptureMode == .automatic
+            },
+            currentPasteboardChangeCount: { pasteboard.changeCount },
+            isPasteboardOwnedByThisInstallation: {
+                store.pasteboardHasMatchingOriginTag(
+                    bundleIdentifier: Bundle.main.bundleIdentifier,
+                    pasteboardTypes: pasteboardTypes,
+                    readData: { pasteboard.data(forPasteboardType: $0) }
+                )
+            },
+            readText: { pasteboard.string },
+            capture: { text, generation, hasRichContent in
+                await store.captureForegroundText(
+                    text,
+                    pasteboardGeneration: generation,
+                    hasRichContent: hasRichContent
+                )
+            }
+        )
     }
 
     private func refreshSpotlightIndex() {
@@ -144,18 +637,4 @@ struct YankApp: App {
         }
     }
 
-    private static func makeCloudContainer() -> CKContainer? {
-        guard syncEnabledFromDefaults() else { return nil }
-        guard CloudContainerProvisioning.isProvisioned(for: containerID) else { return nil }
-        return CKContainer(identifier: containerID)
-    }
-
-    private static func syncEnabledFromDefaults() -> Bool {
-        syncEnabled(in: AppGroupContext.live()?.defaults)
-    }
-
-    private static func syncEnabled(in defaults: UserDefaults?) -> Bool {
-        guard let defaults else { return false }
-        return defaults.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
-    }
 }

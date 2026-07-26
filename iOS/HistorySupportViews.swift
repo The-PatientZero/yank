@@ -23,10 +23,12 @@ extension View {
     }
 }
 
-struct OnboardingCaptureRow: View {
+struct CaptureSetupRow: View {
     let systemImage: String
     let title: String
     let description: String
+    let isConfirmed: Bool
+    let onToggleConfirmation: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: Space.lg) {
@@ -45,10 +47,23 @@ struct OnboardingCaptureRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
+                Button(action: onToggleConfirmation) {
+                    Label(
+                        isConfirmed ? "Confirmed" : "Mark as Set Up",
+                        systemImage: isConfirmed ? "checkmark.circle.fill" : "circle"
+                    )
+                    .font(.yank(.caption, weight: .semibold))
+                    .foregroundStyle(isConfirmed ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    .frame(minHeight: ControlTarget.touch, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, Space.xxs)
+                .accessibilityHint(isConfirmed ? "Marks this method as not confirmed" : "Marks this method as confirmed")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .multilineTextAlignment(.leading)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }
