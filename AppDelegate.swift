@@ -1,6 +1,7 @@
 import Cocoa
 import SwiftUI
 import Observation
+import Darwin
 
 @MainActor
 @Observable
@@ -8,10 +9,58 @@ final class AppStatus {
     var hotkeyRegistrationFailed = false
 }
 
+struct CloudKitBackfillCommandOutcome: Equatable {
+    let marker: String
+    let exitStatus: Int32
+
+    static func prerequisiteFailure(_ reason: String) -> Self {
+        failure(reason: reason)
+    }
+
+    static func completed(dryRun: Bool, result: CloudKitBackfillResult) -> Self {
+        let fields =
+            "dryRun=\(dryRun) "
+            + "local=\(result.localRecordCount) "
+            + "presentBefore=\(result.presentRecordCountBefore) "
+            + "missingBefore=\(result.missingRecordCountBefore) "
+            + "uploaded=\(result.uploadedRecordCount) "
+            + "presentAfter=\(result.presentRecordCountAfter) "
+            + "remainingMissing=\(result.remainingMissingRecordCount)"
+        if dryRun || result.converged {
+            return Self(
+                marker: "YANK_CLOUD_BACKFILL_RESULT status=success \(fields)",
+                exitStatus: EXIT_SUCCESS
+            )
+        }
+        return Self(
+            marker: "YANK_CLOUD_BACKFILL_RESULT status=failure \(fields)",
+            exitStatus: EXIT_FAILURE
+        )
+    }
+
+    static func failed(_ error: any Error) -> Self {
+        failure(reason: error.localizedDescription)
+    }
+
+    private static func failure(reason: String) -> Self {
+        let normalized = reason
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: "-")
+            .prefix(240)
+        return Self(
+            marker: "YANK_CLOUD_BACKFILL_FAILURE reason=\(normalized)",
+            exitStatus: EXIT_FAILURE
+        )
+    }
+}
+
 /// The composition root. It owns the shared clipboard state, accessibility permission,
 /// app status, menu-bar hub, and app-level lifecycle callbacks.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let backfillArgument = "--cloudkit-backfill"
+    private static let backfillDryRunArgument = "--cloudkit-backfill-dry-run"
+
     let settings = SettingsManager.shared
     let axPermission = AccessibilityPermission()
     let appStatus = AppStatus()
@@ -22,6 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var welcomeWindowController: WelcomeWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if startCloudKitBackfillCommandIfRequested() {
+            return
+        }
+
         NSApp.setActivationPolicy(.accessory)
 
         let hub = HubController(footer: HubAppFooter(
@@ -86,6 +139,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, manager: settings)
         controller.showWindow(nil)
         welcomeWindowController = controller
+    }
+
+    // MARK: - One-time CloudKit recovery
+
+    private func startCloudKitBackfillCommandIfRequested() -> Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        let dryRun = arguments.contains(Self.backfillDryRunArgument)
+        guard dryRun || arguments.contains(Self.backfillArgument) else { return false }
+
+        NSApp.setActivationPolicy(.prohibited)
+        Task { @MainActor in
+            guard settings.syncEnabled else {
+                finishBackfillCommand(.prerequisiteFailure("sync-disabled"))
+            }
+            guard CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID) else {
+                finishBackfillCommand(.prerequisiteFailure("container-not-provisioned"))
+            }
+
+            do {
+                let sync = CloudKitSyncService(
+                    containerIdentifier: ClipboardController.cloudContainerID,
+                    store: clipboardStore
+                )
+                let result = try await sync.backfillMissingLocalRecords(dryRun: dryRun)
+                finishBackfillCommand(.completed(dryRun: dryRun, result: result))
+            } catch {
+                finishBackfillCommand(.failed(error))
+            }
+        }
+        return true
+    }
+
+    private func finishBackfillCommand(_ outcome: CloudKitBackfillCommandOutcome) -> Never {
+        Self.writeBackfillOutput(outcome.marker)
+        clipboardStore.flushPendingWrites()
+        exit(outcome.exitStatus)
+    }
+
+    private static func writeBackfillOutput(_ output: String) {
+        guard let data = "\(output)\n".data(using: .utf8) else { return }
+        FileHandle.standardOutput.write(data)
+        try? FileHandle.standardOutput.synchronize()
     }
 
     // MARK: - App-global footer actions (wired into the hub footer)
