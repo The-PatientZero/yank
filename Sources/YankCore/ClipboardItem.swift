@@ -274,6 +274,19 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         return parts.joined(separator: ", ")
     }
 
+    /// Bounded spoken content for full-size and peek image previews. OCR is the most useful
+    /// description; the capture source is a safe fallback when OCR is unavailable.
+    var imageAccessibilityLabel: String {
+        let limit = 160
+        let candidate = [ocrText, sourceApp]
+            .compactMap { $0 }
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .first { !$0.isEmpty }
+        guard let candidate else { return "Image clip" }
+        guard candidate.count > limit else { return candidate }
+        return String(candidate.prefix(limit - 1)) + "…"
+    }
+
     /// Section label for date grouping: "Today", "Yesterday", or an abbreviated date.
     public func dayGroupLabel(asOf now: Date, calendar: Calendar = .current) -> String {
         if calendar.isDate(timestamp, inSameDayAs: now) { return "Today" }

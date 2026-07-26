@@ -42,6 +42,7 @@ struct ClipPeekView: View {
                     .resizable().scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: metrics.imageMaxHeight)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
+                    .accessibilityLabel(item.imageAccessibilityLabel)
             } else {
                 ProgressView().frame(maxWidth: .infinity, minHeight: metrics.imagePlaceholderMinHeight)
             }

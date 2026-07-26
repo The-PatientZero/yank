@@ -100,7 +100,7 @@ struct ClipDetailView: View {
         case .availableLocally:
             "Formatting is preserved when pasted from this device."
         case .unavailableOnThisDevice:
-            "This was a formatted copy on a Mac. Plain content is available here."
+            "This clip included formatting when captured. Plain content is available here."
         }
     }
 
@@ -140,6 +140,7 @@ struct ClipDetailView: View {
                     .scaledToFit()
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                    .accessibilityLabel(current.imageAccessibilityLabel)
             } else {
                 imagePlaceholder
             }

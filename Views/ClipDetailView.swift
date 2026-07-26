@@ -276,7 +276,7 @@ struct ClipDetailView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity)
-                        .accessibilityLabel(imageAccessibilityLabel(for: item))
+                        .accessibilityLabel(item.imageAccessibilityLabel)
                 } else {
                     imagePlaceholder
                 }
@@ -325,7 +325,10 @@ struct ClipDetailView: View {
                 .background(Color.yankRaised.opacity(0.6), in: RoundedRectangle(cornerRadius: Radius.sm))
                 .accessibilityElement(children: .combine)
         case .unavailableOnThisDevice:
-            Label("This was a formatted copy on another Mac. Plain content is available here.", systemImage: "wand.and.stars")
+            Label(
+                "This clip included formatting when captured. Plain content is available here.",
+                systemImage: "wand.and.stars"
+            )
                 .font(.system(size: TypeScale.caption))
                 .foregroundColor(.secondary)
                 .padding(.horizontal, Space.md)
@@ -333,16 +336,6 @@ struct ClipDetailView: View {
                 .background(Color.yankRaised.opacity(0.6), in: RoundedRectangle(cornerRadius: Radius.sm))
                 .accessibilityElement(children: .combine)
         }
-    }
-
-    private func imageAccessibilityLabel(for item: ClipboardItem) -> String {
-        if let ocr = item.ocrText, !ocr.isEmpty {
-            return ocr
-        }
-        if let filename = item.imageFilename {
-            return filename
-        }
-        return "Image clip"
     }
 
     @ViewBuilder
