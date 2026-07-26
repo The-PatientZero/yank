@@ -76,4 +76,5 @@ import Foundation
         #expect(ClipEnrichmentPolicy.shouldGenerateTitle(textCount: ClipEnrichmentPolicy.titleMinLength - 1) == false)
         #expect(ClipEnrichmentPolicy.shouldGenerateTitle(textCount: ClipEnrichmentPolicy.titleMinLength) == true)
     }
+
 }
