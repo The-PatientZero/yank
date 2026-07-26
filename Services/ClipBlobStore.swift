@@ -56,6 +56,145 @@ private enum ClipboardStoreFileSecurity {
     }
 }
 
+enum ClipboardCapturePrimaryBlob: Equatable, Sendable {
+    case text(String)
+    case image(Data)
+
+    var kind: SyncBlobKind {
+        switch self {
+        case .text: .text
+        case .image: .image
+        }
+    }
+}
+
+struct PersistedClipboardCaptureBlobs: Sendable {
+    let primaryKind: SyncBlobKind?
+    let primaryFilename: String?
+    let richFilename: String?
+
+    var references: [ClipboardBlobReference] {
+        var result: [ClipboardBlobReference] = []
+        if let primaryKind, let primaryFilename {
+            let referenceKind: ClipboardBlobReference.Kind
+            switch primaryKind {
+            case .image:
+                referenceKind = .image
+            case .text:
+                referenceKind = .text
+            case .rich:
+                assertionFailure("A rich archive cannot be a primary capture blob")
+                referenceKind = .rich
+            }
+            result.append(ClipboardBlobReference(
+                kind: referenceKind,
+                filename: primaryFilename
+            ))
+        }
+        if let richFilename {
+            result.append(ClipboardBlobReference(kind: .rich, filename: richFilename))
+        }
+        return result
+    }
+}
+
+enum ClipboardCaptureBlobPersistence {
+    struct Directories: Sendable {
+        let images: URL
+        let texts: URL
+        let rich: URL
+    }
+
+    nonisolated static func persist(
+        primary: ClipboardCapturePrimaryBlob?,
+        richArchive: PasteboardArchive?,
+        directories: Directories,
+        richMaximumBytes: Int = SyncBlobKind.rich.maximumBytes
+    ) -> PersistedClipboardCaptureBlobs? {
+        let primaryFilename: String?
+        if let primary {
+            let data: Data
+            switch primary {
+            case .text(let text):
+                data = Data(text.utf8)
+            case .image(let imageData):
+                data = imageData
+            }
+            guard !data.isEmpty, data.count <= primary.kind.maximumBytes else {
+                Log.store.error("Rejected oversized or empty \(String(describing: primary.kind)) capture blob")
+                return nil
+            }
+
+            let filename = UUID().uuidString + ".\(primary.kind.allowedExtension)"
+            let directory = primary.kind == .image ? directories.images : directories.texts
+            let url = directory.appendingPathComponent(filename)
+            do {
+                try ClipboardStoreFileSecurity.write(data, to: url)
+                primaryFilename = filename
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                Log.store.error("Failed to save capture blob: \(error.localizedDescription)")
+                return nil
+            }
+        } else {
+            primaryFilename = nil
+        }
+
+        var richFilename: String?
+        if let richArchive, !richArchive.isEmpty {
+            do {
+                let encoder = PropertyListEncoder()
+                encoder.outputFormat = .binary
+                let encoded = try encoder.encode(richArchive)
+                guard encoded.count <= richMaximumBytes else {
+                    Log.store.error("Rejected oversized encoded rich capture archive")
+                    return PersistedClipboardCaptureBlobs(
+                        primaryKind: primary?.kind,
+                        primaryFilename: primaryFilename,
+                        richFilename: nil
+                    )
+                }
+                let filename = UUID().uuidString + ".\(SyncBlobKind.rich.allowedExtension)"
+                let url = directories.rich.appendingPathComponent(filename)
+                do {
+                    try ClipboardStoreFileSecurity.write(encoded, to: url)
+                } catch {
+                    try? FileManager.default.removeItem(at: url)
+                    throw error
+                }
+                richFilename = filename
+            } catch {
+                Log.store.error("Failed to save rich archive: \(error.localizedDescription)")
+            }
+        }
+
+        return PersistedClipboardCaptureBlobs(
+            primaryKind: primary?.kind,
+            primaryFilename: primaryFilename,
+            richFilename: richFilename
+        )
+    }
+
+    nonisolated static func discard(
+        _ persisted: PersistedClipboardCaptureBlobs,
+        directories: Directories
+    ) {
+        let fileManager = FileManager.default
+        for reference in persisted.references {
+            let directory: URL
+            switch reference.kind {
+            case .image:
+                directory = directories.images
+            case .text:
+                directory = directories.texts
+            case .rich:
+                directory = directories.rich
+            }
+            try? fileManager.removeItem(at: directory.appendingPathComponent(reference.filename))
+        }
+    }
+}
+
 /// Owns the on-disk blob layout for `ClipboardStore`: the storage directory tree
 /// (texts / images / rich), its private-file/data-protection attributes, and the
 /// read/write/delete of blob files within it. The store delegates every filesystem
@@ -216,20 +355,6 @@ final class ClipBlobStore {
         }
     }
 
-    /// Save large text to a file and return the filename
-    func saveText(_ text: String) -> String? {
-        let filename = UUID().uuidString + ".txt"
-        let url = textsDirectory.appendingPathComponent(filename)
-
-        do {
-            try ClipboardStoreFileSecurity.write(Data(text.utf8), to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save text file: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
     /// Save large text off the main actor and return the filename. Used by clipboard
     /// capture, where a multi-MB write should never stall the menu-bar UI.
     func saveTextAsync(_ text: String) async -> String? {
@@ -243,6 +368,35 @@ final class ClipBlobStore {
             Log.store.error("Failed to save text file: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    func persistCaptureBlobs(
+        primary: ClipboardCapturePrimaryBlob?,
+        richArchive: PasteboardArchive?
+    ) async -> PersistedClipboardCaptureBlobs? {
+        let directories = ClipboardCaptureBlobPersistence.Directories(
+            images: imagesDirectory,
+            texts: textsDirectory,
+            rich: richDirectory
+        )
+        return await Task.detached(priority: .utility) {
+            ClipboardCaptureBlobPersistence.persist(
+                primary: primary,
+                richArchive: richArchive,
+                directories: directories
+            )
+        }.value
+    }
+
+    func discardCaptureBlobs(_ persisted: PersistedClipboardCaptureBlobs) async {
+        let directories = ClipboardCaptureBlobPersistence.Directories(
+            images: imagesDirectory,
+            texts: textsDirectory,
+            rich: richDirectory
+        )
+        await Task.detached(priority: .utility) {
+            ClipboardCaptureBlobPersistence.discard(persisted, directories: directories)
+        }.value
     }
 
     func writeSyncedBlob(_ data: Data, reference: SyncBlobReference) async throws {

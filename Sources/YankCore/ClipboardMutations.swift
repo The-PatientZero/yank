@@ -82,6 +82,45 @@ enum ClipboardMutations {
         return true
     }
 
+    /// Replace a duplicate's capture-owned fields while preserving its stable identity and
+    /// user/derived annotations. Unlike `moveToTop`, refreshing an already-frontmost item is
+    /// still a mutation because its capture timestamp and attribution advance.
+    @discardableResult
+    static func refreshDuplicateCapture(
+        existingID: UUID,
+        with incoming: ClipboardItem,
+        in items: inout [ClipboardItem]
+    ) -> Bool {
+        guard let index = items.firstIndex(where: { $0.id == existingID }) else { return false }
+        let existing = items.remove(at: index)
+        let refreshed = ClipboardItem(
+            id: existing.id,
+            type: incoming.type,
+            timestamp: incoming.timestamp,
+            sourceApp: incoming.sourceApp,
+            textContent: incoming.textContent,
+            textFilename: incoming.textFilename,
+            imageFilename: incoming.imageFilename,
+            richFilename: incoming.richFilename,
+            hasRichContent: incoming.hasRichContent,
+            isPinned: existing.isPinned,
+            isBookmarked: existing.isBookmarked,
+            tags: existing.tags,
+            ocrText: existing.ocrText,
+            isTruncated: incoming.isTruncated,
+            originalSizeBytes: incoming.originalSizeBytes,
+            searchIndex: incoming.searchIndex,
+            aiTags: existing.aiTags,
+            aiTitle: existing.aiTitle,
+            aiEnrichedAt: existing.aiEnrichedAt,
+            modifiedAt: incoming.modifiedAt,
+            deletedAt: incoming.deletedAt,
+            deviceOrigin: incoming.deviceOrigin
+        )
+        items.insert(refreshed, at: 0)
+        return true
+    }
+
     /// Batch pin/unpin (multi-select). Only stamps `modifiedAt` on items that actually
     /// change, so a no-op edit doesn't churn the sync clock.
     static func setPinned(_ pinned: Bool, ids: Set<UUID>, in items: inout [ClipboardItem], now: Date = Date()) {

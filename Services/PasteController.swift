@@ -1,6 +1,20 @@
 import Cocoa
 import UniformTypeIdentifiers
 
+enum PasteDispatchResult: Equatable {
+    case dispatched(pasteboardGeneration: Int)
+    case cancelled
+    case missingPayload
+    case pasteboardWriteFailed
+    case accessibilityUnavailable
+    case syntheticEventFailed
+}
+
+struct PasteboardWriteReceipt: Equatable, Sendable {
+    let pasteboardName: String
+    let generation: Int
+}
+
 /// Handles pasting content into the frontmost application.
 ///
 /// Caseless `enum` used purely as a namespace — it has only static members and must never
@@ -180,13 +194,32 @@ enum PasteController {
     }
 
     @discardableResult
-    private static func registerSuccessfulWrite(_ didWrite: Bool, to pasteboard: NSPasteboard) -> Bool {
-        guard didWrite else { return false }
+    private static func performPasteboardWrite(
+        to pasteboard: NSPasteboard,
+        _ write: () -> Bool
+    ) -> PasteboardWriteReceipt? {
+        pasteboard.clearContents()
+        guard write() else { return nil }
+        let receipt = PasteboardWriteReceipt(
+            pasteboardName: pasteboard.name.rawValue,
+            generation: pasteboard.changeCount
+        )
         NotificationCenter.default.post(
             name: .yankIgnoreNextChange,
-            object: pasteboard.changeCount
+            object: receipt
         )
-        return true
+        return receipt
+    }
+
+    @discardableResult
+    static func copyTextToClipboard(
+        _ text: String,
+        pasteboard: NSPasteboard = .general
+    ) -> PasteboardWriteReceipt? {
+        guard !text.isEmpty else { return nil }
+        return performPasteboardWrite(to: pasteboard) {
+            pasteboard.setString(text, forType: .string)
+        }
     }
 
     /// Write prepared clip content to a pasteboard. Rich clips (#11) replay every archived
@@ -196,44 +229,56 @@ enum PasteController {
         _ content: PreparedSingleContent,
         to pasteboard: NSPasteboard,
         temporaryFileCleanupDelay: TimeInterval = copyFileCleanupDelay
-    ) -> Bool {
-        pasteboard.clearContents()
-
+    ) -> PasteboardWriteReceipt? {
         if let archive = content.richArchive, !archive.isEmpty {
             let pbItem = NSPasteboardItem()
             for rep in archive.representations {
                 pbItem.setData(rep.data, forType: NSPasteboard.PasteboardType(rep.uti))
             }
-            if pasteboard.writeObjects([pbItem]) {
-                registerSuccessfulWrite(true, to: pasteboard)
+            if let receipt = performPasteboardWrite(
+                to: pasteboard,
+                { pasteboard.writeObjects([pbItem]) }
+            ) {
                 discardTempFiles(in: content.fallback)
-                return true
+                return receipt
             }
-            pasteboard.clearContents()  // write failed — fall back to the primary type
         }
 
         switch content.fallback {
         case .none:
-            return false
+            return nil
         case .text(let text):
-            return registerSuccessfulWrite(pasteboard.setString(text, forType: .string), to: pasteboard)
+            return copyTextToClipboard(text, pasteboard: pasteboard)
         case .imageFile(let fileURL, let fallbackPNGData):
-            let didWrite = pasteboard.writeObjects([fileURL as NSPasteboardWriting])
-            scheduleTempFileCleanup([fileURL], afterPasteboardWrite: didWrite, delay: temporaryFileCleanupDelay)
-            if didWrite { return registerSuccessfulWrite(true, to: pasteboard) }
-            if let fallbackPNGData {
-                return registerSuccessfulWrite(pasteboard.setData(fallbackPNGData, forType: .png), to: pasteboard)
+            if let receipt = performPasteboardWrite(
+                to: pasteboard,
+                { pasteboard.writeObjects([fileURL as NSPasteboardWriting]) }
+            ) {
+                scheduleTempFileCleanup(
+                    [fileURL],
+                    afterPasteboardWrite: true,
+                    delay: temporaryFileCleanupDelay
+                )
+                return receipt
             }
-            return false
+            removeTempFiles(for: [fileURL])
+            if let fallbackPNGData {
+                return performPasteboardWrite(to: pasteboard) {
+                    pasteboard.setData(fallbackPNGData, forType: .png)
+                }
+            }
+            return nil
         case .imageData(let pngData):
-            return registerSuccessfulWrite(pasteboard.setData(pngData, forType: .png), to: pasteboard)
+            return performPasteboardWrite(to: pasteboard) {
+                pasteboard.setData(pngData, forType: .png)
+            }
         }
     }
 
     static func copyToClipboard(_ item: ClipboardItem, store: ClipboardStore) {
         Task { @MainActor in
             let prepared = await prepareContents(of: item, store: store)
-            writePreparedContents(prepared, to: NSPasteboard.general)
+            guard writePreparedContents(prepared, to: NSPasteboard.general) != nil else { return }
             store.moveToTop(item)
         }
     }
@@ -242,12 +287,12 @@ enum PasteController {
         Task { @MainActor in
             if items.count == 1, let item = items.first {
                 let prepared = await prepareContents(of: item, store: store)
-                writePreparedContents(prepared, to: NSPasteboard.general)
+                guard writePreparedContents(prepared, to: NSPasteboard.general) != nil else { return }
                 store.moveToTop(items)
                 return
             }
             let prepared = await prepareMultipleContents(of: items, store: store)
-            writePreparedMultipleContents(prepared, to: NSPasteboard.general)
+            guard writePreparedMultipleContents(prepared, to: NSPasteboard.general) != nil else { return }
             store.moveToTop(items)
         }
     }
@@ -290,16 +335,21 @@ enum PasteController {
         _ content: PreparedMultipleContent,
         to pasteboard: NSPasteboard,
         temporaryFileCleanupDelay: TimeInterval = copyFileCleanupDelay
-    ) -> Bool {
+    ) -> PasteboardWriteReceipt? {
         var objects: [NSPasteboardWriting] = []
         if content.hasText { objects.append(content.text as NSString) }
         objects.append(contentsOf: content.imageURLs as [NSPasteboardWriting])
 
-        pasteboard.clearContents()
-        guard !objects.isEmpty else { return false }
-        let didWrite = pasteboard.writeObjects(objects)
-        scheduleTempFileCleanup(content.imageURLs, afterPasteboardWrite: didWrite, delay: temporaryFileCleanupDelay)
-        return registerSuccessfulWrite(didWrite, to: pasteboard)
+        guard !objects.isEmpty else { return nil }
+        let receipt = performPasteboardWrite(to: pasteboard) {
+            pasteboard.writeObjects(objects)
+        }
+        scheduleTempFileCleanup(
+            content.imageURLs,
+            afterPasteboardWrite: receipt != nil,
+            delay: temporaryFileCleanupDelay
+        )
+        return receipt
     }
 
     static func paste(_ item: ClipboardItem, store: ClipboardStore,
@@ -307,11 +357,11 @@ enum PasteController {
                       previousApp: NSRunningApplication? = nil) {
         Task { @MainActor in
             let prepared = await prepareContents(of: item, store: store)
-            writePreparedContents(
+            guard writePreparedContents(
                 prepared,
                 to: NSPasteboard.general,
                 temporaryFileCleanupDelay: pasteFileCleanupDelay
-            )
+            ) != nil else { return }
             store.moveToTop(item)
 
             if let axPermission, !axPermission.isTrusted {
@@ -331,19 +381,73 @@ enum PasteController {
     /// Paste a plain-text string (e.g. an image's OCR text) into the frontmost app.
     static func pasteText(_ text: String, axPermission: AccessibilityPermission? = nil,
                           previousApp: NSRunningApplication? = nil) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        registerSuccessfulWrite(pasteboard.setString(text, forType: .string), to: pasteboard)
-
+        // Preserve the existing copy-first fallback for ordinary Yank pastes: without
+        // Accessibility permission the text still lands on the clipboard for manual ⌘V.
+        // Paste Sequence preflights permission and calls the result-bearing API directly.
         if let axPermission, !axPermission.isTrusted {
+            guard copyTextToClipboard(text) != nil else { return }
             AccessibilityPermission.requestPrompt()
             showAccessibilityHUD()
             return
         }
 
-        // 0.1s focus-settle delay, identical to `paste(_:store:previousApp:)`.
-        previousApp?.activate()
-        simulatePasteWithCustomDelay(0.1)
+        Task { @MainActor in
+            let result = await pasteTextResult(
+                text,
+                isAccessibilityTrusted: true,
+                previousApp: previousApp
+            )
+            switch result {
+            case .pasteboardWriteFailed:
+                Log.paste.error("Failed to write plain text to the pasteboard")
+            case .syntheticEventFailed:
+                Log.paste.error("Failed to create synthetic paste events")
+            case .cancelled, .missingPayload, .accessibilityUnavailable, .dispatched:
+                break
+            }
+        }
+    }
+
+    /// Result-bearing plain-text dispatch used by Paste Sequence and the existing text path.
+    /// Target-app acceptance is not observable; `.dispatched` means the pasteboard write and
+    /// synthetic event creation/post both completed.
+    static func pasteTextResult(
+        _ text: String,
+        pasteboard: NSPasteboard = .general,
+        isAccessibilityTrusted: Bool,
+        previousApp: NSRunningApplication? = nil,
+        targetActivator: @escaping @MainActor (NSRunningApplication?) -> Void = { application in
+            _ = application?.activate()
+        },
+        focusSettleDelay: Duration = .milliseconds(100),
+        focusSettler: @escaping @MainActor (Duration) async throws -> Void = {
+            try await Task<Never, Never>.sleep(for: $0)
+        },
+        pasteboardWriter: @escaping @MainActor (String, NSPasteboard) -> Bool = {
+            $1.setString($0, forType: .string)
+        },
+        eventDispatcher: @escaping @MainActor () -> Bool = { simulatePaste() }
+    ) async -> PasteDispatchResult {
+        guard !text.isEmpty else { return .missingPayload }
+        guard isAccessibilityTrusted else { return .accessibilityUnavailable }
+
+        targetActivator(previousApp)
+        do {
+            try await focusSettler(focusSettleDelay)
+        } catch {
+            return .cancelled
+        }
+        guard !Task.isCancelled else { return .cancelled }
+
+        guard let receipt = performPasteboardWrite(
+            to: pasteboard,
+            { pasteboardWriter(text, pasteboard) }
+        ) else {
+            return .pasteboardWriteFailed
+        }
+
+        guard eventDispatcher() else { return .syntheticEventFailed }
+        return .dispatched(pasteboardGeneration: receipt.generation)
     }
 
     /// Smart Paste: transform a text clip's content on-device, then paste the result. The
@@ -372,11 +476,11 @@ enum PasteController {
         Task { @MainActor in
             if items.count == 1, let item = items.first {
                 let prepared = await prepareContents(of: item, store: store)
-                writePreparedContents(
+                guard writePreparedContents(
                     prepared,
                     to: NSPasteboard.general,
                     temporaryFileCleanupDelay: pasteFileCleanupDelay
-                )
+                ) != nil else { return }
                 store.moveToTop(items)
 
                 if let axPermission, !axPermission.isTrusted {
@@ -394,11 +498,11 @@ enum PasteController {
             store.moveToTop(items)
 
             if let axPermission, !axPermission.isTrusted {
-                writePreparedMultipleContents(
+                guard writePreparedMultipleContents(
                     prepared,
                     to: NSPasteboard.general,
                     temporaryFileCleanupDelay: pasteFileCleanupDelay
-                )
+                ) != nil else { return }
                 AccessibilityPermission.requestPrompt()
                 showAccessibilityHUD()
                 return
@@ -407,8 +511,10 @@ enum PasteController {
             let pasteboard = NSPasteboard.general
 
             if prepared.hasText {
-                pasteboard.clearContents()
-                registerSuccessfulWrite(pasteboard.setString(prepared.text, forType: .string), to: pasteboard)
+                guard copyTextToClipboard(prepared.text, pasteboard: pasteboard) != nil else {
+                    removeTempFiles(for: prepared.imageURLs)
+                    return
+                }
 
                 if !prepared.hasImages {
                     previousApp?.activate()
@@ -443,10 +549,11 @@ enum PasteController {
         _ imageURLs: [URL],
         pasteboard: NSPasteboard
     ) {
-        pasteboard.clearContents()
         guard !imageURLs.isEmpty else { return }
-        let didWrite = pasteboard.writeObjects(imageURLs as [NSPasteboardWriting])
-        guard registerSuccessfulWrite(didWrite, to: pasteboard) else {
+        guard performPasteboardWrite(
+            to: pasteboard,
+            { pasteboard.writeObjects(imageURLs as [NSPasteboardWriting]) }
+        ) != nil else {
             removeTempFiles(for: imageURLs)
             return
         }
@@ -454,20 +561,24 @@ enum PasteController {
         cleanupTempFiles(for: imageURLs)
     }
 
-    private static func simulatePaste() {
+    @discardableResult
+    private static func simulatePaste() -> Bool {
         let source = CGEventSource(stateID: .hidSystemState)
 
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+            return false
+        }
 
-        keyDown?.flags = .maskCommand
-        keyUp?.flags = .maskCommand
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
 
-        keyDown?.post(tap: .cgAnnotatedSessionEventTap)
-        keyUp?.post(tap: .cgAnnotatedSessionEventTap)
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
 
         // Every paste path funnels here, so this is the one place the paste cue belongs.
         Feedback.emit(.paste)
+        return true
     }
 
     private static func showAccessibilityHUD() {

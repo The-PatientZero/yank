@@ -17,6 +17,332 @@ struct PasteboardChangeSuppression {
     }
 }
 
+protocol PasteboardPayloadReading: AnyObject {
+    var changeCount: Int { get }
+    var typeIdentifiers: [String] { get }
+
+    func filePaths() -> [String]?
+    func data(forType identifier: String) -> Data?
+}
+
+private final class AppKitPasteboardPayloadReader: PasteboardPayloadReading {
+    private let pasteboard: NSPasteboard
+    private let item: NSPasteboardItem?
+
+    init(name: NSPasteboard.Name) {
+        let pasteboard = NSPasteboard(name: name)
+        self.pasteboard = pasteboard
+        self.item = pasteboard.pasteboardItems?.first
+    }
+
+    var changeCount: Int {
+        pasteboard.changeCount
+    }
+
+    var typeIdentifiers: [String] {
+        (item?.types ?? pasteboard.types ?? []).map(\.rawValue)
+    }
+
+    func filePaths() -> [String]? {
+        pasteboard.propertyList(
+            forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        ) as? [String]
+    }
+
+    func data(forType identifier: String) -> Data? {
+        let type = NSPasteboard.PasteboardType(identifier)
+        return item?.data(forType: type) ?? pasteboard.data(forType: type)
+    }
+}
+
+enum PasteboardPayload: Equatable, Sendable {
+    case filePaths([String])
+    case text(String, richArchive: PasteboardArchive?)
+    case image(Data, richArchive: PasteboardArchive?)
+    case unsupported
+
+    var retainedByteCount: Int {
+        switch self {
+        case .filePaths(let paths):
+            paths.reduce(0) { $0 + $1.utf8.count }
+        case .text(let text, let archive):
+            text.utf8.count + (archive?.totalBytes ?? 0)
+        case .image(let data, let archive):
+            data.count + (archive?.totalBytes ?? 0)
+        case .unsupported:
+            0
+        }
+    }
+}
+
+struct PasteboardPayloadSnapshot: Equatable, Sendable {
+    let generation: Int
+    let payload: PasteboardPayload
+}
+
+enum PasteboardPayloadMaterializer {
+    struct Limits: Equatable, Sendable {
+        let maxTextBytes: Int
+        let maxImageBytes: Int
+        let maxRichRepresentationBytes: Int
+        let maxRichArchiveBytes: Int
+        let maxPayloadBytes: Int
+        let maxTypeCount: Int
+        let maxTypeIdentifierBytes: Int
+        let maxFileCount: Int
+        let maxFilePathBytes: Int
+
+        static let capture = Limits(
+            maxTextBytes: SyncBlobKind.text.maximumBytes,
+            maxImageBytes: SyncBlobKind.image.maximumBytes,
+            maxRichRepresentationBytes: SyncBlobKind.rich.maximumBytes,
+            maxRichArchiveBytes: SyncBlobKind.rich.maximumBytes,
+            maxPayloadBytes: SyncBlobKind.image.maximumBytes + SyncBlobKind.rich.maximumBytes,
+            maxTypeCount: 256,
+            maxTypeIdentifierBytes: 1_024,
+            maxFileCount: CapturePolicy.maxFileListEntries,
+            maxFilePathBytes: CapturePolicy.maxFilePathLength
+        )
+    }
+
+    nonisolated static func materialize(
+        pasteboardName: String,
+        expectedGeneration: Int,
+        limits: Limits = .capture
+    ) -> PasteboardPayloadSnapshot? {
+        let reader = AppKitPasteboardPayloadReader(
+            name: NSPasteboard.Name(pasteboardName)
+        )
+        return materialize(
+            reader: reader,
+            expectedGeneration: expectedGeneration,
+            limits: limits
+        )
+    }
+
+    nonisolated static func materialize(
+        reader: PasteboardPayloadReading,
+        expectedGeneration: Int,
+        limits: Limits
+    ) -> PasteboardPayloadSnapshot? {
+        guard reader.changeCount == expectedGeneration else { return nil }
+
+        let typeIdentifiers = reader.typeIdentifiers
+        guard typeIdentifiers.count <= limits.maxTypeCount,
+              typeIdentifiers.allSatisfy({
+                  $0.utf8.count <= limits.maxTypeIdentifierBytes
+              }),
+              !typeIdentifiers.contains(where: ConcealedPasteboardType.all.contains) else {
+            return nil
+        }
+
+        var cachedRepresentations: [String: Data] = [:]
+        let payload: PasteboardPayload
+
+        if let filePaths = reader.filePaths(), !filePaths.isEmpty {
+            guard filePaths.count <= limits.maxFileCount,
+                  filePaths.allSatisfy({ $0.utf8.count <= limits.maxFilePathBytes }) else {
+                payload = .unsupported
+                return stableSnapshot(
+                    generation: expectedGeneration,
+                    payload: payload,
+                    reader: reader,
+                    limits: limits
+                )
+            }
+            payload = .filePaths(filePaths)
+        } else if let textData = reader.data(forType: NSPasteboard.PasteboardType.string.rawValue) {
+            guard textData.count <= limits.maxTextBytes else {
+                payload = .unsupported
+                return stableSnapshot(
+                    generation: expectedGeneration,
+                    payload: payload,
+                    reader: reader,
+                    limits: limits
+                )
+            }
+            cachedRepresentations[NSPasteboard.PasteboardType.string.rawValue] = textData
+            if let text = String(data: textData, encoding: .utf8), !text.isEmpty {
+                payload = .text(
+                    text,
+                    richArchive: richArchive(
+                        reader: reader,
+                        typeIdentifiers: typeIdentifiers,
+                        cachedRepresentations: &cachedRepresentations,
+                        limits: limits
+                    )
+                )
+            } else {
+                payload = imagePayload(
+                    reader: reader,
+                    typeIdentifiers: typeIdentifiers,
+                    cachedRepresentations: &cachedRepresentations,
+                    limits: limits
+                )
+            }
+        } else {
+            payload = imagePayload(
+                reader: reader,
+                typeIdentifiers: typeIdentifiers,
+                cachedRepresentations: &cachedRepresentations,
+                limits: limits
+            )
+        }
+
+        return stableSnapshot(
+            generation: expectedGeneration,
+            payload: payload,
+            reader: reader,
+            limits: limits
+        )
+    }
+
+    private nonisolated static func imagePayload(
+        reader: PasteboardPayloadReading,
+        typeIdentifiers: [String],
+        cachedRepresentations: inout [String: Data],
+        limits: Limits
+    ) -> PasteboardPayload {
+        for identifier in [
+            NSPasteboard.PasteboardType.png.rawValue,
+            NSPasteboard.PasteboardType.tiff.rawValue
+        ] {
+            guard let data = reader.data(forType: identifier) else { continue }
+            guard data.count <= limits.maxImageBytes else { return .unsupported }
+            cachedRepresentations[identifier] = data
+            return .image(
+                data,
+                richArchive: richArchive(
+                    reader: reader,
+                    typeIdentifiers: typeIdentifiers,
+                    cachedRepresentations: &cachedRepresentations,
+                    limits: limits
+                )
+            )
+        }
+        return .unsupported
+    }
+
+    private nonisolated static func richArchive(
+        reader: PasteboardPayloadReading,
+        typeIdentifiers: [String],
+        cachedRepresentations: inout [String: Data],
+        limits: Limits
+    ) -> PasteboardArchive? {
+        guard PasteboardArchive.isRich(utis: typeIdentifiers) else { return nil }
+
+        var totalBytes = 0
+        var representations: [PasteboardArchive.Representation] = []
+        representations.reserveCapacity(typeIdentifiers.count)
+
+        for identifier in typeIdentifiers {
+            let data: Data
+            if let cached = cachedRepresentations[identifier] {
+                data = cached
+            } else if let loaded = reader.data(forType: identifier) {
+                data = loaded
+                cachedRepresentations[identifier] = loaded
+            } else {
+                continue
+            }
+
+            guard data.count <= limits.maxRichRepresentationBytes,
+                  data.count <= limits.maxRichArchiveBytes - totalBytes else {
+                return nil
+            }
+            totalBytes += data.count
+            representations.append(.init(uti: identifier, data: data))
+        }
+
+        return representations.isEmpty ? nil : PasteboardArchive(representations: representations)
+    }
+
+    private nonisolated static func stableSnapshot(
+        generation: Int,
+        payload: PasteboardPayload,
+        reader: PasteboardPayloadReading,
+        limits: Limits
+    ) -> PasteboardPayloadSnapshot? {
+        guard reader.changeCount == generation,
+              payload.retainedByteCount <= limits.maxPayloadBytes else {
+            return nil
+        }
+        return PasteboardPayloadSnapshot(generation: generation, payload: payload)
+    }
+}
+
+@MainActor
+final class SerialCaptureQueue<Value: Sendable> {
+    typealias Loader = @Sendable () async -> Value?
+    typealias Apply = @MainActor @Sendable (Value) async -> Void
+
+    private var epoch = 0
+    private var tail: Task<Void, Never>?
+    private var loaderTasks: [UUID: Task<Value?, Never>] = [:]
+    private var applicationTasks: [UUID: Task<Void, Never>] = [:]
+
+    func enqueue(loader: @escaping Loader, apply: @escaping Apply) {
+        let id = UUID()
+        let enqueueEpoch = epoch
+        let previousApplication = tail
+        let loaderTask = Task.detached(priority: .utility) {
+            await loader()
+        }
+        loaderTasks[id] = loaderTask
+
+        let applicationTask = Task { [weak self, loaderTask, previousApplication] in
+            let value = await loaderTask.value
+            await previousApplication?.value
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.epoch == enqueueEpoch,
+                  let value else {
+                self?.finish(id: id)
+                return
+            }
+
+            await apply(value)
+            self.finish(id: id)
+        }
+        applicationTasks[id] = applicationTask
+        tail = applicationTask
+    }
+
+    func cancelAll() {
+        epoch &+= 1
+        loaderTasks.values.forEach { $0.cancel() }
+        applicationTasks.values.forEach { $0.cancel() }
+        loaderTasks.removeAll()
+        applicationTasks.removeAll()
+        tail = nil
+    }
+
+    func waitUntilIdle() async {
+        let currentTail = tail
+        await currentTail?.value
+    }
+
+    private func finish(id: UUID) {
+        loaderTasks[id] = nil
+        applicationTasks[id] = nil
+    }
+}
+
+private enum PreparedClipboardCapture: Sendable {
+    case fileText(String, sourceApp: String?)
+    case text(
+        TextCapturePlan,
+        originalText: String,
+        richArchive: PasteboardArchive?,
+        sourceApp: String?,
+        generation: Int,
+        observedAt: Date
+    )
+    case image(Data, richArchive: PasteboardArchive?, sourceApp: String?)
+    case unsupported
+}
+
 /// Monitors the system clipboard for changes and captures new content
 @MainActor
 @Observable
@@ -34,18 +360,21 @@ final class ClipboardWatcher {
     private var timer: Timer?
     private var wantsWatching = false
     private var lastChangeCount: Int = 0
-    private var lastContentFingerprint: ClipboardContentFingerprint?
-    private var textCaptureChain: Task<Void, Never>?
+    @ObservationIgnored private let captureQueue = SerialCaptureQueue<PreparedClipboardCapture>()
     private var changeSuppression = PasteboardChangeSuppression()
-    private var newestExactSuppressionGeneration: Int?
+
+    /// Reports eligible text occurrences before durable-history deduplication.
+    var onEligibleTextCopy: ((Int, String, Date) -> Void)?
 
     private(set) var ignoreNextChange = false
 
-    private let pollInterval: TimeInterval = 0.5
-    
+    private static let normalPollInterval: TimeInterval = 0.5
+    private static let sequencePollInterval: TimeInterval = 0.1
+    private var sequenceCollectionActive = false
+
     // Size thresholds for text handling
-    private let inlineTextLimit = 50_000       // 50 KB — store inline
-    private let previewLength = 500            // Characters kept as inline preview
+    private nonisolated static let inlineTextLimit = 50_000
+    private nonisolated static let previewLength = 500
     private nonisolated static let maxImageInputBytes = 32 * 1024 * 1024
     private nonisolated static let maxRasterPixels: Int64 = 40_000_000
     
@@ -68,23 +397,11 @@ final class ClipboardWatcher {
     }
     
     @objc private func handleIgnoreNextChange(_ notification: Notification) {
-        if let generation = notification.object as? Int {
-            changeSuppression.register(generation)
-            newestExactSuppressionGeneration = max(newestExactSuppressionGeneration ?? generation, generation)
+        guard let receipt = notification.object as? PasteboardWriteReceipt,
+              receipt.pasteboardName == NSPasteboard.Name.general.rawValue else {
             return
         }
-
-        // Older synchronous callers announce immediately before writing. Observe their
-        // resulting generation on the next main-queue turn without arming a broad skip.
-        let generationBeforeWrite = NSPasteboard.general.changeCount
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let newestExactGeneration = self.newestExactSuppressionGeneration ?? generationBeforeWrite
-            guard newestExactGeneration <= generationBeforeWrite else { return }
-            let generationAfterWrite = NSPasteboard.general.changeCount
-            guard generationAfterWrite != generationBeforeWrite else { return }
-            self.changeSuppression.register(generationAfterWrite)
-        }
+        changeSuppression.register(receipt.generation)
     }
     
     func startWatching() {
@@ -95,6 +412,7 @@ final class ClipboardWatcher {
     private func installTimerIfNeeded() {
         guard wantsWatching, !isPaused, timer == nil else { return }
 
+        let pollInterval = Self.pollInterval(sequenceCollectionActive: sequenceCollectionActive)
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkClipboard()
@@ -110,6 +428,7 @@ final class ClipboardWatcher {
     func stopWatching() {
         wantsWatching = false
         invalidateTimer()
+        captureQueue.cancelAll()
     }
 
     private func invalidateTimer() {
@@ -120,12 +439,25 @@ final class ClipboardWatcher {
     func pause() {
         isPaused = true
         invalidateTimer()
+        captureQueue.cancelAll()
     }
     
     func resume() {
         isPaused = false
         lastChangeCount = NSPasteboard.general.changeCount
         installTimerIfNeeded()
+    }
+
+    func setSequenceCollectionActive(_ isActive: Bool) {
+        guard sequenceCollectionActive != isActive else { return }
+        sequenceCollectionActive = isActive
+        guard wantsWatching, !isPaused else { return }
+        invalidateTimer()
+        installTimerIfNeeded()
+    }
+
+    static func pollInterval(sequenceCollectionActive: Bool) -> TimeInterval {
+        sequenceCollectionActive ? sequencePollInterval : normalPollInterval
     }
 
     func ignoreNextCopy() {
@@ -135,8 +467,7 @@ final class ClipboardWatcher {
     private func checkClipboard() {
         guard !isPaused else { return }
 
-        let pasteboard = NSPasteboard.general
-        let currentChangeCount = pasteboard.changeCount
+        let currentChangeCount = NSPasteboard.general.changeCount
 
         // No change detected
         guard currentChangeCount != lastChangeCount else { return }
@@ -159,120 +490,148 @@ final class ClipboardWatcher {
         // display attribution and a best-effort privacy hint, not a trusted source identity.
 
         // Privacy guard: never record concealed/secret copies or excluded apps.
-        let policy = CapturePolicy(excludedBundleIDs: captureSettings.excludedBundleIDs)
-        let pasteboardTypes = pasteboard.types?.map(\.rawValue) ?? []
-        guard policy.decide(frontmostBundleID: observedBundleID,
-                            pasteboardTypes: pasteboardTypes) == .capture else { return }
-
-        // Dispatch to the first capture path that applies. Files are tried before text
-        // because Finder also writes .string alongside the file list.
-        if captureFiles(from: pasteboard,
-                        sourceApp: observedAppName,
-                        policy: policy,
-                        observedBundleID: observedBundleID) { return }
-        if captureText(from: pasteboard, sourceApp: observedAppName) { return }
-        captureImage(from: pasteboard, sourceApp: observedAppName)
-    }
-
-    /// Finder file copies (NSFilenamesPboardType): a single image file becomes an image
-    /// clip; any other file copy is captured as a text clip listing the paths (#11).
-    /// Returns true if the change was a file copy (so the caller stops here).
-    private func captureFiles(
-        from pasteboard: NSPasteboard,
-        sourceApp: String?,
-        policy: CapturePolicy,
-        observedBundleID: String?
-    ) -> Bool {
-        guard let rawFilePaths = pasteboard.propertyList(
-            forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
-        ) as? [String], !rawFilePaths.isEmpty else {
-            return false
+        let settings = captureSettings
+        let policy = CapturePolicy(excludedBundleIDs: settings.excludedBundleIDs)
+        guard policy.decide(frontmostBundleID: observedBundleID, pasteboardTypes: []) == .capture else {
+            return
         }
 
-        let filePaths: [String]
-        switch policy.decideFileListCapture(frontmostBundleID: observedBundleID, filePaths: rawFilePaths) {
-        case .capture(let normalizedPaths):
-            filePaths = normalizedPaths
-        case .skipEmpty:
-            return false
-        case .skipUntrustedSource(let bundleID):
-            Log.capture.info("Skipping file-list pasteboard from untrusted observed app: \(bundleID ?? "unknown")")
-            return true
-        case .skipInvalidPaths:
-            Log.capture.info("Skipping invalid file-list pasteboard")
-            return true
-        }
-
-        if filePaths.count == 1, let filePath = filePaths.first, isImageFile(filePath) {
-            // Read + normalise the file off the main actor (structured concurrency, mirroring
-            // OCRService), then hop back to apply the capture.
-            Task { [weak self] in
-                guard let capture = await Task.detached(priority: .userInitiated, operation: {
-                    Self.imageFileCapture(filePath, sourceApp: sourceApp)
-                }).value else { return }
-                guard let self, self.markContentFingerprintIfNew(capture.fingerprint) else { return }
-                if let filename = self.store.saveImage(capture.pngData) {
-                    self.store.add(capture.item(with: filename))
+        let pasteboardName = NSPasteboard.Name.general.rawValue
+        let observedAt = Date()
+        captureQueue.enqueue(
+            loader: {
+                guard !Task.isCancelled,
+                      let snapshot = PasteboardPayloadMaterializer.materialize(
+                          pasteboardName: pasteboardName,
+                          expectedGeneration: currentChangeCount
+                      ),
+                      !Task.isCancelled else {
+                    return nil
                 }
+                return Self.prepareCapture(
+                    snapshot,
+                    sourceApp: observedAppName,
+                    observedBundleID: observedBundleID,
+                    observedAt: observedAt,
+                    settings: settings
+                )
+            },
+            apply: { [weak self] capture in
+                guard let self else { return }
+                await self.apply(capture)
             }
-            return true
-        }
-
-        let summary = filePaths.joined(separator: "\n")
-        if markContentFingerprintIfNew(.fileList(summary)) {
-            store.add(ClipboardItem.text(summary, sourceApp: sourceApp))
-        }
-        return true
+        )
     }
 
-    /// Plain or rich text on the pasteboard. Small text is stored inline; large text is
-    /// written to a file with an inline preview. Returns true if there was text (even if it
-    /// was filtered by the min-length rule or a consecutive duplicate), so the caller stops.
-    private func captureText(from pasteboard: NSPasteboard, sourceApp: String?) -> Bool {
-        guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return false }
+    private nonisolated static func prepareCapture(
+        _ snapshot: PasteboardPayloadSnapshot,
+        sourceApp: String?,
+        observedBundleID: String?,
+        observedAt: Date,
+        settings: CaptureSettings
+    ) -> PreparedClipboardCapture {
+        switch snapshot.payload {
+        case .filePaths(let rawFilePaths):
+            let policy = CapturePolicy(excludedBundleIDs: settings.excludedBundleIDs)
+            let filePaths: [String]
+            switch policy.decideFileListCapture(
+                frontmostBundleID: observedBundleID,
+                filePaths: rawFilePaths
+            ) {
+            case .capture(let normalizedPaths):
+                filePaths = normalizedPaths
+            case .skipEmpty:
+                return .unsupported
+            case .skipUntrustedSource(let bundleID):
+                Log.capture.info(
+                    "Skipping file-list pasteboard from untrusted observed app: \(bundleID ?? "unknown")"
+                )
+                return .unsupported
+            case .skipInvalidPaths:
+                Log.capture.info("Skipping invalid file-list pasteboard")
+                return .unsupported
+            }
 
-        // Min-length filter is a pure, tested policy in YankCore; below threshold
-        // counts as "handled" so the caller stops walking pasteboard types.
-        guard CapturePolicy.meetsMinimumLength(text, minLength: captureSettings.minCaptureLength) else {
-            return true
-        }
+            if filePaths.count == 1,
+               let filePath = filePaths.first,
+               isImageFile(filePath) {
+                guard let capture = imageFileCapture(filePath) else { return .unsupported }
+                return .image(capture.pngData, richArchive: nil, sourceApp: sourceApp)
+            }
+            return .fileText(filePaths.joined(separator: "\n"), sourceApp: sourceApp)
 
-        let archive = captureRichArchive(from: pasteboard)
-        let isRich = archive != nil
-
-        let previousCapture = textCaptureChain
-        let task = Task { [weak self, previousCapture] in
-            await previousCapture?.value
-
-            let inlineTextLimit = self?.inlineTextLimit ?? 50_000
-            let previewLength = self?.previewLength ?? 500
-            let plan = await Task.detached(priority: .userInitiated) {
+        case .text(let text, let archive):
+            guard CapturePolicy.meetsMinimumLength(text, minLength: settings.minCaptureLength) else {
+                return .unsupported
+            }
+            return .text(
                 TextCapturePlan.make(
                     for: text,
                     inlineLimit: inlineTextLimit,
                     previewLength: previewLength,
                     maxStoredBytes: SyncBlobKind.text.maximumBytes
-                )
-            }.value
+                ),
+                originalText: text,
+                richArchive: archive,
+                sourceApp: sourceApp,
+                generation: snapshot.generation,
+                observedAt: observedAt
+            )
 
-            guard let self, self.markContentFingerprintIfNew(plan.fingerprint) else { return }
+        case .image(let imageData, let archive):
+            guard case .image(let pngData, let retainedArchive) = normalizedImagePayload(
+                from: imageData,
+                richArchive: archive,
+                limits: .capture,
+                maxRasterPixels: maxRasterPixels,
+                sourceDescription: "pasteboard image"
+            ) else {
+                return .unsupported
+            }
+            return .image(pngData, richArchive: retainedArchive, sourceApp: sourceApp)
+
+        case .unsupported:
+            return .unsupported
+        }
+    }
+
+    private func apply(_ capture: PreparedClipboardCapture) async {
+        guard !Task.isCancelled else { return }
+
+        switch capture {
+        case .fileText(let summary, let sourceApp):
+            store.add(ClipboardItem.text(summary, sourceApp: sourceApp))
+
+        case .text(
+            let plan,
+            let originalText,
+            let archive,
+            let sourceApp,
+            let generation,
+            let observedAt
+        ):
+            onEligibleTextCopy?(generation, originalText, observedAt)
+            let isRich = archive != nil
 
             switch plan.storage {
             case .inline(let content):
                 var item = ClipboardItem.text(content, sourceApp: sourceApp)
                 item.hasRichContent = isRich
-                self.store.add(item, richArchive: archive)
+                await store.addCaptured(item, primaryBlob: nil, richArchive: archive)
             case .fileBacked(let preview, let fullText, let originalSizeBytes, let searchIndex):
-                guard let filename = await self.store.saveTextAsync(fullText) else { return }
-                var item = ClipboardItem.largeText(
-                    preview: preview,
-                    filename: filename,
+                var item = ClipboardItem(
+                    type: .text,
                     sourceApp: sourceApp,
+                    textContent: preview,
                     originalSizeBytes: originalSizeBytes,
                     searchIndex: searchIndex
                 )
                 item.hasRichContent = isRich
-                self.store.add(item, richArchive: archive)
+                await store.addCaptured(
+                    item,
+                    primaryBlob: .text(fullText),
+                    richArchive: archive
+                )
             case .truncated(let preview, let originalSizeBytes):
                 var item = ClipboardItem.truncatedText(
                     preview: preview,
@@ -280,80 +639,25 @@ final class ClipboardWatcher {
                     sourceApp: sourceApp
                 )
                 item.hasRichContent = isRich
-                self.store.add(item, richArchive: archive)
+                await store.addCaptured(item, primaryBlob: nil, richArchive: archive)
             }
+
+        case .image(let pngData, let archive, let sourceApp):
+            var item = ClipboardItem(type: .image, sourceApp: sourceApp)
+            item.hasRichContent = archive != nil
+            await store.addCaptured(
+                item,
+                primaryBlob: .image(pngData),
+                richArchive: archive
+            )
+
+        case .unsupported:
+            break
         }
-        textCaptureChain = task
-        return true
-    }
-
-    /// A raster image on the pasteboard (png/tiff). Normalised to PNG off the main actor;
-    /// vector copies carry PDF alongside the raster, so the rich archive is captured too.
-    private func captureImage(from pasteboard: NSPasteboard, sourceApp: String?) {
-        guard let imageData = getImageCandidateData(from: pasteboard) else { return }
-
-        let archive = captureRichArchive(from: pasteboard)
-        let isRich = archive != nil
-        Task { [weak self] in
-            guard let pngData = await Task.detached(priority: .userInitiated, operation: {
-                Self.normalizedPNGData(
-                    from: imageData,
-                    maxInputBytes: Self.maxImageInputBytes,
-                    maxRasterPixels: Self.maxRasterPixels,
-                    sourceDescription: "pasteboard image"
-                )
-            }).value else { return }
-            let fingerprint = ClipboardContentFingerprint.image(pngData)
-
-            guard let self, self.markContentFingerprintIfNew(fingerprint) else { return }
-            if let filename = self.store.saveImage(pngData) {
-                var item = ClipboardItem.image(filename: filename, sourceApp: sourceApp)
-                item.hasRichContent = isRich
-                self.store.add(item, richArchive: archive)
-            }
-        }
-    }
-
-    private func markContentFingerprintIfNew(_ fingerprint: ClipboardContentFingerprint) -> Bool {
-        guard fingerprint != lastContentFingerprint else { return false }
-        lastContentFingerprint = fingerprint
-        return true
-    }
-    
-    /// Capture every representation of the current pasteboard item, but only when the
-    /// copy is "rich" (carries RTF/RTFD/HTML/PDF) — so paste can replay it with full
-    /// fidelity (#11). Plain text and simple images return nil and use the fast path.
-    private func captureRichArchive(from pasteboard: NSPasteboard) -> PasteboardArchive? {
-        guard let item = pasteboard.pasteboardItems?.first else { return nil }
-        let utis = item.types.map(\.rawValue)
-        guard PasteboardArchive.isRich(utis: utis) else { return nil }
-
-        let budget = 16 * 1024 * 1024  // skip oversized payloads rather than store them
-        var total = 0
-        var reps: [PasteboardArchive.Representation] = []
-        for type in item.types {
-            guard let data = item.data(forType: type) else { continue }
-            total += data.count
-            if total > budget { return nil }
-            reps.append(.init(uti: type.rawValue, data: data))
-        }
-        return reps.isEmpty ? nil : PasteboardArchive(representations: reps)
-    }
-
-    private func getImageCandidateData(from pasteboard: NSPasteboard) -> Data? {
-        let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
-        
-        for type in imageTypes {
-            if let data = pasteboard.data(forType: type) {
-                return data
-            }
-        }
-        
-        return nil
     }
     
     /// Check if a file path points to an image by examining its UTType
-    private func isImageFile(_ filePath: String) -> Bool {
+    private nonisolated static func isImageFile(_ filePath: String) -> Bool {
         let fileExtension = (filePath as NSString).pathExtension.lowercased()
         guard !fileExtension.isEmpty else { return false }
         
@@ -365,16 +669,10 @@ final class ClipboardWatcher {
     
     private struct ImageFileCapture: Sendable {
         let pngData: Data
-        let fingerprint: ClipboardContentFingerprint
-        let sourceApp: String?
-
-        func item(with filename: String) -> ClipboardItem {
-            ClipboardItem.image(filename: filename, sourceApp: sourceApp)
-        }
     }
 
     /// Read image file from disk and normalize to PNG. Runs off the main actor.
-    private nonisolated static func imageFileCapture(_ filePath: String, sourceApp: String?) -> ImageFileCapture? {
+    private nonisolated static func imageFileCapture(_ filePath: String) -> ImageFileCapture? {
         do {
             let fileURL = URL(fileURLWithPath: filePath)
             let resourceValues = try fileURL.resourceValues(forKeys: [
@@ -402,11 +700,7 @@ final class ClipboardWatcher {
                 return nil
             }
             
-            return ImageFileCapture(
-                pngData: pngData,
-                fingerprint: ClipboardContentFingerprint.image(pngData),
-                sourceApp: sourceApp
-            )
+            return ImageFileCapture(pngData: pngData)
         } catch {
             Log.capture.error("Error processing image file from pasteboard file list: \(error.localizedDescription)")
             return nil
@@ -416,11 +710,13 @@ final class ClipboardWatcher {
     /// Normalise arbitrary raster bytes to PNG using a single `CGImageSource` for both the
     /// pixel-budget check and the re-encode: no TIFF/bitmap round-trip, one
     /// decode, no uncompressed-bitmap allocation. Off the main actor.
-    private nonisolated static func normalizedPNGData(
+    nonisolated static func normalizedPNGData(
         from data: Data,
         maxInputBytes: Int,
+        maxOutputBytes: Int = SyncBlobKind.image.maximumBytes,
         maxRasterPixels: Int64,
-        sourceDescription: String
+        sourceDescription: String,
+        encoder: @Sendable (CGImage) -> Data? = PNGEncoder.encode
     ) -> Data? {
         guard data.count <= maxInputBytes else {
             Log.capture.error("Skipping oversized image data: \(sourceDescription)")
@@ -437,7 +733,40 @@ final class ClipboardWatcher {
             return nil
         }
         guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        return PNGEncoder.encode(cgImage)
+        guard let pngData = encoder(cgImage),
+              !pngData.isEmpty,
+              pngData.count <= maxOutputBytes else {
+            Log.capture.error("Skipping image whose normalized PNG exceeds the byte budget: \(sourceDescription)")
+            return nil
+        }
+        return pngData
+    }
+
+    nonisolated static func normalizedImagePayload(
+        from data: Data,
+        richArchive: PasteboardArchive?,
+        limits: PasteboardPayloadMaterializer.Limits,
+        maxRasterPixels: Int64,
+        sourceDescription: String,
+        encoder: @Sendable (CGImage) -> Data? = PNGEncoder.encode
+    ) -> PasteboardPayload {
+        guard let pngData = normalizedPNGData(
+            from: data,
+            maxInputBytes: limits.maxImageBytes,
+            maxOutputBytes: limits.maxImageBytes,
+            maxRasterPixels: maxRasterPixels,
+            sourceDescription: sourceDescription,
+            encoder: encoder
+        ) else {
+            return .unsupported
+        }
+        let archiveBytes = richArchive?.totalBytes ?? 0
+        guard archiveBytes <= limits.maxPayloadBytes,
+              pngData.count <= limits.maxPayloadBytes - archiveBytes else {
+            Log.capture.error("Skipping normalized image whose retained payload exceeds the aggregate byte budget")
+            return .unsupported
+        }
+        return .image(pngData, richArchive: richArchive)
     }
 
     /// True when the first image in `source` is within the pixel budget. Lenient when the

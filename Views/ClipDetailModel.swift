@@ -112,9 +112,7 @@ final class ClipDetailModel {
     }
 
     func copyExtractedText(_ text: String) {
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        PasteController.copyTextToClipboard(text)
     }
 
     // MARK: - Tag input

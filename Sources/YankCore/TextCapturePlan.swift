@@ -3,7 +3,7 @@ import Foundation
 /// Pure capture decision for plain text clips.
 ///
 /// The AppKit watcher owns pasteboard access; this policy owns the CPU-heavy work
-/// derived from the captured string: byte counting, fingerprinting, previews, truncation,
+/// derived from the captured string: byte counting, previews, truncation,
 /// and the file-backed search index. It is intentionally Foundation-only so it can be
 /// tested in `YankCore` and shared by future capture surfaces.
 struct TextCapturePlan: Equatable, Sendable {
@@ -13,7 +13,6 @@ struct TextCapturePlan: Equatable, Sendable {
         case truncated(preview: String, originalSizeBytes: Int)
     }
 
-    let fingerprint: ClipboardContentFingerprint
     let byteCount: Int
     let storage: Storage
 
@@ -24,7 +23,6 @@ struct TextCapturePlan: Equatable, Sendable {
         maxStoredBytes: Int
     ) -> TextCapturePlan {
         let byteCount = text.utf8.count
-        let fingerprint = ClipboardContentFingerprint.text(text)
         let preview = String(text.prefix(previewLength))
 
         let storage: Storage
@@ -41,6 +39,6 @@ struct TextCapturePlan: Equatable, Sendable {
             storage = .truncated(preview: preview, originalSizeBytes: byteCount)
         }
 
-        return TextCapturePlan(fingerprint: fingerprint, byteCount: byteCount, storage: storage)
+        return TextCapturePlan(byteCount: byteCount, storage: storage)
     }
 }
