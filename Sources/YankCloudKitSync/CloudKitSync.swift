@@ -603,6 +603,7 @@ public final class CloudKitSyncService {
         guard let store else { return }
         var remote: [ClipboardItem] = []
         var downloadedBlobs: Set<SyncBlobReference> = []
+        var bypassedMissingAssets: [(item: ClipboardItem, blob: SyncBlobReference)] = []
         var receiptInvalidationItemIDs: Set<UUID> = []
         var token = changeToken
         var moreComing = true
@@ -621,11 +622,18 @@ public final class CloudKitSyncService {
                         generation: generation
                     ) else { continue }
                     try requireActive(generation)
-                    if let blob = resolved.blob { downloadedBlobs.insert(blob) }
-                    if resolved.requiresLocalRepush {
-                        receiptInvalidationItemIDs.insert(resolved.item.id)
+                    switch resolved {
+                    case .available(let item, let blob, let requiresLocalRepush):
+                        if let blob { downloadedBlobs.insert(blob) }
+                        if requiresLocalRepush {
+                            receiptInvalidationItemIDs.insert(item.id)
+                        }
+                        remote.append(item)
+                    case .missingAssetShadowedByLocalTombstone(let item, let blob):
+                        bypassedMissingAssets.append((item, blob))
+                        receiptInvalidationItemIDs.insert(item.id)
+                        remote.append(item)
                     }
-                    remote.append(resolved.item)
                 }
                 for recordName in changes.deletedRecordNames {
                     if let id = UUID(uuidString: recordName) {
@@ -637,6 +645,14 @@ public final class CloudKitSyncService {
             }
             try requireActive(generation)
             let local = store.itemsForSync()
+            for bypassed in bypassedMissingAssets {
+                guard Self.localTombstoneDominates(
+                    bypassed.item,
+                    in: local
+                ) else {
+                    throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
+                }
+            }
             let reconciled = ClipboardMerge.reconcile(local, remote)
             try requireActive(generation)
             try store.applyReconciledDurably(reconciled)
@@ -665,13 +681,34 @@ public final class CloudKitSyncService {
         }
     }
 
+    private enum RemoteItemResolution {
+        case available(
+            item: ClipboardItem,
+            blob: SyncBlobReference?,
+            requiresLocalRepush: Bool
+        )
+        case missingAssetShadowedByLocalTombstone(
+            item: ClipboardItem,
+            blob: SyncBlobReference
+        )
+    }
+
     private func resolveRemoteItem(
         from record: CKRecord,
         into store: SyncableStore,
         generation: UInt64
-    ) async throws -> (item: ClipboardItem, blob: SyncBlobReference?, requiresLocalRepush: Bool)? {
+    ) async throws -> RemoteItemResolution? {
         try requireActive(generation)
         guard let item = ClipboardCloudMapping.item(from: record) else { return nil }
+        if !item.isDeleted,
+           let blob = item.syncBlobReference,
+           (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL == nil,
+           Self.localTombstoneDominates(item, in: store.itemsForSync()) {
+            syncLog.info(
+                "skipping missing asset for clip \(item.id.uuidString, privacy: .public) because a local tombstone dominates"
+            )
+            return .missingAssetShadowedByLocalTombstone(item: item, blob: blob)
+        }
         switch try await resolveRemoteBlob(
             from: record,
             for: item,
@@ -679,10 +716,25 @@ public final class CloudKitSyncService {
             generation: generation
         ) {
         case .notRequired:
-            return (item, nil, false)
+            return .available(item: item, blob: nil, requiresLocalRepush: false)
         case .available(let blob, let requiresLocalRepush):
-            return (item, blob, requiresLocalRepush)
+            return .available(
+                item: item,
+                blob: blob,
+                requiresLocalRepush: requiresLocalRepush
+            )
         }
+    }
+
+    private nonisolated static func localTombstoneDominates(
+        _ remoteItem: ClipboardItem,
+        in localItems: [ClipboardItem]
+    ) -> Bool {
+        let sameIDItems = localItems.filter { $0.id == remoteItem.id }
+        guard let localWinner = ClipboardMerge.reconcile(sameIDItems, []).first else {
+            return false
+        }
+        return localWinner.isDeleted && localWinner.modifiedAt >= remoteItem.modifiedAt
     }
 
     private nonisolated static func isExpiredChangeTokenError(_ error: any Error) -> Bool {

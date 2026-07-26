@@ -37,3 +37,12 @@ single `YANK_CLOUD_BACKFILL_FAILURE` or `status=failure` marker. Do not infer su
 counts when the exit status is nonzero. Preserve local history, resolve the reported prerequisite
 or network/account condition, and retry; never delete local history or reset CloudKit checkpoints
 to force convergence.
+
+## Missing assets on existing records
+
+Backfill repairs records that are absent; it does not overwrite an existing record whose required
+`CKAsset` is missing. Bring a device that still has the referenced local blob online so ordinary
+sync can re-upload it. If a durable, same-ID local tombstone is at least as new as the damaged
+remote record, Yank can instead reconcile and upload that deletion after revalidating it at the
+sync checkpoint. Otherwise sync deliberately fails closed. Do not manufacture placeholder content,
+discard the local record, or advance CloudKit checkpoints to bypass the failure.

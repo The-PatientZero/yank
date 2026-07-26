@@ -256,6 +256,177 @@ struct CloudKitSyncServiceTests {
         #expect(defaults.data(forKey: tokenKey) == nil)
     }
 
+    @Test func pullBypassesMissingAssetWhenNewerLocalTombstoneDominates() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 200)
+        try setPushReceipts(
+            [id: tombstone.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(store.writtenBlobs.isEmpty)
+        let applied = try #require(store.appliedReconciled)
+        let winner = try #require(applied.first { $0.id == id })
+        #expect(winner.isDeleted)
+        #expect(winner.modifiedAt == tombstone.modifiedAt)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed.recordID.recordName == id.uuidString)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
+        #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == tombstone.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == nil)
+    }
+
+    @Test func pullBypassesMissingAssetWhenDeletionWinsEqualClock() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 100)
+        try setPushReceipts(
+            [id: tombstone.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.first { $0.id == id }?.isDeleted == true)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
+        #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
+    }
+
+    @Test func pullFailsClosedWhenMissingAssetRemoteIsNewerThanLocalTombstone() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 200
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 100)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the newer broken remote item to fail sync")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(store.writtenBlobs.isEmpty)
+        #expect(database.savedBatches.isEmpty)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+    }
+
+    @Test func pullFailsClosedWhenDominatingTombstoneDisappearsBeforeReconciliation() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 200)
+        try setPushReceipts(
+            [id: tombstone.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(changed: [try record(for: remote)], moreComing: true),
+            page(moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        var fetchCount = 0
+        database.onFetchZoneChanges = {
+            fetchCount += 1
+            if fetchCount == 2 {
+                store.items = []
+            }
+        }
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected final tombstone revalidation to fail closed")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(store.writtenBlobs.isEmpty)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == tombstone.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+    }
+
     @Test func startupPullRepairsAMissingCloudKitAssetWhenTheLocalBlobStillExists() async throws {
         let filename = "\(UUID().uuidString).txt"
         let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
