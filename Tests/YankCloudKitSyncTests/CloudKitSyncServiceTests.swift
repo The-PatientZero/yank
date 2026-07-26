@@ -5,7 +5,7 @@ import Testing
 @testable import YankCloudKitSync
 
 /// Exercises the `CloudKitSyncService` orchestration through the `CloudKitDatabase` seam:
-/// zone/subscription bring-up, paginated pull → `ClipboardMerge` → apply, watermarked +
+/// zone/subscription bring-up, paginated pull → `ClipboardMerge` → apply, receipt-driven +
 /// chunked push, token clearing, and start failure — all against an in-memory fake.
 @Suite @MainActor
 struct CloudKitSyncServiceTests {
@@ -143,8 +143,9 @@ struct CloudKitSyncServiceTests {
             return
         }
         #expect(store.appliedReconciled == nil)
-        #expect(store.writtenBlobs == [blob])
-        #expect(store.deletedBlobs == [blob])
+        let staged = try #require(store.writtenBlobs.first)
+        #expect(staged != blob)
+        #expect(store.deletedBlobs == [staged, blob])
     }
 
     @Test func pullDeletesDownloadedBlobWhenReconcileDropsRemoteItem() async throws {
@@ -163,8 +164,9 @@ struct CloudKitSyncServiceTests {
 
         _ = await service.start()
 
-        #expect(store.writtenBlobs == [blob])
-        #expect(store.deletedBlobs == [blob])
+        let staged = try #require(store.writtenBlobs.first)
+        #expect(staged != blob)
+        #expect(store.deletedBlobs == [staged, blob])
         #expect(store.items.first?.isDeleted == true)
     }
 
@@ -181,9 +183,524 @@ struct CloudKitSyncServiceTests {
 
         _ = await service.start()
 
-        #expect(store.writtenBlobs == [blob])
-        #expect(store.deletedBlobs.isEmpty)
+        let staged = try #require(store.writtenBlobs.first)
+        #expect(staged != blob)
+        #expect(store.deletedBlobs == [staged])
+        #expect(store.blobURL(for: blob).map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == true)
         #expect(store.items.contains { $0.id == remote.id })
+    }
+
+    @Test func pullFailsClosedUntilARequiredCloudKitAssetBecomesAvailable() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let missingFilename = "\(UUID().uuidString).txt"
+        let missing = makeLargeTextItem(
+            id: UUID(),
+            filename: missingFilename,
+            modifiedAt: 100
+        )
+        let available = makeTextItem(text: "available", modifiedAt: 200)
+        let recoveredAssetURL = try writeAsset("recovered blob")
+        defer { try? FileManager.default.removeItem(at: recoveredAssetURL) }
+        let missingBlob = try #require(SyncBlobReference(filename: missingFilename, kind: .text))
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(
+                changed: [try record(for: missing), try record(for: available)],
+                moreComing: false
+            ),
+            page(
+                changed: [
+                    try record(for: missing, blobURL: recoveredAssetURL),
+                    try record(for: available)
+                ],
+                moreComing: false
+            )
+        ]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let firstResult = await service.start()
+
+        guard case .failed(let failureMessage) = firstResult else {
+            Issue.record("Expected a missing required CloudKit asset to fail sync")
+            return
+        }
+        #expect(store.syncStatus == .failed(message: failureMessage))
+        #expect(store.appliedReconciled == nil)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(database.savedBatches.isEmpty)
+
+        let retryResult = await service.start()
+
+        #expect(retryResult == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == missing.id })
+        #expect(applied.contains { $0.id == available.id })
+        let staged = try #require(store.writtenBlobs.first)
+        #expect(staged != missingBlob)
+        #expect(store.deletedBlobs == [staged])
+        #expect(store.blobURL(for: missingBlob).map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == true)
+        #expect(defaults.data(forKey: tokenKey) == nil)
+    }
+
+    @Test func pullBypassesMissingAssetWhenNewerLocalTombstoneDominates() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 200)
+        try setPushReceipts(
+            [id: tombstone.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(store.writtenBlobs.isEmpty)
+        let applied = try #require(store.appliedReconciled)
+        let winner = try #require(applied.first { $0.id == id })
+        #expect(winner.isDeleted)
+        #expect(winner.modifiedAt == tombstone.modifiedAt)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed.recordID.recordName == id.uuidString)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
+        #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == tombstone.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == nil)
+    }
+
+    @Test func pullBypassesMissingAssetWhenDeletionWinsEqualClock() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 100)
+        try setPushReceipts(
+            [id: tombstone.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.first { $0.id == id }?.isDeleted == true)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
+        #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
+    }
+
+    @Test func pullFailsClosedWhenMissingAssetRemoteIsNewerThanLocalTombstone() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 200
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 100)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the newer broken remote item to fail sync")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(store.writtenBlobs.isEmpty)
+        #expect(database.savedBatches.isEmpty)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+    }
+
+    @Test func pullFailsClosedWhenDominatingTombstoneDisappearsBeforeReconciliation() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let id = UUID()
+        let remote = makeLargeTextItem(
+            id: id,
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let tombstone = makeTombstone(id: id, modifiedAt: 200)
+        try setPushReceipts(
+            [id: tombstone.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(changed: [try record(for: remote)], moreComing: true),
+            page(moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        var fetchCount = 0
+        database.onFetchZoneChanges = {
+            fetchCount += 1
+            if fetchCount == 2 {
+                store.items = []
+            }
+        }
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected final tombstone revalidation to fail closed")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(store.writtenBlobs.isEmpty)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == tombstone.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+    }
+
+    @Test func startupPullRepairsAMissingCloudKitAssetWhenTheLocalBlobStillExists() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("recoverable blob")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let existingWatermark = Date(timeIntervalSinceReferenceDate: 1_000)
+        defaults.set(existingWatermark, forKey: watermarkKey)
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let repaired = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(repaired.recordID.recordName == item.id.uuidString)
+        #expect(repaired[ClipboardCloudMapping.Key.blob] is CKAsset)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id] == item.modifiedAt)
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func repairReceiptInvalidationSurvivesInterruptionAndServiceRecreation() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("repair-after-recreation")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let interruptedDatabase = FakeCloudKitDatabase()
+        interruptedDatabase.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let interruptedService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: interruptedDatabase,
+            defaults: defaults,
+            afterReceiptInvalidationBeforeTokenPersistence: {
+                #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id] == nil)
+                #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+                throw TestError.boom
+            }
+        )
+
+        let interruptedResult = await interruptedService.start()
+
+        guard case .failed = interruptedResult else {
+            Issue.record("Expected interruption after durable repair receipt invalidation")
+            return
+        }
+        #expect(store.appliedReconciled != nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id] == nil)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(interruptedDatabase.savedBatches.isEmpty)
+
+        let recreatedDatabase = FakeCloudKitDatabase()
+        let recreatedService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: recreatedDatabase,
+            defaults: defaults
+        )
+        let recreatedResult = await recreatedService.start()
+
+        #expect(recreatedResult == .started)
+        let repaired = try #require(recreatedDatabase.savedBatches.flatMap { $0 }.first)
+        #expect(repaired.recordID.recordName == item.id.uuidString)
+        #expect(repaired[ClipboardCloudMapping.Key.blob] is CKAsset)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func repairSaveFailureLeavesReceiptAbsentForARecreatedRetry() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("repair-after-save-failure")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let failingDatabase = FakeCloudKitDatabase()
+        failingDatabase.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        failingDatabase.failedSaveRecordNames = [item.id.uuidString]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let failingService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: failingDatabase,
+            defaults: defaults
+        )
+
+        let failed = await failingService.handleRemoteChange()
+
+        #expect(!failed)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id] == nil)
+
+        let retryDatabase = FakeCloudKitDatabase()
+        let retryService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: retryDatabase,
+            defaults: defaults
+        )
+        let retried = await retryService.start()
+
+        #expect(retried == .started)
+        #expect(retryDatabase.savedBatches.flatMap { $0 }.map(\.recordID.recordName)
+                == [item.id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func missingRemoteAssetWithoutALocalBlobLeavesReceiptAndTokenUntouched() async throws {
+        let item = makeLargeTextItem(
+            id: UUID(),
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected a remote record without any recoverable asset to fail closed")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func repairReceiptIsNotInvalidatedWhenDurableApplyFails() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("apply-failure")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        store.durableApplyError = TestError.boom
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the durable apply failure to abort repair")
+            return
+        }
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func repairReceiptIsNotInvalidatedWhenALaterPullPageFails() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("page-failure")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(changed: [try record(for: item)], moreComing: true),
+            page(failedRecordNames: [UUID().uuidString], moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the partial later page to abort repair")
+            return
+        }
+        #expect(store.appliedReconciled == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func repairReceiptPersistenceFailureLeavesReceiptAndTokenUntouched() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("receipt-persistence-failure")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            beforeReceiptPersistence: { throw TestError.boom }
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected repair receipt persistence to fail the pull")
+            return
+        }
+        #expect(store.appliedReconciled != nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(database.savedBatches.isEmpty)
     }
 
     @Test func pullFailsWithoutApplyingOrAdvancingTokenWhenBlobWriteFails() async throws {
@@ -229,51 +746,1004 @@ struct CloudKitSyncServiceTests {
         #expect(applied.contains { $0.id == remote.id && $0.textContent == "background-push" })
     }
 
-    // MARK: - Push (watermark + chunking)
-
-    @Test func pushSendsOnlyItemsNewerThanThePersistedWatermark() async throws {
-        let stale = makeTextItem(text: "stale", modifiedAt: 100)
-        let fresh = makeTextItem(text: "fresh", modifiedAt: 300)
+    @Test func ordinaryRemoteChangeRepairsAMissingAssetFromReceiptState() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("ordinary-repair")
+        defer { try? FileManager.default.removeItem(at: localURL) }
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
-        defaults.set(Date(timeIntervalSinceReferenceDate: 200),
-                     forKey: "cloudkit.lastPushedModifiedAt.\(containerID)")
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let completed = await service.handleRemoteChange()
+
+        #expect(completed)
+        let repaired = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(repaired.recordID.recordName == item.id.uuidString)
+        #expect(repaired[ClipboardCloudMapping.Key.blob] is CKAsset)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func cleanOrdinaryRemoteChangeDoesNotSaveAnyRecords() async throws {
+        let item = makeTextItem(text: "already-synced", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let completed = await service.handleRemoteChange()
+
+        #expect(completed)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func nilReceiptMigrationStateStillRepairsAndCommitsAReceipt() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("migration-repair")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            afterReceiptInvalidationBeforeTokenPersistence: {
+                #expect(defaults.data(forKey: pushReceiptsKey(containerID)) == nil)
+            }
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName)
+                == [item.id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func alreadyAbsentRecordReceiptStillTriggersOrdinaryRepair() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let localURL = try writeAsset("already-invalidated-repair")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts([:], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: item)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        store.blobURLs[blob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let completed = await service.handleRemoteChange()
+
+        #expect(completed)
+        let repaired = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(repaired.recordID.recordName == item.id.uuidString)
+        #expect(repaired[ClipboardCloudMapping.Key.blob] is CKAsset)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    // MARK: - Push receipts
+
+    @Test func futureDatedRecordDoesNotSuppressAnotherRecordsInsertEditOrDelete() async throws {
+        let future = makeTextItem(id: UUID(), text: "future", modifiedAt: 10_000)
+        let edited = makeTextItem(id: UUID(), text: "edited", modifiedAt: 300)
+        let inserted = makeTextItem(id: UUID(), text: "inserted", modifiedAt: 150)
+        let deleted = makeTombstone(id: UUID(), modifiedAt: 175)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [
+                future.id: future.modifiedAt,
+                edited.id: Date(timeIntervalSinceReferenceDate: 200),
+                deleted.id: Date(timeIntervalSinceReferenceDate: 100)
+            ],
+            defaults: defaults,
+            containerID: containerID
+        )
 
         let store = FakeSyncableStore()
-        store.items = [stale, fresh]
+        store.items = [future, edited, inserted, deleted]
         let database = FakeCloudKitDatabase()
         let service = CloudKitSyncService(containerIdentifier: containerID, store: store,
                                           database: database, defaults: defaults)
 
-        _ = await service.start()
+        let result = await service.start()
 
         let pushed = database.savedBatches.flatMap { $0 }
-        #expect(pushed.count == 1)
-        #expect(pushed.first?.recordID.recordName == fresh.id.uuidString)
-        // Watermark advances to the newest pushed item.
-        #expect(defaults.object(forKey: "cloudkit.lastPushedModifiedAt.\(containerID)") as? Date
-                == Date(timeIntervalSinceReferenceDate: 300))
+        #expect(result == .started)
+        #expect(Set(pushed.map(\.recordID.recordName)) == [
+            edited.id.uuidString,
+            inserted.id.uuidString,
+            deleted.id.uuidString
+        ])
+        let persistedReceipts = try pushReceipts(
+            defaults: defaults,
+            containerID: containerID
+        )
+        let receipts = try #require(persistedReceipts)
+        #expect(receipts[future.id] == future.modifiedAt)
+        #expect(receipts[edited.id] == edited.modifiedAt)
+        #expect(receipts[inserted.id] == inserted.modifiedAt)
+        #expect(receipts[deleted.id] == deleted.modifiedAt)
     }
 
-    @Test func pushChunksLargeBatchesIntoGroupsOf100() async throws {
+    @Test func sameRecordClockRollbackRemainsDirty() async throws {
+        let id = UUID()
+        let rolledBack = makeTextItem(id: id, text: "clock-corrected", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [id: Date(timeIntervalSinceReferenceDate: 1_000)],
+            defaults: defaults,
+            containerID: containerID
+        )
         let store = FakeSyncableStore()
-        store.items = (0..<150).map { makeTextItem(text: "item-\($0)", modifiedAt: Double(1000 + $0)) }
+        store.items = [rolledBack]
+        let database = FakeCloudKitDatabase()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName) == [id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == rolledBack.modifiedAt)
+    }
+
+    @Test func receiptGarbageCollectionUsesTheCurrentCanonicalSet() async throws {
+        let retained = makeTextItem(text: "retained", modifiedAt: 100)
+        let orphanID = UUID()
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [
+                retained.id: retained.modifiedAt,
+                orphanID: Date(timeIntervalSinceReferenceDate: 200)
+            ],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let store = FakeSyncableStore()
+        store.items = [retained]
+        let database = FakeCloudKitDatabase()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)
+                == [retained.id: retained.modifiedAt])
+    }
+
+    @Test func hardRemoteDeletionProducesADirtyTombstoneReceipt() async throws {
+        let local = makeTextItem(text: "delete-remotely", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [local.id: local.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(deletedNames: [local.id.uuidString], moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        store.items = [local]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        let pushedVersion = try #require(
+            pushed[ClipboardCloudMapping.Key.modifiedAt] as? Date
+        )
+        #expect(pushed.recordID.recordName == local.id.uuidString)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] is Date)
+        #expect(pushedVersion != local.modifiedAt)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[local.id]
+                == pushedVersion)
+    }
+
+    @Test func secondBatchFailurePersistsNoReceiptsAndKeepsLegacyMigrationSignal() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 50_000)
+        defaults.set(legacyWatermark, forKey: watermarkKey)
+        let store = FakeSyncableStore()
+        store.items = (0..<250).map {
+            makeTextItem(text: "retry-\($0)", modifiedAt: Double($0))
+        }
+        let database = FakeCloudKitDatabase()
+        database.failedSaveCallIndices = [1]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the second CloudKit batch failure to fail sync")
+            return
+        }
+        #expect(database.savedBatches.map(\.count) == [100, 100])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
+        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+    }
+
+    @Test func allInvalidPreparationFailsBeforeSaveAndRetriesAfterBlobRestoration() async throws {
+        let filename = "\(UUID().uuidString).txt"
+        let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 10_000)
+        defaults.set(legacyWatermark, forKey: watermarkKey)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let failedResult = await service.start()
+
+        guard case .failed = failedResult else {
+            Issue.record("Expected missing local blob preparation to fail")
+            return
+        }
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
+        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+
+        let restoredBlobURL = try writeAsset("restored")
+        defer { try? FileManager.default.removeItem(at: restoredBlobURL) }
+        store.blobURLs[blob] = restoredBlobURL
+        let retryResult = await service.start()
+
+        #expect(retryResult == .started)
+        #expect(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName)
+                == [item.id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func mixedValidInvalidPreparationSavesNothingUntilTheWholeSetIsRestored() async throws {
+        let valid = makeTextItem(text: "valid", modifiedAt: 100)
+        let filename = "\(UUID().uuidString).txt"
+        let invalid = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 200)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 10_000)
+        defaults.set(legacyWatermark, forKey: watermarkKey)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [valid, invalid]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let failedResult = await service.start()
+
+        guard case .failed = failedResult else {
+            Issue.record("Expected mixed preparation to fail as one save set")
+            return
+        }
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
+        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+
+        let restoredBlobURL = try writeAsset("restored")
+        defer { try? FileManager.default.removeItem(at: restoredBlobURL) }
+        store.blobURLs[blob] = restoredBlobURL
+        let retryResult = await service.start()
+
+        #expect(retryResult == .started)
+        #expect(Set(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName))
+                == [valid.id.uuidString, invalid.id.uuidString])
+        let receipts = try #require(
+            try pushReceipts(defaults: defaults, containerID: containerID)
+        )
+        #expect(receipts[valid.id] == valid.modifiedAt)
+        #expect(receipts[invalid.id] == invalid.modifiedAt)
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func pushChunksTwoHundredFiftyRecordsIntoStableGroupsOf100() async throws {
+        let store = FakeSyncableStore()
+        store.items = (0..<250).map {
+            makeTextItem(text: "item-\($0)", modifiedAt: Double(1_000 + $0))
+        }
         let database = FakeCloudKitDatabase()
         let service = makeService(database: database, store: store)
 
-        _ = await service.start()
+        let result = await service.start()
 
-        #expect(database.savedBatches.count == 2)
-        #expect(database.savedBatches.map(\.count) == [100, 50])
+        #expect(result == .started)
+        #expect(database.savedBatches.map(\.count) == [100, 100, 50])
     }
 
-    @Test func startSkipsPushWhenNoLocalItemsAreDirty() async throws {
+    @Test func emptyCanonicalSetCompletesReceiptMigration() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        defaults.set(Date(timeIntervalSinceReferenceDate: 1_000), forKey: watermarkKey)
         let database = FakeCloudKitDatabase()
-        let service = makeService(database: database, store: FakeSyncableStore())
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
 
-        _ = await service.start()
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == [:])
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func migrationPullsBeforeReplayingTheReconciledCanonicalVersion() async throws {
+        let id = UUID()
+        let local = makeTextItem(id: id, text: "local-old", modifiedAt: 100)
+        let remote = makeTextItem(id: id, text: "remote-new", modifiedAt: 200)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        defaults.set(Date(timeIntervalSinceReferenceDate: 10_000), forKey: watermarkKey)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [local]
+        store.onApplyReconciledDurably = {
+            #expect(database.savedBatches.isEmpty)
+            #expect(defaults.object(forKey: watermarkKey) != nil)
+        }
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed[ClipboardCloudMapping.Key.textContent] as? String == "remote-new")
+        #expect(pushed[ClipboardCloudMapping.Key.modifiedAt] as? Date == remote.modifiedAt)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == remote.modifiedAt)
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func saveBeforeReceiptCrashKeepsLegacySignalAndReplaysIdempotently() async throws {
+        let item = makeTextItem(text: "replay-me", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 10_000)
+        defaults.set(legacyWatermark, forKey: watermarkKey)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let crashingService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            beforeReceiptPersistence: {
+                #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+                throw TestError.boom
+            }
+        )
+
+        let firstResult = await crashingService.start()
+
+        guard case .failed = firstResult else {
+            Issue.record("Expected simulated post-save receipt crash")
+            return
+        }
+        #expect(database.savedBatches.count == 1)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
+        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+
+        let retryingService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+        let retryResult = await retryingService.start()
+
+        #expect(retryResult == .started)
+        #expect(database.savedBatches.count == 2)
+        #expect(database.savedBatches.allSatisfy {
+            $0.map(\.recordID.recordName) == [item.id.uuidString]
+        })
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func corruptOrUnknownReceiptEnvelopeTriggersSafeFullReplay() async throws {
+        let item = makeTextItem(text: "recover-corrupt-state", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        defaults.set(
+            Data(#"{"version":999,"receipts":{}}"#.utf8),
+            forKey: pushReceiptsKey(containerID)
+        )
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName)
+                == [item.id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func receiptStateIsIsolatedByCloudKitContainer() async throws {
+        let item = makeTextItem(text: "container-scoped", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let firstContainerID = "test.first.\(UUID().uuidString)"
+        let secondContainerID = "test.second.\(UUID().uuidString)"
+        try setPushReceipts(
+            [item.id: item.modifiedAt],
+            defaults: defaults,
+            containerID: firstContainerID
+        )
+        let firstDatabase = FakeCloudKitDatabase()
+        let firstStore = FakeSyncableStore()
+        firstStore.items = [item]
+        let secondDatabase = FakeCloudKitDatabase()
+        let secondStore = FakeSyncableStore()
+        secondStore.items = [item]
+
+        let firstResult = await CloudKitSyncService(
+            containerIdentifier: firstContainerID,
+            store: firstStore,
+            database: firstDatabase,
+            defaults: defaults
+        ).start()
+        let secondResult = await CloudKitSyncService(
+            containerIdentifier: secondContainerID,
+            store: secondStore,
+            database: secondDatabase,
+            defaults: defaults
+        ).start()
+
+        #expect(firstResult == .started)
+        #expect(secondResult == .started)
+        #expect(firstDatabase.savedBatches.isEmpty)
+        #expect(secondDatabase.savedBatches.flatMap { $0 }.count == 1)
+        #expect(try pushReceipts(defaults: defaults, containerID: firstContainerID)?[item.id]
+                == item.modifiedAt)
+        #expect(try pushReceipts(defaults: defaults, containerID: secondContainerID)?[item.id]
+                == item.modifiedAt)
+    }
+
+    @Test func receiptCommitRechecksCanonicalIDsAfterSuspendedSave() async throws {
+        let id = UUID()
+        let original = makeTextItem(id: id, text: "prepared", modifiedAt: 100)
+        let updated = makeTextItem(id: id, text: "changed-during-save", modifiedAt: 200)
+        let removed = makeTextItem(text: "removed-during-save", modifiedAt: 150)
+        let reintroduced = makeTextItem(text: "reintroduced-during-save", modifiedAt: 125)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [reintroduced.id: reintroduced.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [original, removed]
+        database.onSaveRecords = { _ in
+            await Task.yield()
+            store.items = [updated, reintroduced]
+        }
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let firstResult = await service.start()
+
+        #expect(firstResult == .started)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == original.modifiedAt)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[removed.id]
+                == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[reintroduced.id]
+                == reintroduced.modifiedAt)
+
+        database.onSaveRecords = nil
+        let retryService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+        let retryResult = await retryService.start()
+
+        #expect(retryResult == .started)
+        #expect(database.savedBatches.count == 2)
+        #expect(database.savedBatches[0].count == 2)
+        #expect(database.savedBatches[1].count == 1)
+        #expect(database.savedBatches[1].first?[ClipboardCloudMapping.Key.modifiedAt] as? Date
+                == updated.modifiedAt)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == updated.modifiedAt)
+    }
+
+    @Test func overlappingPushRequestsSerializeAroundOneReceiptCommit() async {
+        let item = makeTextItem(text: "serialize", modifiedAt: 100)
+        let database = FakeCloudKitDatabase()
+        database.onSaveRecords = { _ in
+            await Task.yield()
+        }
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let service = makeService(database: database, store: store)
+
+        async let first = service.start()
+        async let second = service.start()
+        let results = await [first, second]
+
+        #expect(results.allSatisfy { $0 == .started })
+        #expect(database.savedBatches.count == 1)
+        #expect(database.savedBatches.first?.map(\.recordID.recordName)
+                == [item.id.uuidString])
+    }
+
+    @Test func repairInvalidationDrainsSuspendedPushAndQueuedFollowUpBeforeCommitting() async throws {
+        let repairFilename = "\(UUID().uuidString).txt"
+        let repairItem = makeLargeTextItem(id: UUID(), filename: repairFilename, modifiedAt: 100)
+        let repairBlob = try #require(SyncBlobReference(filename: repairFilename, kind: .text))
+        let localURL = try writeAsset("ordered-repair")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        let unrelated = makeTextItem(text: "unrelated-dirty-record", modifiedAt: 200)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [repairItem.id: repairItem.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(moreComing: false),
+            page(moreComing: false),
+            page(changed: [try record(for: repairItem)], moreComing: false)
+        ]
+        let firstSaveGate = AsyncTestGate()
+        database.onSaveRecords = { _ in
+            await firstSaveGate.waitOnce()
+        }
+        let store = FakeSyncableStore()
+        store.items = [repairItem, unrelated]
+        store.blobURLs[repairBlob] = localURL
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let initialStart = Task { await service.start() }
+        while !firstSaveGate.hasWaiter {
+            await Task.yield()
+        }
+        let queuedStart = Task { await service.start() }
+        while database.fetchCount < 2 {
+            await Task.yield()
+        }
+        let repairPull = Task { await service.handleRemoteChange() }
+        while database.fetchCount < 3 {
+            await Task.yield()
+        }
+        firstSaveGate.resume()
+
+        let initialResult = await initialStart.value
+        let queuedResult = await queuedStart.value
+        let repairResult = await repairPull.value
+
+        #expect(initialResult == .started)
+        #expect(queuedResult == .started)
+        #expect(repairResult)
+        #expect(database.savedBatches.count == 2)
+        #expect(database.savedBatches[0].map(\.recordID.recordName) == [unrelated.id.uuidString])
+        #expect(database.savedBatches[1].map(\.recordID.recordName) == [repairItem.id.uuidString])
+        #expect(database.savedBatches[1].first?[ClipboardCloudMapping.Key.blob] is CKAsset)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[repairItem.id]
+                == repairItem.modifiedAt)
+    }
+
+    // MARK: - Lifecycle invalidation
+
+    @Test func stopDuringPullRejectsALatePageBeforeReconciliationOrCheckpointMutation() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let local = makeTextItem(text: "local", modifiedAt: 100)
+        let remote = makeTextItem(text: "late-remote", modifiedAt: 200)
+        try setPushReceipts(
+            [local.id: local.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let fetchGate = AsyncTestGate()
+        let database = FakeCloudKitDatabase()
+        database.onFetchZoneChanges = {
+            await fetchGate.waitOnce()
+        }
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [local]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let startTask = Task { await service.start() }
+        while !fetchGate.hasWaiter {
+            await Task.yield()
+        }
+        service.stop()
+        store.markSyncUnavailable(reason: .disabled)
+        fetchGate.resume()
+        _ = await startTask.value
+
+        #expect(store.appliedReconciled == nil)
+        #expect(store.syncStatus == .localOnly(reason: .disabled))
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)
+                == [local.id: local.modifiedAt])
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func stopDuringBlobWriteRemovesStagingAndRejectsAllLateState() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let filename = "\(UUID().uuidString).txt"
+        let remote = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let destination = try #require(SyncBlobReference(filename: filename, kind: .text))
+        let assetURL = try writeAsset("late remote blob")
+        defer { try? FileManager.default.removeItem(at: assetURL) }
+        let writeGate = AsyncTestGate()
+        let database = FakeCloudKitDatabase()
+        database.pages = [
+            page(changed: [try record(for: remote, blobURL: assetURL)], moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        store.onWriteBlob = { _ in
+            await writeGate.waitOnce()
+        }
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let startTask = Task { await service.start() }
+        while !writeGate.hasWaiter {
+            await Task.yield()
+        }
+        service.stop()
+        store.markSyncUnavailable(reason: .disabled)
+        writeGate.resume()
+        _ = await startTask.value
+
+        let staged = try #require(store.writtenBlobs.first)
+        #expect(staged != destination)
+        #expect(store.deletedBlobs == [staged])
+        #expect(store.blobURL(for: staged).map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == false)
+        #expect(store.blobURL(for: destination).map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == false)
+        #expect(store.appliedReconciled == nil)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(store.syncStatus == .localOnly(reason: .disabled))
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func stopDuringSaveLeavesReceiptsRetryableAndDoesNotReportHealthy() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 10_000)
+        defaults.set(legacyWatermark, forKey: watermarkKey)
+        let local = makeTextItem(text: "save-in-flight", modifiedAt: 100)
+        let saveGate = AsyncTestGate()
+        let database = FakeCloudKitDatabase()
+        database.onSaveRecords = { _ in
+            await saveGate.waitOnce()
+        }
+        let store = FakeSyncableStore()
+        store.items = [local]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            pushDebounceNanoseconds: 0
+        )
+
+        let startTask = Task { await service.start() }
+        while !saveGate.hasWaiter {
+            await Task.yield()
+        }
+        service.stop()
+        store.markSyncUnavailable(reason: .disabled)
+        saveGate.resume()
+        _ = await startTask.value
+
+        #expect(database.savedBatches.count == 1)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
+        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+        #expect(store.syncStatus == .localOnly(reason: .disabled))
+
+        store.items = [makeTextItem(text: "after-stop", modifiedAt: 200)]
+        NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: store)
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        #expect(database.savedBatches.count == 1)
+    }
+
+    @Test func stopIsIdempotentAndUnregistersTheLocalChangeObserver() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts([:], defaults: defaults, containerID: containerID)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            pushDebounceNanoseconds: 0
+        )
+        #expect(await service.start() == .started)
+
+        service.stop()
+        service.stop()
+        store.markSyncUnavailable(reason: .disabled)
+        store.items = [makeTextItem(text: "after-stop", modifiedAt: 100)]
+        NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: store)
+        for _ in 0..<10 {
+            await Task.yield()
+        }
 
         #expect(database.savedBatches.isEmpty)
+        #expect(store.syncStatus == .localOnly(reason: .disabled))
+    }
+
+    // MARK: - Historical backfill
+
+    @Test func backfillUploadsOnlyMissingUUIDRecordsWithoutMutatingPushCheckpoints() async throws {
+        let existing = makeTextItem(text: "existing", modifiedAt: 100)
+        let firstMissing = makeTextItem(text: "first-missing", modifiedAt: 200)
+        let secondMissing = makeTextItem(text: "second-missing", modifiedAt: 300)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let existingWatermark = Date(timeIntervalSinceReferenceDate: 1_000)
+        defaults.set(existingWatermark, forKey: watermarkKey)
+        let existingReceipts = [existing.id: Date(timeIntervalSinceReferenceDate: 50)]
+        try setPushReceipts(
+            existingReceipts,
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.existingRecordNames = [existing.id.uuidString]
+        let store = FakeSyncableStore()
+        store.items = [existing, firstMissing, secondMissing]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = try await service.backfillMissingLocalRecords()
+
+        #expect(result.localRecordCount == 3)
+        #expect(result.presentRecordCountBefore == 1)
+        #expect(result.missingRecordCountBefore == 2)
+        #expect(result.uploadedRecordCount == 2)
+        #expect(result.presentRecordCountAfter == 3)
+        #expect(result.converged)
+        #expect(Set(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName))
+                == [firstMissing.id.uuidString, secondMissing.id.uuidString])
+        #expect(defaults.object(forKey: watermarkKey) as? Date == existingWatermark)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)
+                == existingReceipts)
+    }
+
+    @Test func backfillDryRunAndRepeatedExecutionAreIdempotent() async throws {
+        let item = makeTextItem(text: "missing", modifiedAt: 100)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let service = makeService(database: database, store: store)
+
+        let preview = try await service.backfillMissingLocalRecords(dryRun: true)
+        #expect(preview.missingRecordCountBefore == 1)
+        #expect(preview.uploadedRecordCount == 0)
+        #expect(database.savedBatches.isEmpty)
+
+        let first = try await service.backfillMissingLocalRecords()
+        let second = try await service.backfillMissingLocalRecords()
+
+        #expect(first.uploadedRecordCount == 1)
+        #expect(second.missingRecordCountBefore == 0)
+        #expect(second.uploadedRecordCount == 0)
+        #expect(database.savedBatches.count == 1)
+    }
+
+    @Test func backfillRefusesAllWritesWhenAMissingRecordHasNoLocalBlob() async throws {
+        let missingBlobItem = makeLargeTextItem(
+            id: UUID(),
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let validItem = makeTextItem(text: "valid", modifiedAt: 200)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = [missingBlobItem, validItem]
+        let service = makeService(database: database, store: store)
+
+        await #expect(throws: (any Error).self) {
+            try await service.backfillMissingLocalRecords()
+        }
+        #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func backfillPartialSaveFailsWithoutMutatingPushCheckpoints() async throws {
+        let item = makeTextItem(text: "retry-me", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
+        let existingWatermark = Date(timeIntervalSinceReferenceDate: 1_000)
+        defaults.set(existingWatermark, forKey: watermarkKey)
+        let existingReceipts = [item.id: Date(timeIntervalSinceReferenceDate: 50)]
+        try setPushReceipts(
+            existingReceipts,
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.failedSaveRecordNames = [item.id.uuidString]
+        let store = FakeSyncableStore()
+        store.items = [item]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        await #expect(throws: (any Error).self) {
+            try await service.backfillMissingLocalRecords()
+        }
+        #expect(database.existingRecordNames.isEmpty)
+        #expect(defaults.object(forKey: watermarkKey) as? Date == existingWatermark)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)
+                == existingReceipts)
+    }
+
+    @Test func backfillChunksPresenceChecksAndUploadsIntoGroupsOf100() async throws {
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        store.items = (0..<150).map {
+            makeTextItem(text: "missing-\($0)", modifiedAt: Double($0))
+        }
+        let service = makeService(database: database, store: store)
+
+        let result = try await service.backfillMissingLocalRecords()
+
+        #expect(result.uploadedRecordCount == 150)
+        #expect(database.presenceBatchSizes == [100, 50, 100, 50])
+        #expect(database.savedBatches.map(\.count) == [100, 50])
     }
 
     // MARK: - Change token
@@ -352,6 +1822,11 @@ struct CloudKitSyncServiceTests {
         defaults.set(Data([0x01, 0x02, 0x03]), forKey: tokenKey)
         defaults.set(Date(timeIntervalSinceReferenceDate: 1_000), forKey: watermarkKey)
         let local = makeTextItem(text: "local-only", modifiedAt: 100)
+        try setPushReceipts(
+            [local.id: local.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
         let database = FakeCloudKitDatabase()
         database.fetchErrors = [expiredChangeTokenError()]
         database.pages = [page(moreComing: false)]
@@ -367,15 +1842,75 @@ struct CloudKitSyncServiceTests {
         #expect(defaults.data(forKey: tokenKey) == nil)
         let pushed = database.savedBatches.flatMap { $0 }
         #expect(pushed.map(\.recordID.recordName) == [local.id.uuidString])
-        #expect(defaults.object(forKey: watermarkKey) as? Date == local.modifiedAt)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[local.id]
+                == local.modifiedAt)
+        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    @Test func tokenExpiryInterruptionLeavesReceiptsInvalidatedForRecreatedReplay() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        let local = makeTextItem(text: "replay-after-checkpoint-crash", modifiedAt: 100)
+        try setPushReceipts(
+            [local.id: local.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.fetchErrors = [expiredChangeTokenError()]
+        let store = FakeSyncableStore()
+        store.items = [local]
+        let interruptedService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            afterReceiptInvalidationBeforeTokenPersistence: {
+                #expect(defaults.data(forKey: pushReceiptsKey(containerID)) == nil)
+                #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+                throw TestError.boom
+            }
+        )
+
+        let interruptedResult = await interruptedService.start()
+
+        guard case .failed = interruptedResult else {
+            Issue.record("Expected interruption between receipt and token checkpoints")
+            return
+        }
+        #expect(defaults.data(forKey: pushReceiptsKey(containerID)) == nil)
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(database.savedBatches.isEmpty)
+
+        database.fetchErrors = [expiredChangeTokenError()]
+        let recreatedService = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+        let replayResult = await recreatedService.start()
+
+        #expect(replayResult == .started)
+        #expect(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName)
+                == [local.id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[local.id]
+                == local.modifiedAt)
+        #expect(defaults.data(forKey: tokenKey) == nil)
     }
 
     @Test func remoteChangeReuploadsLocalItemsWhenChangeTokenExpired() async throws {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
-        defaults.set(Date(timeIntervalSinceReferenceDate: 1_000),
-                     forKey: "cloudkit.lastPushedModifiedAt.\(containerID)")
         let local = makeTextItem(text: "local-after-remote-token-reset", modifiedAt: 100)
+        try setPushReceipts(
+            [local.id: local.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
         let database = FakeCloudKitDatabase()
         database.fetchErrors = [expiredChangeTokenError()]
         database.pages = [page(moreComing: false)]
@@ -407,14 +1942,43 @@ struct CloudKitSyncServiceTests {
         UserDefaults(suiteName: "CloudKitSyncServiceTests.\(UUID().uuidString)")!
     }
 
-    private func makeTextItem(text: String, modifiedAt: TimeInterval) -> ClipboardItem {
+    private func makeTextItem(
+        id: UUID = UUID(),
+        text: String,
+        modifiedAt: TimeInterval
+    ) -> ClipboardItem {
         ClipboardItem(
-            id: UUID(),
+            id: id,
             type: .text,
             timestamp: Date(timeIntervalSinceReferenceDate: modifiedAt),
             textContent: text,
             modifiedAt: Date(timeIntervalSinceReferenceDate: modifiedAt)
         )
+    }
+
+    private func pushReceiptsKey(_ containerID: String) -> String {
+        "cloudkit.pushReceipts.\(containerID)"
+    }
+
+    private func setPushReceipts(
+        _ receipts: [UUID: Date],
+        defaults: UserDefaults,
+        containerID: String
+    ) throws {
+        defaults.set(
+            try CloudKitPushReceiptCodec.encode(receipts),
+            forKey: pushReceiptsKey(containerID)
+        )
+    }
+
+    private func pushReceipts(
+        defaults: UserDefaults,
+        containerID: String
+    ) throws -> [UUID: Date]? {
+        guard let data = defaults.data(forKey: pushReceiptsKey(containerID)) else {
+            return nil
+        }
+        return try CloudKitPushReceiptCodec.decode(data)
     }
 
     private func makeLargeTextItem(id: UUID, filename: String, modifiedAt: TimeInterval) -> ClipboardItem {
@@ -467,19 +2031,49 @@ struct CloudKitSyncServiceTests {
 
 private enum TestError: Error { case boom }
 
+@MainActor
+private final class AsyncTestGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var hasWaited = false
+
+    var hasWaiter: Bool {
+        continuation != nil
+    }
+
+    func waitOnce() async {
+        guard !hasWaited else { return }
+        hasWaited = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 /// In-memory `CloudKitDatabase`: returns the configured zone-change pages in order, records
 /// every saved batch, and can be told to fail bring-up. `@MainActor` to match the seam.
 @MainActor
 private final class FakeCloudKitDatabase: CloudKitDatabase {
     var pages: [CloudKitZoneChanges] = []
+    var existingRecordNames: Set<String> = []
     var ensureZoneError: (any Error)?
     var fetchErrors: [any Error] = []
     var saveError: (any Error)?
+    var failedSaveRecordNames: [String] = []
+    var failedSaveCallIndices: Set<Int> = []
+    var onFetchZoneChanges: (() async -> Void)?
+    var onSaveRecords: (([CKRecord]) async -> Void)?
 
     private(set) var ensuredZone = false
     private(set) var ensuredSubscription = false
     private(set) var savedBatches: [[CKRecord]] = []
+    private(set) var presenceBatchSizes: [Int] = []
     private(set) var fetchCount = 0
+    private var saveCallIndex = 0
     private var pageIndex = 0
 
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws {
@@ -496,6 +2090,7 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
         since token: CKServerChangeToken?
     ) async throws -> CloudKitZoneChanges {
         fetchCount += 1
+        await onFetchZoneChanges?()
         if !fetchErrors.isEmpty {
             throw fetchErrors.removeFirst()
         }
@@ -507,9 +2102,33 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
         return pages[pageIndex]
     }
 
-    func saveRecords(_ records: [CKRecord]) async throws {
+    func fetchRecordPresence(
+        for recordNames: [String],
+        in zoneID: CKRecordZone.ID
+    ) async throws -> CloudKitRecordPresence {
+        presenceBatchSizes.append(recordNames.count)
+        let requested = Set(recordNames)
+        return CloudKitRecordPresence(
+            presentRecordNames: requested.intersection(existingRecordNames),
+            missingRecordNames: requested.subtracting(existingRecordNames)
+        )
+    }
+
+    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
         if let saveError { throw saveError }
+        let currentSaveCallIndex = saveCallIndex
+        saveCallIndex += 1
         savedBatches.append(records)
+        await onSaveRecords?(records)
+        let failuresForCall = failedSaveCallIndices.contains(currentSaveCallIndex)
+            ? records.map(\.recordID.recordName)
+            : self.failedSaveRecordNames
+        existingRecordNames.formUnion(
+            records.compactMap {
+                failuresForCall.contains($0.recordID.recordName) ? nil : $0.recordID.recordName
+            }
+        )
+        return CloudKitRecordSaveResult(failedRecordNames: failuresForCall)
     }
 }
 
@@ -517,13 +2136,21 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
 @MainActor
 private final class FakeSyncableStore: SyncableStore {
     var items: [ClipboardItem] = []
+    var blobURLs: [SyncBlobReference: URL] = [:]
     var onApplyReconciledDurably: (() -> Void)?
+    var onWriteBlob: ((SyncBlobReference) async -> Void)?
     private(set) var appliedReconciled: [ClipboardItem]?
     private(set) var writtenBlobs: [SyncBlobReference] = []
     private(set) var deletedBlobs: [SyncBlobReference] = []
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
     var writeBlobError: (any Error)?
     var durableApplyError: (any Error)?
+    private let blobDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("YankCloudKitSyncTests-\(UUID().uuidString)", isDirectory: true)
+
+    isolated deinit {
+        try? FileManager.default.removeItem(at: blobDirectory)
+    }
 
     func itemsForSync() -> [ClipboardItem] { items }
 
@@ -538,15 +2165,28 @@ private final class FakeSyncableStore: SyncableStore {
         onApplyReconciledDurably?()
     }
 
-    func blobURL(for reference: SyncBlobReference) -> URL? { nil }
+    func blobURL(for reference: SyncBlobReference) -> URL? {
+        blobURLs[reference] ?? reference.containedURL(in: blobDirectory)
+    }
 
     func writeBlob(_ data: Data, reference: SyncBlobReference) async throws {
         if let writeBlobError { throw writeBlobError }
+        guard let url = reference.containedURL(in: blobDirectory) else {
+            throw SyncBlobStorage.Error.unsafeFilename
+        }
+        try FileManager.default.createDirectory(at: blobDirectory, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        blobURLs[reference] = url
         writtenBlobs.append(reference)
+        await onWriteBlob?(reference)
     }
 
     func deleteBlob(_ reference: SyncBlobReference) {
         deletedBlobs.append(reference)
+        if let url = blobURL(for: reference) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        blobURLs[reference] = nil
     }
 
     func markSyncStarted() { syncStatus = .syncing }

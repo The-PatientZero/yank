@@ -1,5 +1,25 @@
 import SwiftUI
 
+enum HistoryEmptyPresentation: Equatable {
+    case iCloudSignedOut
+    case syncFailed(String)
+    case syncing
+    case captureSetup
+    case ready
+
+    static func resolve(
+        iCloudSignedOut: Bool,
+        syncFailureMessage: String?,
+        isAwaitingFirstSync: Bool,
+        captureSetupCompleted: Bool
+    ) -> Self {
+        if iCloudSignedOut { return .iCloudSignedOut }
+        if let syncFailureMessage { return .syncFailed(syncFailureMessage) }
+        if isAwaitingFirstSync { return .syncing }
+        return captureSetupCompleted ? .ready : .captureSetup
+    }
+}
+
 struct HistoryView: View {
     var store: ClipStore
     var settings: IOSSettings
@@ -73,17 +93,29 @@ struct HistoryView: View {
         return store.firstSyncState.failureMessage
     }
 
+    private var emptyPresentation: HistoryEmptyPresentation {
+        .resolve(
+            iCloudSignedOut: iCloudSignedOut,
+            syncFailureMessage: firstSyncFailureMessage,
+            isAwaitingFirstSync: isAwaitingFirstSync,
+            captureSetupCompleted: settings.captureSetupCompleted
+        )
+    }
+
     private var browse: some View {
         Group {
             if store.items.isEmpty {
-                if iCloudSignedOut {
+                switch emptyPresentation {
+                case .iCloudSignedOut:
                     iCloudSignedOutState
-                } else if let firstSyncFailureMessage {
-                    syncFailedState(message: firstSyncFailureMessage)
-                } else if isAwaitingFirstSync {
+                case .syncFailed(let message):
+                    syncFailedState(message: message)
+                case .syncing:
                     syncingState
-                } else {
+                case .captureSetup:
                     onboardingState
+                case .ready:
+                    readyEmptyState
                 }
             } else {
                 content
@@ -105,6 +137,7 @@ struct HistoryView: View {
         }
         .animation(IOSMotion.state(reduceMotion), value: isAwaitingFirstSync)
         .animation(IOSMotion.state(reduceMotion), value: firstSyncFailureMessage)
+        .animation(IOSMotion.state(reduceMotion), value: settings.captureSetupCompleted)
         .animation(IOSMotion.state(reduceMotion), value: store.storageUnavailable)
         .animation(IOSMotion.state(reduceMotion), value: store.pendingDeletion != nil)
         .navigationBarTitleDisplayMode(.inline)

@@ -408,12 +408,10 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     }
     
     private func copyToClipboard(_ item: ClipboardItem) {
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         PasteController.copyToClipboard(item, store: store)
     }
 
     private func copyToClipboard(_ items: [ClipboardItem]) {
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         PasteController.copyMultipleToClipboard(items, store: store)
     }
     
@@ -426,7 +424,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let ax = axPermission
         let delay = pasteDelay
         close()
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             PasteController.paste(item, store: self.store, axPermission: ax, previousApp: appToRestore)
         }
@@ -438,7 +435,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let ax = axPermission
         let delay = pasteDelay
         close()
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             PasteController.pasteText(text, axPermission: ax, previousApp: appToRestore)
         }
@@ -449,7 +445,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let ax = axPermission
         let delay = pasteDelay
         close()
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             PasteController.pasteMultiple(items, store: self.store, axPermission: ax, previousApp: appToRestore)
         }

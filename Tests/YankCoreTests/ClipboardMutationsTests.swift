@@ -96,6 +96,83 @@ import Foundation
         #expect(items[0].modifiedAt == Date(timeIntervalSinceReferenceDate: 100))
     }
 
+    @Test("Duplicate refresh preserves identity and annotations while adopting the new capture")
+    func duplicateRefreshPreservesAnnotationsAndRefreshesCaptureFields() {
+        let existing = ClipboardItem(
+            id: clipID(1),
+            type: .text,
+            timestamp: Date(timeIntervalSinceReferenceDate: 100),
+            sourceApp: "Old App",
+            textContent: "same",
+            isPinned: true,
+            isBookmarked: true,
+            tags: ["saved"],
+            ocrText: "ocr",
+            aiTags: ["topic"],
+            aiTitle: "Legacy",
+            aiEnrichedAt: Date(timeIntervalSinceReferenceDate: 150),
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 200),
+            deviceOrigin: "device-old"
+        )
+        let incoming = ClipboardItem(
+            id: clipID(2),
+            type: .text,
+            timestamp: Date(timeIntervalSinceReferenceDate: 500),
+            sourceApp: "New App",
+            textContent: "same",
+            hasRichContent: true,
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 600),
+            deviceOrigin: "device-new"
+        )
+        var items = [item(3), existing]
+
+        let refreshed = ClipboardMutations.refreshDuplicateCapture(
+            existingID: existing.id,
+            with: incoming,
+            in: &items
+        )
+
+        #expect(refreshed)
+        #expect(items.map(\.id) == [existing.id, clipID(3)])
+        #expect(items[0].timestamp == incoming.timestamp)
+        #expect(items[0].sourceApp == incoming.sourceApp)
+        #expect(items[0].hasRichContent)
+        #expect(items[0].modifiedAt == incoming.modifiedAt)
+        #expect(items[0].deviceOrigin == incoming.deviceOrigin)
+        #expect(items[0].isPinned)
+        #expect(items[0].isBookmarked)
+        #expect(items[0].tags == ["saved"])
+        #expect(items[0].ocrText == "ocr")
+        #expect(items[0].aiTags == ["topic"])
+        #expect(items[0].aiTitle == "Legacy")
+        #expect(items[0].aiEnrichedAt == Date(timeIntervalSinceReferenceDate: 150))
+    }
+
+    @Test("Duplicate refresh mutates an item that is already first")
+    func duplicateRefreshUpdatesFrontItem() {
+        let existing = item(1, mod: 100)
+        let incoming = ClipboardItem(
+            id: clipID(2),
+            type: .text,
+            timestamp: Date(timeIntervalSinceReferenceDate: 500),
+            textContent: existing.textContent,
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 600),
+            deviceOrigin: "device-new"
+        )
+        var items = [existing, item(3)]
+
+        let refreshed = ClipboardMutations.refreshDuplicateCapture(
+            existingID: existing.id,
+            with: incoming,
+            in: &items
+        )
+
+        #expect(refreshed)
+        #expect(items[0].id == existing.id)
+        #expect(items[0].timestamp == incoming.timestamp)
+        #expect(items[0].modifiedAt == incoming.modifiedAt)
+    }
+
     @Test func allTagsAreUniqueAndSorted() {
         let items = [item(1, tags: ["work", "todo"]), item(2, tags: ["todo", "idea"])]
         #expect(ClipboardMutations.allTags(items) == ["idea", "todo", "work"])

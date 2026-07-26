@@ -60,13 +60,13 @@ public enum SyncBlobPolicy {
         guard let filename = validatedFilename(filename, kind: kind) else { return nil }
 
         let base = directory.standardizedFileURL.resolvingSymlinksInPath()
-        let candidate = directory
+        let candidate = base
             .appendingPathComponent(filename, isDirectory: false)
             .standardizedFileURL
-            .resolvingSymlinksInPath()
 
-        let basePath = base.path.hasSuffix("/") ? base.path : base.path + "/"
-        guard candidate.path.hasPrefix(basePath) else { return nil }
+        guard candidate.deletingLastPathComponent().path == base.path else { return nil }
+        let values = try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey])
+        guard values?.isSymbolicLink != true else { return nil }
         return candidate
     }
 

@@ -32,6 +32,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private let anchorFrameProvider: @MainActor () -> NSRect?
     private let focusedInputFrameProvider: @MainActor (NSRunningApplication?) -> NSRect?
     private let onOpenFullHistory: @MainActor () -> Void
+    private let onStartPasteSequence: @MainActor () -> Void
     private let presentationState = QuickPickerPresentationState()
     private var previousApp: NSRunningApplication?
     private var isApplyingProgrammaticFrame = false
@@ -47,7 +48,8 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         focusedInputFrameProvider: @escaping @MainActor (NSRunningApplication?) -> NSRect? = {
             FocusedInputFrameProvider.frame(preferredApp: $0)
         },
-        onOpenFullHistory: @escaping @MainActor () -> Void
+        onOpenFullHistory: @escaping @MainActor () -> Void,
+        onStartPasteSequence: @escaping @MainActor () -> Void = {}
     ) {
         self.store = store
         self.settings = settings
@@ -55,6 +57,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         self.anchorFrameProvider = anchorFrameProvider
         self.focusedInputFrameProvider = focusedInputFrameProvider
         self.onOpenFullHistory = onOpenFullHistory
+        self.onStartPasteSequence = onStartPasteSequence
 
         let initialRect = Self.savedFrame() ?? NSRect(origin: .zero, size: Self.defaultSize)
         let panel = QuickPickerPanel(
@@ -109,6 +112,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             onSmartPaste: { [weak self] item, transform in self?.smartPaste(item, transform) },
             onDismiss: { [weak self] in self?.close() },
             onOpenFullHistory: { [weak self] in self?.openFullHistory() },
+            onStartPasteSequence: { [weak self] in self?.startPasteSequence() },
             onSmartSearch: { [weak self] phrase in await self?.smartSearch(phrase) ?? [] }
         )
         let host = NSHostingView(rootView: view)
@@ -147,13 +151,19 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         onOpenFullHistory()
     }
 
+    private func startPasteSequence() {
+        let appToRestore = previousApp
+        close()
+        appToRestore?.activate()
+        onStartPasteSequence()
+    }
+
     private func smartSearch(_ phrase: String) async -> [ClipboardItem] {
         let query = await FoundationModelQueryParser().parse(phrase)
         return query.apply(to: store.filteredItems(search: "", activeTag: nil))
     }
 
     private func copy(_ item: ClipboardItem) {
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         PasteController.copyToClipboard(item, store: store)
         close()
     }
@@ -161,7 +171,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private func paste(_ item: ClipboardItem) {
         let appToRestore = previousApp
         close()
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         DispatchQueue.main.async {
             PasteController.paste(item, store: self.store, axPermission: self.axPermission, previousApp: appToRestore)
         }
@@ -170,7 +179,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private func smartPaste(_ item: ClipboardItem, _ transform: TextTransform) {
         let appToRestore = previousApp
         close()
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         PasteController.pasteTransformed(item, as: transform, store: store,
                                          axPermission: axPermission, previousApp: appToRestore)
     }
@@ -179,7 +187,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         guard let text = item.ocrText ?? item.textContent, !text.isEmpty else { return }
         let appToRestore = previousApp
         close()
-        NotificationCenter.default.post(name: .yankIgnoreNextChange, object: nil)
         DispatchQueue.main.async {
             PasteController.pasteText(text, axPermission: self.axPermission, previousApp: appToRestore)
         }

@@ -17,6 +17,9 @@ enum HistorySnapshotLoader {
         case corruptHistory
         case unreadableTombstones
         case corruptTombstones
+        case unreadableTransaction
+        case corruptTransaction
+        case transactionRecoveryFailed
 
         var errorDescription: String? {
             switch self {
@@ -28,11 +31,38 @@ enum HistorySnapshotLoader {
                 "The saved deletion log could not be read."
             case .corruptTombstones:
                 "The saved deletion log is not valid Yank history."
+            case .unreadableTransaction:
+                "The pending history transaction could not be read."
+            case .corruptTransaction:
+                "The pending history transaction is not valid Yank history."
+            case .transactionRecoveryFailed:
+                "The pending history transaction could not be recovered."
             }
         }
     }
 
     static func load(historyURL: URL, tombstonesURL: URL) -> Result<Snapshot, LoadError> {
+        let transactionURL = HistorySnapshotTransaction.transactionURL(for: historyURL)
+        if FileManager.default.fileExists(atPath: transactionURL.path) {
+            do {
+                try HistorySnapshotTransaction.replayIfPresent(
+                    historyURL: historyURL,
+                    tombstonesURL: tombstonesURL
+                )
+            } catch let error as HistorySnapshotTransactionError {
+                switch error {
+                case .invalidEnvelope, .unsupportedVersion:
+                    return .failure(.corruptTransaction)
+                case .tombstoneEncodingFailed:
+                    return .failure(.transactionRecoveryFailed)
+                }
+            } catch let error as CocoaError where error.code == .fileReadNoPermission {
+                return .failure(.unreadableTransaction)
+            } catch {
+                return .failure(.transactionRecoveryFailed)
+            }
+        }
+
         let historyData: Data
         switch existingFileData(at: historyURL, unreadableError: .unreadableHistory) {
         case .success(let data?):

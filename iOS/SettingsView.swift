@@ -23,9 +23,9 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                captureSection
                 appearanceSection
                 syncSection
-                getStartedSection
                 historySection
                 dataSection
                 aboutSection
@@ -38,6 +38,31 @@ struct SettingsView: View {
             .animation(IOSMotion.state(reduceMotion), value: settings.themeID)
             .animation(IOSMotion.state(reduceMotion), value: settings.viewMode)
             .animation(IOSMotion.state(reduceMotion), value: settings.density)
+            .animation(IOSMotion.state(reduceMotion), value: settings.foregroundCaptureMode)
+        }
+    }
+
+    // MARK: - Capture section
+
+    private var captureSection: some View {
+        Section {
+            Picker(
+                "When Yank is active",
+                selection: Binding(
+                    get: { settings.foregroundCaptureMode },
+                    set: { settings.setForegroundCaptureMode($0) }
+                )
+            ) {
+                ForEach(IOSForegroundCaptureMode.settingsChoices) { mode in
+                    Text(mode.choiceTitle).tag(mode)
+                }
+            }
+            .pickerStyle(.navigationLink)
+            .disabled(settings.storageUnavailable)
+        } header: {
+            Text("Clipboard Capture")
+        } footer: {
+            Text(settings.foregroundCaptureMode.choiceDescription)
         }
     }
 
@@ -126,42 +151,6 @@ struct SettingsView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Sync failed. \(message)")
-        }
-    }
-
-    // MARK: - Get Started section
-
-    private var getStartedSection: some View {
-        Section {
-            CapturePathRow(
-                systemImage: "keyboard",
-                title: "Keyboard Extension",
-                description: "Use the Yank keyboard in any app to paste from your history.",
-                actionLabel: "Open Settings",
-                action: {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                }
-            )
-            CapturePathRow(
-                systemImage: "square.and.arrow.up",
-                title: "Share Sheet",
-                description: "Share text or images from any app directly into Yank.",
-                actionLabel: nil,
-                action: nil
-            )
-            CapturePathRow(
-                systemImage: "bolt.circle",
-                title: "Action Button",
-                description: "On supported iPhone models, assign the Action Button to capture clips instantly.",
-                actionLabel: nil,
-                action: nil
-            )
-        } header: {
-            Text("Get Started")
-        } footer: {
-            Text(SyncCopy.iCloudRequirement)
         }
     }
 
@@ -302,38 +291,5 @@ struct SettingsView: View {
     private func selectTheme(_ theme: AppTheme) {
         IOSMotion.selectionFeedback()
         withAnimation(IOSMotion.state(reduceMotion)) { settings.themeID = theme.id }
-    }
-}
-
-// MARK: - CapturePathRow
-
-private struct CapturePathRow: View {
-    let systemImage: String
-    let title: String
-    let description: String
-    let actionLabel: String?
-    let action: (() -> Void)?
-
-    private var isActionable: Bool { actionLabel != nil && action != nil }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: Space.lg) {
-            Image(systemName: systemImage)
-                .font(.yank(.title3))
-                .foregroundStyle(isActionable ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .frame(width: 28)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: Space.xxs) {
-                Text(title).font(.yank(.subheadline, weight: .semibold))
-                Text(description).font(.yank(.footnote)).foregroundStyle(.secondary)
-                if let actionLabel, let action {
-                    Button(actionLabel, action: action)
-                        .font(.yank(.footnote))
-                        .padding(.top, Space.xxs)
-                }
-            }
-        }
-        .padding(.vertical, Space.xs)
-        .accessibilityElement(children: .combine)
     }
 }

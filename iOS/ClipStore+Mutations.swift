@@ -2,6 +2,53 @@ import UIKit
 import os
 import UniformTypeIdentifiers
 
+@MainActor
+enum IOSPasteboardItemBuilder {
+    static func text(
+        _ text: String,
+        marker: IOSPasteboardOriginMarker
+    ) -> [[String: Any]] {
+        [[
+            UTType.utf8PlainText.identifier: text,
+            marker.pasteboardType: marker.tokenData
+        ]]
+    }
+
+    static func imagePNG(
+        _ data: Data,
+        marker: IOSPasteboardOriginMarker
+    ) -> [[String: Any]] {
+        [[
+            UTType.png.identifier: data,
+            marker.pasteboardType: marker.tokenData
+        ]]
+    }
+
+    /// Returns the new generation only when the item carrying our tag is still current.
+    /// Another process can replace the pasteboard immediately after `setItems`; validating
+    /// the tag between two generation reads prevents that external generation from being
+    /// marked handled by the foreground coordinator.
+    static func writeAndValidateCurrentGeneration(
+        _ items: [[String: Any]],
+        marker: IOSPasteboardOriginMarker,
+        setItems: ([[String: Any]]) -> Void,
+        readChangeCount: () -> Int,
+        readTypes: () -> [String],
+        readData: (String) -> Data?
+    ) -> Int? {
+        setItems(items)
+        let writtenGeneration = readChangeCount()
+        guard marker.matches(
+            pasteboardTypes: readTypes(),
+            readData: readData
+        ),
+        readChangeCount() == writtenGeneration else {
+            return nil
+        }
+        return writtenGeneration
+    }
+}
+
 /// iOS clip edits — pin / bookmark / tag / OCR, plus image loading — built on the
 /// shared `ClipboardMutations` so they behave exactly like the Mac and stamp
 /// `modifiedAt` for last-writer-wins sync. App-only: the keyboard and share
@@ -116,24 +163,45 @@ extension ClipStore {
     /// Put a clip on the system pasteboard (text or image) and float it to the top.
     @discardableResult
     func copyToPasteboard(_ item: ClipboardItem) async -> Bool {
-        let didCopy: Bool
+        guard let marker = pasteboardOriginMarkerForWrite(
+            bundleIdentifier: Bundle.main.bundleIdentifier
+        ) else {
+            clipStoreLog.error("Cannot mark an iOS pasteboard write for this installation.")
+            return false
+        }
+
+        let pasteboardItems: [[String: Any]]?
         switch item.type {
         case .text:
             if let text = await fullText(for: item) {
-                UIPasteboard.general.string = text
-                didCopy = true
+                pasteboardItems = IOSPasteboardItemBuilder.text(text, marker: marker)
             } else {
-                didCopy = false
+                pasteboardItems = nil
             }
         case .image:
             if let data = try? await ClipboardPayloadLoader.imagePNGData(for: item, blobURL: blobURL(for: item)) {
-                UIPasteboard.general.setData(data, forPasteboardType: UTType.png.identifier)
-                didCopy = true
+                pasteboardItems = IOSPasteboardItemBuilder.imagePNG(data, marker: marker)
             } else {
-                didCopy = false
+                pasteboardItems = nil
             }
         }
-        if didCopy { touch(item) }
-        return didCopy
+        guard let pasteboardItems else { return false }
+
+        let pasteboard = UIPasteboard.general
+        let writtenGeneration = IOSPasteboardItemBuilder.writeAndValidateCurrentGeneration(
+            pasteboardItems,
+            marker: marker,
+            setItems: { pasteboard.setItems($0) },
+            readChangeCount: { pasteboard.changeCount },
+            readTypes: { pasteboard.types },
+            readData: { pasteboard.data(forPasteboardType: $0) }
+        )
+        if let writtenGeneration {
+            IOSForegroundRefreshCoordinator.shared.markPasteboardChangeHandled(
+                writtenGeneration
+            )
+        }
+        touch(item)
+        return true
     }
 }

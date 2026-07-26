@@ -95,6 +95,33 @@ import Testing
         )
     }
 
+    @Test func imageAccessibilityLabelPrefersBoundedNormalizedOCR() {
+        let item = ClipboardItem(
+            type: .image,
+            sourceApp: "Preview",
+            imageFilename: "image.png",
+            ocrText: String(repeating: "invoice \n", count: 30)
+        )
+
+        #expect(item.imageAccessibilityLabel.count == 160)
+        #expect(item.imageAccessibilityLabel.hasPrefix("invoice invoice"))
+        #expect(item.imageAccessibilityLabel.hasSuffix("…"))
+        #expect(!item.imageAccessibilityLabel.contains("\n"))
+    }
+
+    @Test func imageAccessibilityLabelFallsBackToSourceThenGenericCopy() {
+        let sourced = ClipboardItem(
+            type: .image,
+            sourceApp: "  Photos  ",
+            imageFilename: "image.png",
+            ocrText: " \n "
+        )
+        let generic = ClipboardItem(type: .image, imageFilename: "opaque-storage-name.png")
+
+        #expect(sourced.imageAccessibilityLabel == "Photos")
+        #expect(generic.imageAccessibilityLabel == "Image clip")
+    }
+
     @Test func hasRichContentDefaultsFalse() {
         let item = ClipboardItem.text("plain")
         #expect(item.hasRichContent == false)

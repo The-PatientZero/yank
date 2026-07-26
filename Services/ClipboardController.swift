@@ -27,7 +27,10 @@ final class ClipboardController {
     private var enrichmentService: ClipEnrichmentService?
     private var delayedQuickPickerOpen: DispatchWorkItem?
     private var cloudSync: CloudKitSyncService?
+    private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
+    private var cloudRemoteChangeTask: (id: UUID, task: Task<Void, Never>)?
     private var observerTokens: [NSObjectProtocol] = []
+    private var pasteSequenceCoordinator: PasteSequenceCoordinator?
 
     private var store: ClipboardStore { dependencies.store }
 
@@ -45,6 +48,7 @@ final class ClipboardController {
 
     func start() {
         let watcher = ClipboardWatcher(store: store, settings: dependencies.settings.captureSettings)
+        let pasteSequenceCoordinator = makePasteSequenceCoordinator(for: watcher)
         watcher.startWatching()
         clipboardWatcher = watcher
 
@@ -112,7 +116,8 @@ final class ClipboardController {
             settings: dependencies.settings,
             axPermission: dependencies.axPermission,
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
-            onOpenFullHistory: { [weak self] in self?.showHistoryWindow() }
+            onOpenFullHistory: { [weak self] in self?.showHistoryWindow() },
+            onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() }
         )
 
         let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
@@ -133,7 +138,11 @@ final class ClipboardController {
 
         registerHotkey()
         observerTokens.append(
-            NotificationCenter.default.addObserver(forName: .yankHotkeyChanged, object: nil, queue: .main) { [weak self] _ in
+            NotificationCenter.default.addObserver(
+                forName: .yankHotkeyChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.registerHotkey()
@@ -145,7 +154,27 @@ final class ClipboardController {
         updateTooltip()
     }
 
+    private func makePasteSequenceCoordinator(for watcher: ClipboardWatcher) -> PasteSequenceCoordinator {
+        let coordinator = PasteSequenceCoordinator(
+            dependencies: dependencies,
+            watcher: watcher,
+            onActivityChanged: { [weak self] in self?.updateTooltip() }
+        )
+        pasteSequenceCoordinator = coordinator
+        watcher.onEligibleTextCopy = { [weak coordinator] generation, text, capturedAt in
+            coordinator?.record(
+                pasteboardGeneration: generation,
+                text: text,
+                capturedAt: capturedAt
+            )
+        }
+        return coordinator
+    }
+
     func stop() {
+        tearDownCloudSync()
+        pasteSequenceCoordinator?.stop()
+        pasteSequenceCoordinator = nil
         observerTokens.forEach { NotificationCenter.default.removeObserver($0) }
         observerTokens.removeAll()
         clipboardWatcher?.stopWatching()
@@ -160,16 +189,24 @@ final class ClipboardController {
         enrichmentService = nil
         historyWindowController?.close()
         historyWindowController = nil
-        cloudSync = nil
     }
 
     // MARK: - Forwarded from the composition root
 
     /// Handle a CloudKit silent push delivered to the app delegate.
     func handleRemoteChange() {
-        Task { @MainActor in
-            _ = await pullRemoteChange()
+        guard cloudRemoteChangeTask == nil else { return }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let service = self.cloudSync
+            _ = await self.pullRemoteChange()
+            guard !Task.isCancelled,
+                  self.cloudRemoteChangeTask?.id == taskID,
+                  service == nil || self.cloudSync === service else { return }
+            self.cloudRemoteChangeTask = nil
         }
+        cloudRemoteChangeTask = (taskID, task)
     }
 
     private func pullRemoteChange() async -> Bool {
@@ -188,45 +225,66 @@ final class ClipboardController {
 
     private func registerHotkey() {
         let settings = dependencies.settings
-        let ok = dependencies.hotkeys.register(
+        let registered = dependencies.hotkeys.register(
             keyCode: settings.hotkeyKeyCode,
             modifiers: settings.hotkeyModifiers,
-            onFire: { [weak self] in self?.toggleShortcutTargetWindow() }
+            onFire: { [weak self] in self?.handleGlobalShortcut() }
         )
-        if !ok {
+        if !registered {
             Log.hotkey.warning("Global hotkey registration failed — conflicting app or permission denied.")
         }
-        dependencies.appStatus.hotkeyRegistrationFailed = !ok
-    }
-
-    private func startSync(_ sync: CloudKitSyncService) async {
-        switch await sync.start() {
-        case .started:
-            break
-        case .failed(let message):
-            Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
+        dependencies.appStatus.hotkeyRegistrationFailed = !registered
+        if !registered {
+            pasteSequenceCoordinator?.hotkeyRegistrationDidFail()
         }
     }
 
     private func configureCloudSync() {
         guard dependencies.settings.syncEnabled else {
-            cloudSync = nil
-            NSApp.unregisterForRemoteNotifications()
-            store.markSyncUnavailable(reason: .disabled)
+            tearDownCloudSync(reason: .disabled)
             return
         }
         guard CloudContainerProvisioning.isProvisioned(for: Self.cloudContainerID) else {
             Log.app.info("CloudKit container not provisioned; running local-only.")
-            cloudSync = nil
-            NSApp.unregisterForRemoteNotifications()
-            store.markSyncUnavailable(reason: .notProvisioned)
+            tearDownCloudSync(reason: .notProvisioned)
             return
         }
         guard cloudSync == nil else { return }
         let sync = CloudKitSyncService(containerIdentifier: Self.cloudContainerID, store: store)
         cloudSync = sync
         NSApp.registerForRemoteNotifications()
-        Task { await self.startSync(sync) }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self, weak sync] in
+            guard let sync else { return }
+            let result = await sync.start()
+            guard let self,
+                  !Task.isCancelled,
+                  self.cloudSyncStartTask?.id == taskID,
+                  self.cloudSync === sync else { return }
+            self.cloudSyncStartTask = nil
+            if case .failed(let message) = result {
+                Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
+            }
+        }
+        cloudSyncStartTask = (taskID, task)
+    }
+
+    private func tearDownCloudSync(reason: SyncStatus.Reason? = nil) {
+        cloudSync?.stop()
+        cloudSyncStartTask?.task.cancel()
+        cloudSyncStartTask = nil
+        cloudRemoteChangeTask?.task.cancel()
+        cloudRemoteChangeTask = nil
+        cloudSync = nil
+        NSApp.unregisterForRemoteNotifications()
+        if let reason {
+            store.markSyncUnavailable(reason: reason)
+        }
+    }
+
+    private func handleGlobalShortcut() {
+        if pasteSequenceCoordinator?.handleShortcut() == true { return }
+        toggleShortcutTargetWindow()
     }
 
     private func toggleShortcutTargetWindow() {
@@ -288,7 +346,8 @@ final class ClipboardController {
     private func updateTooltip() {
         let settings = dependencies.settings
         let shortcut = "\(settings.hotkeyModifiers.displayString)\(keyCodeNames[settings.hotkeyKeyCode] ?? "?")"
-        dependencies.hub.setTooltip("Yank — \(shortcut)\nRight-click for options")
+        let action = pasteSequenceCoordinator?.isActive == true ? "Paste next" : "Yank"
+        dependencies.hub.setTooltip("\(action) — \(shortcut)\nRight-click for options")
     }
 
     // MARK: - Hub command panel
@@ -304,8 +363,15 @@ final class ClipboardController {
             ignoreNextCopyArmed: clipboardWatcher?.ignoreNextChange ?? false,
             hotkeyUnavailable: dependencies.appStatus.hotkeyRegistrationFailed,
             itemCount: store.items.count,
+            isPasteSequenceActive: pasteSequenceCoordinator?.isActive ?? false,
+            pasteSequenceItemCount: pasteSequenceCoordinator?.itemCount ?? 0,
+            canRepeatPasteSequence: pasteSequenceCoordinator?.canRepeatPrevious ?? false,
             onOpenQuickPicker: { [weak self] in self?.showQuickPickerWindow(afterDebugPointerSettle: true) },
             onOpenHistory: { [weak self] in self?.showHistoryWindow() },
+            onTogglePasteSequence: { [weak self] in self?.pasteSequenceCoordinator?.toggle() },
+            onRepeatPasteSequence: { [weak self] previousApp in
+                self?.pasteSequenceCoordinator?.repeatPrevious(previousApp: previousApp)
+            },
             onTogglePause: { [weak self] in self?.togglePause() },
             onIgnoreNextCopy: { [weak self] in self?.clipboardWatcher?.ignoreNextCopy() },
             onFixShortcut: { [weak self] in self?.openSettings() },
@@ -317,7 +383,12 @@ final class ClipboardController {
     private func togglePause() {
         guard let watcher = clipboardWatcher else { return }
         let nowPaused = !watcher.isPaused
-        if nowPaused { watcher.pause() } else { watcher.resume() }
+        if nowPaused {
+            if pasteSequenceCoordinator?.isActive == true { pasteSequenceCoordinator?.cancel() }
+            watcher.pause()
+        } else {
+            watcher.resume()
+        }
         dependencies.hub.setPrimaryIconDimmed(nowPaused)
     }
 
@@ -330,6 +401,7 @@ final class ClipboardController {
         alert.addButton(withTitle: "Cancel")
 
         if alert.runModal() == .alertFirstButtonReturn {
+            pasteSequenceCoordinator?.discard()
             store.clear()
         }
     }

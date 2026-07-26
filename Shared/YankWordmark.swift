@@ -18,6 +18,19 @@ struct YankWordmark: View {
     }
 }
 
+struct YankBrandGlyph: View {
+    var size: CGFloat
+
+    var body: some View {
+        Image("BrandGlyph")
+            .renderingMode(.original)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
 struct YankBrandMark: View {
     var size: CGFloat
 
@@ -29,11 +42,7 @@ struct YankBrandMark: View {
                     .strokeBorder(Color.yankHairline, lineWidth: Hairline.width)
             )
             .overlay {
-                Image("BrandGlyph")
-                    .renderingMode(.original)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(size * 0.22)
+                YankBrandGlyph(size: size * 0.56)
             }
             .frame(width: size, height: size)
             .shadow(color: .black.opacity(0.06), radius: 5, y: 1)

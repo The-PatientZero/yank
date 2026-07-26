@@ -197,6 +197,25 @@ import Testing
         #expect(SyncBlobPolicy.containedURL(directory: base, filename: "not-a-uuid.txt", kind: .text) == nil)
     }
 
+    @Test func containedURLRejectsSymbolicLinkLeaf() throws {
+        let fileManager = FileManager.default
+        let base = freshDirectory()
+        let outside = base.deletingLastPathComponent()
+            .appendingPathComponent("outside-\(UUID().uuidString).txt")
+        try fileManager.createDirectory(at: base, withIntermediateDirectories: true)
+        try Data("outside".utf8).write(to: outside)
+        try fileManager.createSymbolicLink(
+            at: base.appendingPathComponent(textName),
+            withDestinationURL: outside
+        )
+        defer {
+            try? fileManager.removeItem(at: base)
+            try? fileManager.removeItem(at: outside)
+        }
+
+        #expect(SyncBlobPolicy.containedURL(directory: base, filename: textName, kind: .text) == nil)
+    }
+
     // MARK: - SyncBlobReference
 
     @Test func referenceInitAcceptsCanonicalFilename() throws {

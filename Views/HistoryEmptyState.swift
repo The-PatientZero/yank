@@ -16,12 +16,8 @@ struct HistoryEmptyState: View {
 
     var body: some View {
         VStack(spacing: Space.md) {
-            Image("BrandGlyph")
-                .renderingMode(.template)
-                .resizable()
-                .frame(width: IconSize.emptyState, height: IconSize.emptyState)
-                .foregroundColor(.secondary.opacity(0.35))
-                .accessibilityHidden(true)
+            YankBrandGlyph(size: IconSize.emptyState)
+                .opacity(0.85)
             Text(isClear ? "Your clipboard is clear" : "No matches")
                 .font(.system(size: TypeScale.input, weight: .semibold, design: .serif))
                 .foregroundColor(.secondary)

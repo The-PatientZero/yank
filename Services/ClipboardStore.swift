@@ -129,24 +129,113 @@ final class ClipboardStore {
     // MARK: - Public API
 
     func add(_ item: ClipboardItem, richArchive: PasteboardArchive? = nil) {
-        // History-wide dedup: an identical inline-text copy floats up instead of duplicating.
-        if item.type == .text, item.textFilename == nil, !item.isTruncated,
-           let content = item.textContent,
-           let existing = items.first(where: { $0.type == .text && $0.textFilename == nil && $0.textContent == content }) {
-            moveToTop(existing)
-            signalCapture()   // a re-copy still confirms — the user pressed ⌘C
-            return
-        }
+        var stamped = stampOrigin(on: item)
+        guard !refreshDuplicateIfPresent(stamped) else { return }
 
-        var stamped = item
         // Persist the full pasteboard archive only now that we know the item is being
         // inserted (not deduped) — so a rejected copy never orphans a rich file.
         if let archive = richArchive, let filename = saveRichArchive(archive) {
             stamped.richFilename = filename
         }
+        insert(stamped)
+    }
+
+    /// Capture-specific insertion boundary. Duplicate resolution stays on the main actor and
+    /// happens before any filesystem work; bounded primary/rich encoding and writes then run on
+    /// a utility executor. Cancellation removes every newly written file before returning, and
+    /// the caller's serial capture queue keeps the final in-memory mutations FIFO.
+    func addCaptured(
+        _ item: ClipboardItem,
+        primaryBlob: ClipboardCapturePrimaryBlob?,
+        richArchive: PasteboardArchive?
+    ) async {
+        var stamped = stampOrigin(on: item)
+        if primaryBlob == nil, refreshDuplicateIfPresent(stamped) {
+            return
+        }
+
+        if primaryBlob != nil || richArchive != nil {
+            guard let persisted = await blobStore.persistCaptureBlobs(
+                primary: primaryBlob,
+                richArchive: richArchive
+            ) else {
+                return
+            }
+            guard !Task.isCancelled else {
+                await blobStore.discardCaptureBlobs(persisted)
+                return
+            }
+            stamped = applying(persisted, to: stamped)
+        }
+
+        insert(stamped)
+    }
+
+    private func stampOrigin(on item: ClipboardItem) -> ClipboardItem {
+        var stamped = item
         if stamped.deviceOrigin.isEmpty { stamped.deviceOrigin = DeviceIdentity.current }
-        tombstones.removeValue(forKey: stamped.id)
-        items.insert(stamped, at: 0)
+        return stamped
+    }
+
+    private func refreshDuplicateIfPresent(_ item: ClipboardItem) -> Bool {
+        // Collapse only complete, plain, byte-identical inline text. Refresh the newest
+        // matching capture while retaining its stable identity and annotations; older
+        // pre-existing duplicates remain untouched for forward-compatible history handling.
+        guard let existing = items
+            .filter({ TextCaptureIdentity.matches($0, item) })
+            .max(by: { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }) else {
+            return false
+        }
+        _ = ClipboardMutations.refreshDuplicateCapture(
+            existingID: existing.id,
+            with: item,
+            in: &items
+        )
+        persist()
+        signalCapture()   // a re-copy still confirms — the user pressed ⌘C
+        return true
+    }
+
+    private func applying(
+        _ persisted: PersistedClipboardCaptureBlobs,
+        to item: ClipboardItem
+    ) -> ClipboardItem {
+        ClipboardItem(
+            id: item.id,
+            type: item.type,
+            timestamp: item.timestamp,
+            sourceApp: item.sourceApp,
+            textContent: item.textContent,
+            textFilename: persisted.primaryKind == .text
+                ? persisted.primaryFilename
+                : item.textFilename,
+            imageFilename: persisted.primaryKind == .image
+                ? persisted.primaryFilename
+                : item.imageFilename,
+            richFilename: persisted.richFilename ?? item.richFilename,
+            hasRichContent: item.hasRichContent,
+            isPinned: item.isPinned,
+            isBookmarked: item.isBookmarked,
+            tags: item.tags,
+            ocrText: item.ocrText,
+            isTruncated: item.isTruncated,
+            originalSizeBytes: item.originalSizeBytes,
+            searchIndex: item.searchIndex,
+            aiTags: item.aiTags,
+            aiTitle: item.aiTitle,
+            aiEnrichedAt: item.aiEnrichedAt,
+            modifiedAt: item.modifiedAt,
+            deletedAt: item.deletedAt,
+            deviceOrigin: item.deviceOrigin
+        )
+    }
+
+    private func insert(_ item: ClipboardItem) {
+        tombstones.removeValue(forKey: item.id)
+        items.insert(item, at: 0)
 
         _ = applyHistoryLimit()
 

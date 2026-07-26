@@ -310,16 +310,9 @@ struct HistoryContentView: View {
             showTagAutocomplete = false
             showQuickLook = false
             detail.cancelTagInput()
-            let targetID: UUID?
-            if !shouldResetOnOpen,
-               let saved = savedSelectedID,
-               filteredItems.contains(where: { $0.id == saved }) {
-                targetID = saved
-            } else {
-                targetID = (filteredItems.first(where: { !$0.isPinned }) ?? filteredItems.first)?.id
-            }
+            let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
+            scrollTrigger = false
             updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
-            scrollTrigger = true
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(50))
                 isSearchFocused = true

@@ -8,6 +8,7 @@ import SwiftUI
 final class HubController {
     private var statusItem: NSStatusItem
     private var menuPopover: NSPopover?
+    private var menuPasteTargetApplication: NSRunningApplication?
     private let footer: HubAppFooter
     private let settings: SettingsManager
 
@@ -133,12 +134,17 @@ final class HubController {
 
     private func showMenu() {
         guard let button = statusItem.button else { return }
+        let pasteTargetApplication = NSWorkspace.shared.frontmostApplication
         // Close any panel still open before building a fresh one.
         dismissMenu()
+        menuPasteTargetApplication = pasteTargetApplication
         // Pull fresh panel state at open time so clip count, pause state, and shortcut stay current.
         let panel = primaryPanelProvider?()
 
-        let view = makeMenuView(panel: panel)
+        let view = makeMenuView(
+            panel: panel,
+            pasteTargetApplication: pasteTargetApplication
+        )
 
         let popover = NSPopover()
         popover.behavior = .transient
@@ -147,7 +153,10 @@ final class HubController {
         menuPopover = popover
     }
 
-    private func makeMenuView(panel: HubPrimaryPanel?) -> StatusMenuView {
+    private func makeMenuView(
+        panel: HubPrimaryPanel?,
+        pasteTargetApplication: NSRunningApplication?
+    ) -> StatusMenuView {
         StatusMenuView(
             shortcut: panel?.shortcut ?? "",
             shortcutOpenTarget: panel?.shortcutOpenTarget ?? .quickPicker,
@@ -155,9 +164,20 @@ final class HubController {
             ignoreNextCopyArmed: panel?.ignoreNextCopyArmed ?? false,
             hotkeyUnavailable: panel?.hotkeyUnavailable ?? false,
             itemCount: panel?.itemCount ?? 0,
+            isPasteSequenceActive: panel?.isPasteSequenceActive ?? false,
+            pasteSequenceItemCount: panel?.pasteSequenceItemCount ?? 0,
+            canRepeatPasteSequence: panel?.canRepeatPasteSequence ?? false,
             updateMenu: footer.updateMenu(),
             onOpenQuickPicker: { [weak self] in self?.dismissMenu(); panel?.onOpenQuickPicker() },
             onOpenHistory: { [weak self] in self?.dismissMenu(); panel?.onOpenHistory() },
+            onTogglePasteSequence: { [weak self] in
+                self?.dismissMenu()
+                panel?.onTogglePasteSequence()
+            },
+            onRepeatPasteSequence: { [weak self] in
+                self?.dismissMenu()
+                panel?.onRepeatPasteSequence(pasteTargetApplication)
+            },
             onTogglePause: { [weak self] in panel?.onTogglePause(); self?.dismissMenu() },
             onIgnoreNextCopy: { [weak self] in panel?.onIgnoreNextCopy(); self?.dismissMenu() },
             onFixShortcut: { [weak self] in self?.dismissMenu(); panel?.onFixShortcut() },
@@ -183,15 +203,24 @@ final class HubController {
         guard let popover = menuPopover, popover.isShown else { return }
         let panel = primaryPanelProvider?()
         if let controller = popover.contentViewController as? NSHostingController<StatusMenuView> {
-            controller.rootView = makeMenuView(panel: panel)
+            controller.rootView = makeMenuView(
+                panel: panel,
+                pasteTargetApplication: menuPasteTargetApplication
+            )
         } else {
-            popover.contentViewController = NSHostingController(rootView: makeMenuView(panel: panel))
+            popover.contentViewController = NSHostingController(
+                rootView: makeMenuView(
+                    panel: panel,
+                    pasteTargetApplication: menuPasteTargetApplication
+                )
+            )
         }
     }
 
     private func dismissMenu() {
         menuPopover?.performClose(nil)
         menuPopover = nil
+        menuPasteTargetApplication = nil
     }
 }
 

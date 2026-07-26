@@ -2,16 +2,16 @@
 
 Releases are cut by pushing a version tag; GitHub Actions does the rest. Prefer
 `v<version>` tags for public releases. The workflow also accepts bare semver tags
-(`1.0.0`) and strips the optional `v` before comparing against `MARKETING_VERSION`.
+(`1.2.3`) and strips the optional `v` before comparing against `MARKETING_VERSION`.
 
 ```bash
 # 1. Move CHANGELOG.md Unreleased notes into a dated version section.
 # 2. Bump MARKETING_VERSION in project.yml (the workflow refuses a mismatched tag), commit.
-# 3. Verify the release notes section:
-bash scripts/extract_release_notes.sh v1.0.0
-# 4. Tag and push (preferred form):
-git tag v1.0.0
-git push origin v1.0.0
+# 3. Verify the release notes section (replace 1.2.3 with the release version):
+bash scripts/extract_release_notes.sh v1.2.3
+# 4. Tag and push the same version (preferred form):
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
 The `Release` workflow (`.github/workflows/release.yml`) then:
@@ -24,6 +24,9 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
 4. Bumps the Homebrew cask in `The-PatientZero/homebrew-tap`.
 
 `ci.yml` runs `swift test` and unsigned macOS/iOS builds on every push and PR.
+Before publishing a signed macOS artifact, verify its effective entitlements select CloudKit
+`Production` and APNs `production`; a signed Debug diagnostic build must select CloudKit
+`Development` and APNs `development`.
 
 ## Required repository secrets
 
@@ -51,3 +54,9 @@ file and complete the device matrix in `docs/iOS_DEVICE_QA.md`; simulator CI can
 App Group access on physical devices, keyboard insertion, CloudKit push delivery, iCloud account state, or file
 protection. The app is free and open source on both platforms — no purchase, StoreKit IAP, or
 storefront setup.
+
+Published tags and binaries are immutable. Never replace or force-move a published tag. Correct a
+released defect with a newer patch version, and do not use rollback steps that discard or rewrite
+local history, tombstones, blobs, or CloudKit state. For the narrowly scoped historical-record
+recovery command, follow [`CLOUDKIT_BACKFILL.md`](CLOUDKIT_BACKFILL.md) and require its zero exit
+status plus converged marker before recording success.

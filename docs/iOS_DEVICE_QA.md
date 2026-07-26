@@ -22,19 +22,39 @@ Use at least:
 - [ ] an iPad with Split View or Stage Manager; and
 - [ ] one device signed into a different iCloud account for account-transition checks.
 
-Record the model, OS version, available storage, iCloud state, and whether the device was
-restored or installed cleanly.
+Record the model, OS version, available storage, install condition, iCloud account alias and
+sync state, foreground capture mode, Paste from Other Apps permission, and whether the keyboard
+is enabled with Full Access off. Use non-identifying account aliases rather than Apple IDs.
 
 ## Host app
 
 - [ ] Launch, onboarding, settings, empty history, populated history, and clip details work.
+- [ ] Fresh setup shows Keyboard, Share Sheet, and Save Clipboard as independent methods.
+- [ ] Confirming one method updates only that row; confirming all methods advances to the ready-empty state.
+- [ ] Continue advances to the ready-empty state without requiring all three methods, and the state survives relaunch.
+- [ ] Review Capture Methods returns to the setup state without changing history.
+- [ ] Settings does not duplicate the capture-method checklist.
+- [ ] With no saved foreground-capture choice, Yank explains the choice before reading the clipboard.
+- [ ] “Ask Next Time” performs no foreground clipboard read for the rest of the session and asks again after a cold relaunch.
+- [ ] “Check When Yank Opens” persists after a cold relaunch and checks the clipboard only when Yank becomes active.
+- [ ] “Only When I Ask” persists after a cold relaunch, performs no foreground clipboard read, and still imports Share and Save Clipboard captures.
+- [ ] Changing the foreground-capture mode in Settings takes effect immediately without losing history.
+- [ ] Copy new plain text in another app, return to Yank, and confirm the exact value appears once.
+- [ ] Returning with an unchanged clipboard does not refresh or duplicate the clip.
+- [ ] Copy a clip from Yank, terminate and relaunch Yank, and confirm Yank's own pasteboard write is not recaptured.
+- [ ] Copy byte-identical content from another app after that self-origin check and confirm the external copy remains eligible exactly once.
+- [ ] Deny Paste from Other Apps and confirm the denied generation remains unacknowledged and retryable; allow access and confirm that same generation is captured exactly once.
+- [ ] Multiple copies made while Yank is suspended retain only the latest system clipboard value.
+- [ ] A successful Save Clipboard Shortcut appears after Yank next becomes active, without duplicating or overwriting history.
 - [ ] Text, link, image, large-text, pinned, bookmarked, and tagged clips render correctly.
+- [ ] Byte-identical plain-text and rich-text clipboard representations retain distinct identities through capture and relaunch, including any inline, file-backed, or truncated variants exercised by the build.
 - [ ] Copy, delete, clear, search, tag filtering, pinning, and bookmarking persist after relaunch.
 - [ ] Portrait, portrait upside down, landscape left, and landscape right remain usable on iPhone.
 - [ ] Both iPad orientations and supported multitasking widths remain usable.
 - [ ] Light and dark appearances keep text, badges, focus, and selection legible.
 - [ ] Dynamic Type through accessibility sizes does not hide required actions.
 - [ ] VoiceOver announces controls, state, and clip actions in a useful order.
+- [ ] Image detail and peek surfaces use one bounded VoiceOver label: OCR text when available, then the source app, then “Image clip.”
 - [ ] Reduce Motion and Reduce Transparency remove non-essential effects without losing state.
 - [ ] The Privacy Policy link in Settings opens the public policy over HTTPS.
 
@@ -67,7 +87,9 @@ If clip insertion or next-keyboard switching is unavailable, do not submit the b
 ## iCloud and lifecycle
 
 - [ ] First opt-in uploads local history without losing existing records.
-- [ ] Text, image, tags, pin/bookmark state, and deletions reconcile between devices.
+- [ ] On two devices using the same recorded iCloud account alias, text, image, tags, pin/bookmark state, and deletions converge in both directions.
+- [ ] After foreground catch-up and relaunch on both devices, the converged history has no missing or duplicate clips.
+- [ ] Record the source device and OS for a Universal Clipboard copy; returning to Yank under the recorded mode and permission state captures the eligible value exactly once.
 - [ ] Offline edits recover after connectivity returns.
 - [ ] A partial record failure does not advance the change token past failed work.
 - [ ] Quota exhaustion and signed-out states preserve local history and explain recovery.
@@ -76,6 +98,7 @@ If clip insertion or next-keyboard switching is unavailable, do not submit the b
 - [ ] Background change delivery does not duplicate clips.
 - [ ] Launch before first unlock reports protected storage without replacing history with empty data.
 - [ ] Launch after first unlock hydrates the original history.
+- [ ] After a foreground capture, immediately background or terminate Yank; relaunch shows the acknowledged clip exactly once, while interrupted unacknowledged work remains retryable.
 
 ## Capacity and resource checks
 
@@ -86,11 +109,23 @@ normal cap.
 - [ ] Record cold-launch duration and peak memory for the app and both extensions.
 - [ ] No `EXC_RESOURCE`, watchdog termination, or visible multi-second input stall occurs.
 - [ ] Backgrounding, memory pressure, and termination do not lose acknowledged changes.
+- [ ] Protected clips beyond the normal history cap remain present while keyboard projection and previews stay bounded.
 - [ ] Large text and image previews stay responsive without loading full payloads unnecessarily.
+
+## macOS target-focus checks
+
+Record the macOS version, target app, and target field used for each result.
+
+- [ ] Starting Paste Sequence from another app keeps that app and field as the paste target while Yank's menu opens, refreshes, and dismisses.
+- [ ] Cancel and eligible Repeat Previous actions work by keyboard, pointer, and VoiceOver without moving focus from the paste destination.
+- [ ] The status HUD remains non-key, and Reduce Motion changes presentation without changing sequence state.
 
 ## Distribution checks
 
-- [ ] The signed archive contains the expected app and extension entitlements.
+- [ ] A signed physical Debug build used for CloudKit diagnosis has host entitlements `com.apple.developer.icloud-container-environment=Development` and `aps-environment=development`.
+- [ ] The signed Release archive has host entitlements `com.apple.developer.icloud-container-environment=Production`, `aps-environment=production`, CloudKit service and container `iCloud.com.thepatientzero.yank`, and App Group `group.com.thepatientzero.yank`.
+- [ ] The signed archive contains both embedded extensions; each extension retains the App Group entitlement without host-only CloudKit or push entitlements.
+- [ ] The signed archive packages `PrivacyInfo.xcprivacy` in the host app, keyboard extension, and share extension bundles.
 - [ ] The archive privacy report matches actual required-reason API use.
 - [ ] App Store Connect contains the same reachable Privacy Policy URL as the app.
 - [ ] App privacy answers match local storage, optional private CloudKit sync, and extension behavior.

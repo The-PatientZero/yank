@@ -1,5 +1,64 @@
 import SwiftUI
 import Cocoa
+import Observation
+
+@MainActor
+@Observable
+final class QuickPickerSmartSearchState {
+    typealias Search = @MainActor @Sendable (String) async -> [ClipboardItem]
+
+    private(set) var results: [ClipboardItem]?
+    private(set) var isInterpreting = false
+    private(set) var resultRevision = 0
+
+    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var requestID: UUID?
+
+    var hasOwnedTask: Bool { task != nil }
+
+    func interpret(_ phrase: String, using search: @escaping Search) {
+        guard !phrase.isEmpty else {
+            queryDidChange()
+            return
+        }
+
+        invalidateOwnedRequest()
+        let requestID = UUID()
+        self.requestID = requestID
+        isInterpreting = true
+
+        let task = Task { @MainActor [weak self, search] in
+            let results = await search(phrase)
+            guard let self,
+                  !Task.isCancelled,
+                  self.requestID == requestID else {
+                return
+            }
+            self.task = nil
+            self.requestID = nil
+            self.results = results
+            self.isInterpreting = false
+            self.resultRevision &+= 1
+        }
+        self.task = task
+    }
+
+    func queryDidChange() {
+        invalidateOwnedRequest()
+        results = nil
+    }
+
+    func disappear() {
+        invalidateOwnedRequest()
+    }
+
+    private func invalidateOwnedRequest() {
+        task?.cancel()
+        task = nil
+        requestID = nil
+        isInterpreting = false
+    }
+}
 
 struct QuickPickerView: View {
     let store: ClipboardStore
@@ -10,17 +69,17 @@ struct QuickPickerView: View {
     let onSmartPaste: (ClipboardItem, TextTransform) -> Void
     let onDismiss: () -> Void
     let onOpenFullHistory: () -> Void
-    let onSmartSearch: (String) async -> [ClipboardItem]
+    let onStartPasteSequence: () -> Void
+    let onSmartSearch: QuickPickerSmartSearchState.Search
 
     @State private var searchText = ""
     @State private var selection = ClipSelectionState()
-    @State private var smartResults: [ClipboardItem]?
-    @State private var interpreting = false
+    @State private var smartSearchState = QuickPickerSmartSearchState()
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var items: [ClipboardItem] {
-        smartResults ?? store.filteredItems(search: searchText, activeTag: nil)
+        smartSearchState.results ?? store.filteredItems(search: searchText, activeTag: nil)
     }
 
     private var selectedItem: ClipboardItem? {
@@ -50,10 +109,16 @@ struct QuickPickerView: View {
             requestSearchFocus(for: request)
         }
         .onChange(of: searchText) { _, _ in
-            smartResults = nil
+            smartSearchState.queryDidChange()
             reconcileSelection(preferFirst: true)
         }
         .onChange(of: store.changeToken) { _, _ in reconcileSelection(preferFirst: false) }
+        .onChange(of: smartSearchState.resultRevision) { _, _ in
+            reconcileSelection(preferFirst: true)
+        }
+        .onDisappear {
+            smartSearchState.disappear()
+        }
     }
 
     private var header: some View {
@@ -79,7 +144,7 @@ struct QuickPickerView: View {
             )
 
             if FoundationModelEnricher.isAvailable {
-                if interpreting {
+                if smartSearchState.isInterpreting {
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: ControlTarget.compact, height: ControlTarget.compact)
@@ -90,6 +155,9 @@ struct QuickPickerView: View {
                                      action: interpretSearch)
                 }
             }
+            PickerIconButton(systemName: "list.number",
+                             label: "Start Paste Sequence",
+                             action: onStartPasteSequence)
             PickerIconButton(systemName: "arrow.up.left.and.arrow.down.right",
                              label: "Full history",
                              action: onOpenFullHistory)
@@ -165,7 +233,7 @@ struct QuickPickerView: View {
     private var footer: some View {
         HStack {
             Text(
-                smartResults != nil
+                smartSearchState.results != nil
                     ? "Smart results · \(items.count)"
                     : "\(items.count) \(items.count == 1 ? "clip" : "clips")"
             )
@@ -197,14 +265,8 @@ struct QuickPickerView: View {
 
     private func interpretSearch() {
         let phrase = searchText
-        guard !phrase.isEmpty, !interpreting else { return }
-        interpreting = true
-        Task {
-            let results = await onSmartSearch(phrase)
-            smartResults = results
-            interpreting = false
-            reconcileSelection(preferFirst: true)
-        }
+        guard !phrase.isEmpty, !smartSearchState.isInterpreting else { return }
+        smartSearchState.interpret(phrase, using: onSmartSearch)
     }
 
     private func requestSearchFocus(for request: Int) {

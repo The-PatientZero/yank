@@ -22,11 +22,10 @@ enum FocusedInputFrameProvider {
         if let frame = accessibilityFrame(preferredApp: preferredApp) {
             return frame
         }
-        #if DEBUG
-        return debugMouseAnchorFrame()
-        #else
-        return nil
-        #endif
+        return pointerFrame(
+            at: NSEvent.mouseLocation,
+            screenFrames: NSScreen.screens.map(\.frame)
+        )
     }
 
     private static func accessibilityFrame(preferredApp: NSRunningApplication?) -> NSRect? {
@@ -51,14 +50,10 @@ enum FocusedInputFrameProvider {
         return appKitRect(fromTopLeftScreenRect: frame)
     }
 
-    #if DEBUG
-    private static func debugMouseAnchorFrame() -> NSRect? {
-        guard DebugQuickPickerSimulation.mouseAnchorEnabled else { return nil }
-        let location = NSEvent.mouseLocation
-        guard NSScreen.screens.contains(where: { $0.frame.contains(location) }) else { return nil }
+    nonisolated static func pointerFrame(at location: NSPoint, screenFrames: [NSRect]) -> NSRect? {
+        guard screenFrames.contains(where: { $0.contains(location) }) else { return nil }
         return NSRect(x: location.x, y: location.y, width: 1, height: 20)
     }
-    #endif
 
     private static func usableApp(_ app: NSRunningApplication?) -> NSRunningApplication? {
         guard let app,

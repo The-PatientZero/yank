@@ -11,9 +11,14 @@ struct StatusMenuView: View {
     let ignoreNextCopyArmed: Bool
     let hotkeyUnavailable: Bool
     let itemCount: Int
+    let isPasteSequenceActive: Bool
+    let pasteSequenceItemCount: Int
+    let canRepeatPasteSequence: Bool
     let updateMenu: UpdateMenuPresentation
     let onOpenQuickPicker: () -> Void
     let onOpenHistory: () -> Void
+    let onTogglePasteSequence: () -> Void
+    let onRepeatPasteSequence: () -> Void
     let onTogglePause: () -> Void
     let onIgnoreNextCopy: () -> Void
     let onFixShortcut: () -> Void
@@ -29,7 +34,9 @@ struct StatusMenuView: View {
     }
 
     enum Row: Int, CaseIterable, Hashable {
-        case openQuickPicker, openHistory, togglePause, ignoreNextCopy, fixShortcut, settings, update, restart, quit, clear
+        case openQuickPicker, openHistory, pasteSequence, repeatPasteSequence
+        case togglePause, ignoreNextCopy
+        case fixShortcut, settings, update, restart, quit, clear
     }
 
     @FocusState private var focused: Row?
@@ -55,6 +62,20 @@ struct StatusMenuView: View {
             MenuRow(icon: "tray.full", title: "Full history",
                     trailing: shortcutOpenTarget == .fullHistory ? shortcut : "",
                     row: .openHistory, focused: $focused, action: onOpenHistory)
+            MenuRow(icon: isPasteSequenceActive ? "xmark.circle" : "list.number",
+                    title: isPasteSequenceActive ? "Cancel Paste Sequence" : "Start Paste Sequence",
+                    trailing: isPasteSequenceActive ? "\(pasteSequenceItemCount)" : "",
+                    active: isPasteSequenceActive,
+                    row: .pasteSequence, focused: $focused, action: onTogglePasteSequence)
+            if isPasteSequenceActive && canRepeatPasteSequence {
+                MenuRow(
+                    icon: "arrow.counterclockwise",
+                    title: "Repeat Previous",
+                    row: .repeatPasteSequence,
+                    focused: $focused,
+                    action: onRepeatPasteSequence
+                )
+            }
             MenuRow(icon: isPaused ? "play.circle" : "pause.circle",
                     title: isPaused ? "Resume capture" : "Pause capture",
                     row: .togglePause, focused: $focused, action: onTogglePause)
@@ -117,11 +138,23 @@ struct StatusMenuView: View {
 
     /// Every focusable row in display order.
     private var orderedRows: [Row] {
-        Self.orderedRows(hotkeyUnavailable: hotkeyUnavailable, updateAction: updateMenu.action)
+        Self.orderedRows(
+            canRepeatPasteSequence: isPasteSequenceActive && canRepeatPasteSequence,
+            hotkeyUnavailable: hotkeyUnavailable,
+            updateAction: updateMenu.action
+        )
     }
 
-    static func orderedRows(hotkeyUnavailable: Bool, updateAction: UpdateMenuActionID?) -> [Row] {
-        var rows: [Row] = [.openQuickPicker, .openHistory, .togglePause, .ignoreNextCopy]
+    static func orderedRows(
+        canRepeatPasteSequence: Bool = false,
+        hotkeyUnavailable: Bool,
+        updateAction: UpdateMenuActionID?
+    ) -> [Row] {
+        var rows: [Row] = [.openQuickPicker, .openHistory, .pasteSequence]
+        if canRepeatPasteSequence {
+            rows.append(.repeatPasteSequence)
+        }
+        rows.append(contentsOf: [.togglePause, .ignoreNextCopy])
         if hotkeyUnavailable { rows.append(.fixShortcut) }
         rows.append(.settings)
         if updateAction != nil { rows.append(.update) }

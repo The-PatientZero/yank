@@ -36,11 +36,17 @@ extension HistoryContentView {
                 scrollTrigger = false
             }
             .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
-                if let id = selectedID ?? filteredItems.first?.id {
-                    proxy.scrollTo(id, anchor: .center)
-                }
+                scrollToOpeningPosition(using: proxy)
+            }
+            .onChange(of: viewMode) { _, _ in
+                scrollToOpeningPosition(using: proxy)
             }
         }
+    }
+
+    func scrollToOpeningPosition(using proxy: ScrollViewProxy) {
+        guard let id = HistoryOpeningPosition.scrollTargetID(in: filteredItems) else { return }
+        proxy.scrollTo(id, anchor: .top)
     }
 
     @ViewBuilder
@@ -104,7 +110,7 @@ extension HistoryContentView {
     struct MasonryKey: Equatable {
         let token: Int
         let columns: Int
-        let search: String
+        let debouncedSearch: String
         let tag: String?
         let isMasonry: Bool
     }
@@ -113,7 +119,7 @@ extension HistoryContentView {
         MasonryKey(
             token: store.changeToken,
             columns: max(2, tileColumnCount),
-            search: searchText,
+            debouncedSearch: searchTextDebounced,
             tag: activeTagFilter,
             isMasonry: viewMode == .masonry
         )
@@ -305,6 +311,9 @@ extension HistoryContentView {
                     } else {
                         withAnimation(YankMotion.state(reduceMotion)) { proxy.scrollTo(item.id, anchor: .center) }
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
+                    scrollToOpeningPosition(using: proxy)
                 }
             }
             .frame(width: splitRailWidth)

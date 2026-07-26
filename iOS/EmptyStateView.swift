@@ -12,14 +12,8 @@ struct EmptyStateView<Content: View>: View {
         GeometryReader { proxy in
             ScrollView {
                 VStack(spacing: Space.lg) {
-                    Image("BrandGlyph")
-                        .renderingMode(.template)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: IOSMetric.emptyIconSize, height: IOSMetric.emptyIconSize)
-                        .foregroundStyle(.secondary)
+                    YankBrandGlyph(size: IOSMetric.emptyIconSize)
                         .opacity(glyphOpacity)
-                        .accessibilityHidden(true)
                     content()
                 }
                 .multilineTextAlignment(.center)
