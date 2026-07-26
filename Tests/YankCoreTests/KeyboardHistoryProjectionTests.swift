@@ -77,6 +77,49 @@ import Testing
         #expect(projection.items.count < items.count)
     }
 
+    @Test func encodedByteBudgetStopsAtTheFirstOverflowingCandidate() throws {
+        let emptyBytes = try KeyboardHistoryProjection(items: []).encoded().count
+        let byteBudget = emptyBytes + 256
+        let oversized = ClipboardItem.text(String(repeating: "x", count: byteBudget))
+        let laterSmallItem = ClipboardItem.text("would fit if scanning continued")
+
+        let projection = KeyboardHistoryProjection(
+            items: [oversized, laterSmallItem],
+            maxEncodedBytes: byteBudget
+        )
+
+        #expect(projection.items.isEmpty)
+        #expect(try projection.encoded().count <= byteBudget)
+    }
+
+    @Test(arguments: [100, 500, 1_000])
+    func remainsBoundedAtSupportedHistoryScales(itemCount: Int) throws {
+        let items = (0..<itemCount).map { ClipboardItem.text("clip-\($0)") }
+
+        let projection = KeyboardHistoryProjection(items: items)
+        let data = try projection.encoded()
+
+        #expect(projection.items.count == min(itemCount, KeyboardHistoryProjection.defaultMaxItems))
+        #expect(data.count <= KeyboardHistoryProjection.defaultMaxEncodedBytes)
+    }
+
+    @Test func protectedOverflowDoesNotExpandTheCandidateWindow() {
+        let protectedOverflow = (0..<KeyboardHistoryProjection.defaultMaxCandidates).map { index in
+            var item = ClipboardItem.image(filename: "protected-\(index).png")
+            item.isPinned = index.isMultiple(of: 2)
+            item.isBookmarked = !item.isPinned
+            return item
+        }
+        let eligiblePastTheBound = ClipboardItem.text("must not be scanned")
+
+        let projection = KeyboardHistoryProjection(
+            items: protectedOverflow + [eligiblePastTheBound]
+        )
+
+        #expect(protectedOverflow.allSatisfy { $0.isProtected })
+        #expect(projection.items.isEmpty)
+    }
+
     @Test func decodeRejectsFilesBeyondTheByteBudgetBeforeParsing() {
         let byteBudget = 64
         let oversized = Data(repeating: 0x20, count: byteBudget + 1)

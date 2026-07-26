@@ -72,6 +72,11 @@ enum SyncReconcile {
 /// JSON codec for the on-disk tombstone log (`[UUID: Date]` ⇄ `[String: Date]`),
 /// shared by both stores' persistence so the format never drifts.
 enum TombstoneCodec {
+    enum DecodeError: Error, Equatable {
+        case invalidUUIDKey(String)
+        case duplicateUUID(UUID)
+    }
+
     static func encode(_ tombstones: [UUID: Date]) -> Data? {
         let raw = Dictionary(uniqueKeysWithValues: tombstones.map { ($0.key.uuidString, $0.value) })
         return try? JSONEncoder().encode(raw)
@@ -83,8 +88,15 @@ enum TombstoneCodec {
 
     static func decodeStrict(_ data: Data) throws -> [UUID: Date] {
         let raw = try JSONDecoder().decode([String: Date].self, from: data)
-        return raw.reduce(into: [:]) { acc, pair in
-            if let id = UUID(uuidString: pair.key) { acc[id] = pair.value }
+        var decoded: [UUID: Date] = [:]
+        for (key, date) in raw {
+            guard let id = UUID(uuidString: key) else {
+                throw DecodeError.invalidUUIDKey(key)
+            }
+            guard decoded.updateValue(date, forKey: id) == nil else {
+                throw DecodeError.duplicateUUID(id)
+            }
         }
+        return decoded
     }
 }

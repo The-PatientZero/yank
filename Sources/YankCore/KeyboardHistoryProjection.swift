@@ -45,6 +45,7 @@ struct KeyboardHistoryProjection: Codable, Sendable {
 
     static let currentVersion = 1
     static let filename = "keyboard-history-v1.json"
+    static let defaultMaxCandidates = 1_000
     static let defaultMaxItems = 100
     static let defaultMaxEncodedBytes = 512 * 1_024
 
@@ -58,6 +59,7 @@ struct KeyboardHistoryProjection: Codable, Sendable {
     init(
         items: [ClipboardItem],
         generatedAt: Date = Date(),
+        maxCandidates: Int = defaultMaxCandidates,
         maxItems: Int = defaultMaxItems,
         maxEncodedBytes: Int = defaultMaxEncodedBytes
     ) {
@@ -65,20 +67,27 @@ struct KeyboardHistoryProjection: Codable, Sendable {
         self.generatedAt = generatedAt
         self.encodedByteLimit = max(0, maxEncodedBytes)
 
+        let candidateLimit = max(0, maxCandidates)
+        let itemLimit = max(0, maxItems)
         let encoder = JSONEncoder()
         let emptyPayload = Payload(version: version, generatedAt: generatedAt, items: [])
         var encodedBytes = (try? encoder.encode(emptyPayload).count) ?? Int.max
         var projected: [ProjectedItem] = []
-        projected.reserveCapacity(min(max(0, maxItems), items.count))
+        projected.reserveCapacity(min(candidateLimit, itemLimit, items.count))
 
-        for item in items where projected.count < max(0, maxItems) {
+        var consideredCandidates = 0
+        for item in items {
+            guard consideredCandidates < candidateLimit,
+                  projected.count < itemLimit,
+                  encodedBytes < encodedByteLimit else { break }
+            consideredCandidates += 1
             guard !item.isDeleted, let text = item.textContent else { continue }
             let candidate = ProjectedItem(item: item, textContent: text)
             guard let candidateBytes = try? encoder.encode(candidate).count else { continue }
             let separatorBytes = projected.isEmpty ? 0 : 1
             let additionalBytes = candidateBytes + separatorBytes
             guard encodedBytes <= encodedByteLimit,
-                  additionalBytes <= encodedByteLimit - encodedBytes else { continue }
+                  additionalBytes <= encodedByteLimit - encodedBytes else { break }
             projected.append(candidate)
             encodedBytes += additionalBytes
         }

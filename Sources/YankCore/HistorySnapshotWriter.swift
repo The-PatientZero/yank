@@ -1,13 +1,10 @@
 import Foundation
 
 private enum HistorySnapshotWriterError: LocalizedError {
-    case tombstoneEncodingFailed
     case incompleteWrite
 
     var errorDescription: String? {
         switch self {
-        case .tombstoneEncodingFailed:
-            "The deletion log could not be encoded."
         case .incompleteWrite:
             "The history write did not complete."
         }
@@ -34,6 +31,44 @@ private final class HistorySnapshotWriteCompletion: @unchecked Sendable {
     }
 }
 
+/// An exact completion handle for one scheduled snapshot. If that snapshot is still
+/// debounced when a newer one supersedes it, both receipts resolve from the coalesced
+/// write; once dispatched, a receipt remains tied to that specific write result.
+final class HistorySnapshotWriteReceipt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Void, any Error>?
+    private var continuations: [CheckedContinuation<Result<Void, any Error>, Never>] = []
+
+    func value() async -> Result<Void, any Error> {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let result {
+                lock.unlock()
+                continuation.resume(returning: result)
+            } else {
+                continuations.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    fileprivate func resolve(_ result: Result<Void, any Error>) {
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+        self.result = result
+        let continuations = self.continuations
+        self.continuations.removeAll()
+        lock.unlock()
+
+        for continuation in continuations {
+            continuation.resume(returning: result)
+        }
+    }
+}
+
 /// Owns the off-main persistence of the clip history + tombstones, coalescing a burst of
 /// saves into a single trailing write. Shared by the macOS and iOS stores so the
 /// snapshot → encode → write pipeline lives in exactly one place (no per-store copy).
@@ -49,6 +84,7 @@ final class HistorySnapshotWriter {
     private struct PendingWrite: Sendable {
         let id: UInt64
         let operation: @Sendable () -> Result<Void, any Error>
+        let receipts: [HistorySnapshotWriteReceipt]
     }
 
     private let historyURL: URL
@@ -59,6 +95,7 @@ final class HistorySnapshotWriter {
     private let debounce: Duration
     private let queue: DispatchQueue
     private let onError: (@Sendable (Error) -> Void)?
+    private let failureInjector: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)?
 
     /// The most recent snapshot's write, kept until it is dispatched to `queue`.
     private var pendingWrite: PendingWrite?
@@ -74,7 +111,8 @@ final class HistorySnapshotWriter {
         fileProtection: FileProtectionType? = nil,
         debounce: Duration = .zero,
         queueLabel: String,
-        onError: (@Sendable (Error) -> Void)? = nil
+        onError: (@Sendable (Error) -> Void)? = nil,
+        failureInjector: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)? = nil
     ) {
         self.historyURL = historyURL
         self.tombstonesURL = tombstonesURL
@@ -84,30 +122,39 @@ final class HistorySnapshotWriter {
         self.debounce = debounce
         self.queue = DispatchQueue(label: queueLabel, qos: .utility)
         self.onError = onError
+        self.failureInjector = failureInjector
     }
 
     /// Snapshot the current state and schedule a coalesced write. Calls within the debounce
     /// window collapse to one write of the latest snapshot.
+    @discardableResult
     func scheduleSave(
         items: [ClipboardItem],
         tombstones: [UUID: Date],
-        afterSuccessfulWrite: (@Sendable () -> Void)? = nil
-    ) {
+        keyboardProjectionURL: URL? = nil,
+        afterSuccessfulWrite: (@Sendable () -> Void)? = nil,
+        onKeyboardProjectionError: (@Sendable (Error) -> Void)? = nil
+    ) -> HistorySnapshotWriteReceipt {
         scheduledWriteID += 1
         let writeID = scheduledWriteID
+        let receipt = HistorySnapshotWriteReceipt()
+        let coalescedReceipts = (pendingWrite?.receipts ?? []) + [receipt]
         pendingWrite = PendingWrite(
             id: writeID,
             operation: makeWriteOperation(
                 items: items,
                 tombstones: tombstones,
-                afterSuccessfulWrite: afterSuccessfulWrite
-            )
+                keyboardProjectionURL: keyboardProjectionURL,
+                afterSuccessfulWrite: afterSuccessfulWrite,
+                onKeyboardProjectionError: onKeyboardProjectionError
+            ),
+            receipts: coalescedReceipts
         )
 
         debounceTask?.cancel()
         guard debounce > .zero else {
             dispatchPending()
-            return
+            return receipt
         }
         let debounce = self.debounce
         debounceTask = Task { [weak self] in
@@ -115,12 +162,31 @@ final class HistorySnapshotWriter {
             guard !Task.isCancelled else { return }
             self?.dispatchPending()
         }
+        return receipt
+    }
+
+    /// Serialize launch-time projection publication with snapshot writes so an older
+    /// asynchronously encoded projection can never replace one from a newer snapshot.
+    func scheduleKeyboardProjection(
+        items: [ClipboardItem],
+        to url: URL,
+        onError: (@Sendable (Error) -> Void)? = nil
+    ) {
+        queue.async {
+            do {
+                try KeyboardHistoryProjection(items: items).write(to: url)
+            } catch {
+                onError?(error)
+            }
+        }
     }
 
     private func makeWriteOperation(
         items: [ClipboardItem],
         tombstones: [UUID: Date],
-        afterSuccessfulWrite: (@Sendable () -> Void)?
+        keyboardProjectionURL: URL?,
+        afterSuccessfulWrite: (@Sendable () -> Void)?,
+        onKeyboardProjectionError: (@Sendable (Error) -> Void)?
     ) -> @Sendable () -> Result<Void, any Error> {
         let historyURL = self.historyURL
         let tombstonesURL = self.tombstonesURL
@@ -128,38 +194,50 @@ final class HistorySnapshotWriter {
         let filePermissions = self.filePermissions
         let fileProtection = self.fileProtection
         let onError = self.onError
+        let failureInjector = self.failureInjector
+        let transactionURL = HistorySnapshotTransaction.transactionURL(for: historyURL)
         return {
-            var firstError: (any Error)?
             do {
-                try JSONEncoder().encode(items).write(to: historyURL, options: writeOptions)
-                try PrivateFileAttributes.apply(
-                    to: historyURL,
-                    permissions: filePermissions,
-                    protection: fileProtection
+                // Never replace an interrupted checkpoint. Finish it first or leave it
+                // untouched for the loader to recover on the next launch.
+                try HistorySnapshotTransaction.replayIfPresent(
+                    historyURL: historyURL,
+                    tombstonesURL: tombstonesURL
+                )
+
+                let envelopeData = try HistorySnapshotTransaction.makeEnvelopeData(
+                    items: items,
+                    tombstones: tombstones,
+                    writeOptions: writeOptions,
+                    filePermissions: filePermissions,
+                    fileProtection: fileProtection
+                )
+                try HistorySnapshotTransaction.stage(
+                    envelopeData,
+                    at: transactionURL,
+                    writeOptions: writeOptions,
+                    filePermissions: filePermissions,
+                    fileProtection: fileProtection
+                )
+                try failureInjector?(.transactionStaged)
+
+                try HistorySnapshotTransaction.replayIfPresent(
+                    historyURL: historyURL,
+                    tombstonesURL: tombstonesURL,
+                    afterCanonicalWrite: failureInjector
                 )
             } catch {
-                firstError = error
                 onError?(error)
-            }
-            if let data = TombstoneCodec.encode(tombstones) {
-                do {
-                    try data.write(to: tombstonesURL, options: writeOptions)
-                    try PrivateFileAttributes.apply(
-                        to: tombstonesURL,
-                        permissions: filePermissions,
-                        protection: fileProtection
-                    )
-                } catch {
-                    if firstError == nil { firstError = error }
-                    onError?(error)
-                }
-            } else {
-                let error = HistorySnapshotWriterError.tombstoneEncodingFailed
-                if firstError == nil { firstError = error }
-                onError?(error)
+                return .failure(error)
             }
 
-            if let firstError { return .failure(firstError) }
+            if let keyboardProjectionURL {
+                do {
+                    try KeyboardHistoryProjection(items: items).write(to: keyboardProjectionURL)
+                } catch {
+                    onKeyboardProjectionError?(error)
+                }
+            }
             afterSuccessfulWrite?()
             return .success(())
         }
@@ -185,7 +263,11 @@ final class HistorySnapshotWriter {
         pendingWrite = nil
         let completion = self.completion
         queue.async {
-            completion.record(id: work.id, result: work.operation())
+            let result = work.operation()
+            completion.record(id: work.id, result: result)
+            for receipt in work.receipts {
+                receipt.resolve(result)
+            }
         }
     }
 

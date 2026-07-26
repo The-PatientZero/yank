@@ -168,4 +168,15 @@ import Testing
     @Test func tombstoneCodecDecodesGarbageToEmpty() {
         #expect(TombstoneCodec.decode(Data("not json".utf8)).isEmpty)
     }
+
+    @Test func tombstoneCodecStrictlyRejectsInvalidUUIDKeys() throws {
+        let data = try JSONEncoder().encode([
+            "not-a-uuid": Date(timeIntervalSinceReferenceDate: 123)
+        ])
+
+        #expect(throws: TombstoneCodec.DecodeError.invalidUUIDKey("not-a-uuid")) {
+            try TombstoneCodec.decodeStrict(data)
+        }
+        #expect(TombstoneCodec.decode(data).isEmpty)
+    }
 }
