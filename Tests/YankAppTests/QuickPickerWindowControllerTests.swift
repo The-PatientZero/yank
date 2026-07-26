@@ -105,3 +105,136 @@ struct QuickPickerWindowControllerTests {
         return false
     }
 }
+
+@Suite("Quick Picker Smart Search", .serialized)
+@MainActor
+struct QuickPickerSmartSearchStateTests {
+    @Test("A query edit invalidates a cancellation-ignoring completion")
+    func queryEditRejectsOldCompletion() async throws {
+        let state = QuickPickerSmartSearchState()
+        let probe = QuickPickerSmartSearchProbe()
+        let oldResult = ClipboardItem.text("old")
+        let newResult = ClipboardItem.text("new")
+
+        state.interpret("old query") { phrase in
+            await probe.search(phrase)
+        }
+        try await waitUntil { probe.pendingCount == 1 }
+
+        state.queryDidChange()
+        #expect(!state.isInterpreting)
+        #expect(!state.hasOwnedTask)
+        #expect(state.results == nil)
+
+        state.interpret("new query") { phrase in
+            await probe.search(phrase)
+        }
+        try await waitUntil { probe.pendingCount == 2 }
+
+        probe.resume("old query", with: [oldResult])
+        await settleTasks()
+
+        #expect(state.isInterpreting)
+        #expect(state.hasOwnedTask)
+        #expect(state.results == nil)
+
+        probe.resume("new query", with: [newResult])
+        try await waitUntil { state.results?.map(\.id) == [newResult.id] }
+        #expect(!state.isInterpreting)
+        #expect(!state.hasOwnedTask)
+    }
+
+    @Test("Out-of-order completions keep the newest result")
+    func outOfOrderCompletionKeepsNewestResult() async throws {
+        let state = QuickPickerSmartSearchState()
+        let probe = QuickPickerSmartSearchProbe()
+        let firstResult = ClipboardItem.text("first")
+        let secondResult = ClipboardItem.text("second")
+
+        state.interpret("first query") { phrase in
+            await probe.search(phrase)
+        }
+        try await waitUntil { probe.pendingCount == 1 }
+        state.interpret("second query") { phrase in
+            await probe.search(phrase)
+        }
+        try await waitUntil { probe.pendingCount == 2 }
+
+        probe.resume("second query", with: [secondResult])
+        try await waitUntil { state.results?.map(\.id) == [secondResult.id] }
+        let acceptedRevision = state.resultRevision
+
+        probe.resume("first query", with: [firstResult])
+        await settleTasks()
+
+        #expect(state.results?.map(\.id) == [secondResult.id])
+        #expect(state.resultRevision == acceptedRevision)
+        #expect(!state.isInterpreting)
+        #expect(!state.hasOwnedTask)
+    }
+
+    @Test("Disappearance invalidates a cancellation-ignoring completion")
+    func disappearanceRejectsOldCompletion() async throws {
+        let state = QuickPickerSmartSearchState()
+        let probe = QuickPickerSmartSearchProbe()
+
+        state.interpret("pending query") { phrase in
+            await probe.search(phrase)
+        }
+        try await waitUntil { probe.pendingCount == 1 }
+
+        state.disappear()
+        #expect(!state.isInterpreting)
+        #expect(!state.hasOwnedTask)
+
+        probe.resume("pending query", with: [.text("late")])
+        await settleTasks()
+
+        #expect(state.results == nil)
+        #expect(state.resultRevision == 0)
+    }
+
+    private func waitUntil(
+        _ condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        for _ in 0 ..< 200 {
+            if condition() { return }
+            await Task.yield()
+        }
+        throw QuickPickerSmartSearchTestError.timedOut
+    }
+
+    private func settleTasks() async {
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+private final class QuickPickerSmartSearchProbe {
+    private struct PendingSearch {
+        let phrase: String
+        let continuation: CheckedContinuation<[ClipboardItem], Never>
+    }
+
+    private var pending: [PendingSearch] = []
+
+    var pendingCount: Int { pending.count }
+
+    func search(_ phrase: String) async -> [ClipboardItem] {
+        await withCheckedContinuation { continuation in
+            pending.append(PendingSearch(phrase: phrase, continuation: continuation))
+        }
+    }
+
+    func resume(_ phrase: String, with results: [ClipboardItem]) {
+        guard let index = pending.firstIndex(where: { $0.phrase == phrase }) else { return }
+        let search = pending.remove(at: index)
+        search.continuation.resume(returning: results)
+    }
+}
+
+private enum QuickPickerSmartSearchTestError: Error {
+    case timedOut
+}

@@ -1,4 +1,15 @@
 import CoreGraphics
+import Foundation
+
+enum HistoryOpeningPosition {
+    static func scrollTargetID(in items: [ClipboardItem]) -> UUID? {
+        items.first?.id
+    }
+
+    static func selectionID(in items: [ClipboardItem]) -> UUID? {
+        items.first(where: { !$0.isPinned })?.id ?? items.first?.id
+    }
+}
 
 enum HistoryLayout {
     static let minWidth: CGFloat = 360

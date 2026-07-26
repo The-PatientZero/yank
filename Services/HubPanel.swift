@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// The data + actions for the menu-bar command panel. A plain value carrier:
 /// `ClipboardController` fills it from the runtime state it owns, and `HubController`
@@ -11,8 +11,13 @@ struct HubPrimaryPanel {
     let ignoreNextCopyArmed: Bool
     let hotkeyUnavailable: Bool
     let itemCount: Int
+    let isPasteSequenceActive: Bool
+    let pasteSequenceItemCount: Int
+    let canRepeatPasteSequence: Bool
     let onOpenQuickPicker: @MainActor () -> Void
     let onOpenHistory: @MainActor () -> Void
+    let onTogglePasteSequence: @MainActor () -> Void
+    let onRepeatPasteSequence: @MainActor (NSRunningApplication?) -> Void
     let onTogglePause: @MainActor () -> Void
     let onIgnoreNextCopy: @MainActor () -> Void
     let onFixShortcut: @MainActor () -> Void
@@ -25,7 +30,11 @@ struct HubPrimaryPanel {
     static let empty = HubPrimaryPanel(
         shortcut: "", shortcutOpenTarget: .quickPicker,
         isPaused: false, ignoreNextCopyArmed: false, hotkeyUnavailable: false,
-        itemCount: 0, onOpenQuickPicker: {}, onOpenHistory: {}, onTogglePause: {}, onIgnoreNextCopy: {},
+        itemCount: 0, isPasteSequenceActive: false, pasteSequenceItemCount: 0,
+        canRepeatPasteSequence: false,
+        onOpenQuickPicker: {}, onOpenHistory: {}, onTogglePasteSequence: {},
+        onRepeatPasteSequence: { _ in },
+        onTogglePause: {}, onIgnoreNextCopy: {},
         onFixShortcut: {}, onSettings: {}, onClear: {}
     )
 }
