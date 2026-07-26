@@ -23,7 +23,8 @@
 | iOS simulator tests | `xcodebuild ... -scheme YankiOS ... test` | | |
 | Release configuration | XcodeGen generation and archive validation | | |
 | Signed archive structure | host app, keyboard extension, and share extension bundles | | |
-| Signed archive entitlements | host app and both extensions | | |
+| Debug diagnostic entitlements | host: CloudKit `Development`, APNs `development` | | |
+| Signed Release archive entitlements | host: CloudKit `Production`, APNs `production`, expected CloudKit service/container and App Group; extensions: App Group only | | |
 | Packaged privacy manifests | `PrivacyInfo.xcprivacy` in the host app and both extension bundles | | |
 | Archive privacy report | required-reason API declarations match packaged behavior | | |
 

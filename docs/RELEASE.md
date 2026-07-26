@@ -24,6 +24,9 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
 4. Bumps the Homebrew cask in `The-PatientZero/homebrew-tap`.
 
 `ci.yml` runs `swift test` and unsigned macOS/iOS builds on every push and PR.
+Before publishing a signed macOS artifact, verify its effective entitlements select CloudKit
+`Production` and APNs `production`; a signed Debug diagnostic build must select CloudKit
+`Development` and APNs `development`.
 
 ## Required repository secrets
 

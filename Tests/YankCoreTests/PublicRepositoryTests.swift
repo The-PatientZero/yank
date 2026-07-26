@@ -72,6 +72,34 @@ struct PublicRepositoryTests {
         #expect(invalidFiles.isEmpty, "Invalid property lists: \(invalidFiles.sorted())")
     }
 
+    @Test("CloudKit environment is explicit for Debug and Release")
+    func cloudKitEnvironmentIsExplicit() throws {
+        let root = repositoryRoot
+        let project = try String(
+            contentsOf: root.appendingPathComponent("project.yml"),
+            encoding: .utf8
+        )
+        for relativePath in ["Yank.entitlements", "iOS/Yank-iOS.entitlements"] {
+            let entitlementData = try Data(
+                contentsOf: root.appendingPathComponent(relativePath)
+            )
+            let entitlements = try #require(
+                try PropertyListSerialization.propertyList(
+                    from: entitlementData,
+                    options: [],
+                    format: nil
+                ) as? [String: Any]
+            )
+            #expect(
+                entitlements["com.apple.developer.icloud-container-environment"] as? String
+                    == "$(ICLOUD_CONTAINER_ENVIRONMENT)"
+            )
+        }
+        let projectLines = Set(project.split(separator: "\n", omittingEmptySubsequences: false))
+        #expect(projectLines.contains("    ICLOUD_CONTAINER_ENVIRONMENT: Development"))
+        #expect(projectLines.contains("      ICLOUD_CONTAINER_ENVIRONMENT: Production"))
+    }
+
     @Test("Generated targets package every declared plist and privacy manifest")
     func projectConfigurationReferencesPublicMetadata() throws {
         let root = repositoryRoot

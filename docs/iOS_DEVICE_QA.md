@@ -122,7 +122,9 @@ Record the macOS version, target app, and target field used for each result.
 
 ## Distribution checks
 
-- [ ] The signed archive contains the expected app and extension entitlements and both embedded extensions.
+- [ ] A signed physical Debug build used for CloudKit diagnosis has host entitlements `com.apple.developer.icloud-container-environment=Development` and `aps-environment=development`.
+- [ ] The signed Release archive has host entitlements `com.apple.developer.icloud-container-environment=Production`, `aps-environment=production`, CloudKit service and container `iCloud.com.thepatientzero.yank`, and App Group `group.com.thepatientzero.yank`.
+- [ ] The signed archive contains both embedded extensions; each extension retains the App Group entitlement without host-only CloudKit or push entitlements.
 - [ ] The signed archive packages `PrivacyInfo.xcprivacy` in the host app, keyboard extension, and share extension bundles.
 - [ ] The archive privacy report matches actual required-reason API use.
 - [ ] App Store Connect contains the same reachable Privacy Policy URL as the app.
