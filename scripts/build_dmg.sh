@@ -48,7 +48,7 @@ fi
 
 echo "Generating Xcode project from project.yml..."
 command -v xcodegen >/dev/null 2>&1 || {
-    echo "xcodegen not found — run scripts/install_xcodegen.sh and add the printed bin directory to PATH"
+    echo 'xcodegen not found — run: XCODEGEN_BIN="$(scripts/install_xcodegen.sh)"; export PATH="$(dirname "$XCODEGEN_BIN"):$PATH"'
     exit 1
 }
 xcodegen generate

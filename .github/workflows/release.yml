@@ -15,15 +15,13 @@ permissions:
   contents: write
   pull-requests: write
 
-env:
-  XCODEGEN_VERSION: "2.45.4"
-  XCODEGEN_TARBALL_SHA256: "90705e5c410a980f7d98f75462bba2120de7c94b721cc06fd3f7e52a52a1aeed"
-
 jobs:
   release:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
 
       - name: Check the tag matches MARKETING_VERSION
         run: |
