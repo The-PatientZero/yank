@@ -26,6 +26,8 @@ and passes that section to `gh release create --notes-file`.
 - Preserved rich/plain capture identity and suppressed Yank-authored clipboard generations across relaunches.
 - Bounded macOS pasteboard materialization and moved it off the main actor.
 - Made CloudKit recovery commands return reliable process exit status.
+- Selected the correct CloudKit environment for Development and Production builds.
+- Recovered missing CloudKit assets when an equal-or-newer local deletion safely dominates the remote record.
 - Corrected image preview accessibility labels and iOS setup copy.
 
 ## [1.0.2] - 2026-07-12
