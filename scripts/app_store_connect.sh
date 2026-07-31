@@ -13,8 +13,8 @@ usage:
   app_store_connect.sh validate-token
   app_store_connect.sh next-build <app-id> <marketing-version>
   app_store_connect.sh wait-build <app-id> <marketing-version> <build-number> [timeout-seconds] [poll-seconds]
-  app_store_connect.sh assign-build <internal-group-id> <build-id>
-  app_store_connect.sh verify-assignment <internal-group-id> <build-id>
+  app_store_connect.sh assign-build <group-id> <build-id>
+  app_store_connect.sh verify-assignment <group-id> <build-id>
 
 test-only parsers:
   app_store_connect.sh next-build-from-json <builds-response.json>
@@ -442,7 +442,7 @@ verify_assignment() {
     validate_identifier "build ID" "$build_id"
     require_authentication
     assignment_exists "$group_id" "$build_id" \
-        || fail "internal group does not contain build ${build_id}"
+        || fail "group does not contain build ${build_id}"
 }
 
 require_command jq

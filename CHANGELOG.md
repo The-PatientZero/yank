@@ -12,7 +12,7 @@ and passes that section to `gh release create --notes-file`.
 
 ### Added
 
-- Added a protected, manual TestFlight pipeline that validates, uploads, processes, assigns, and verifies an internal iOS build.
+- Added a protected, manual TestFlight pipeline that validates, uploads, processes, and assigns an iOS build to verified internal and external testing groups.
 
 ### Changed
 
