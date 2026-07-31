@@ -1,11 +1,73 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Yank
 
 @Suite("Quick Picker Window", .serialized)
 @MainActor
 struct QuickPickerWindowControllerTests {
+    @Test("Panel uses the canonical frame without titlebar safe-area inflation")
+    func panelUsesCanonicalFrameAndAccessibilityTitle() throws {
+        let frameKey = "QuickPickerWindowFrame"
+        let defaults = UserDefaults.standard
+        let originalFrame = defaults.object(forKey: frameKey)
+        defaults.set(
+            NSStringFromRect(NSRect(x: 160, y: 240, width: 392, height: 462)),
+            forKey: frameKey
+        )
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YankQuickPickerFrameTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let controller = QuickPickerWindowController(
+            store: ClipboardStore(settings: .unbounded, storageDirectory: directory),
+            axPermission: AccessibilityPermission(),
+            onOpenFullHistory: {}
+        )
+        defer {
+            controller.close()
+            if let originalFrame {
+                defaults.set(originalFrame, forKey: frameKey)
+            } else {
+                defaults.removeObject(forKey: frameKey)
+            }
+            do {
+                try FileManager.default.removeItem(at: directory)
+            } catch {
+                Issue.record("Failed to remove frame test directory: \(error)")
+            }
+        }
+
+        let window = try #require(controller.window)
+        let host = try #require(window.contentView as? NSHostingView<QuickPickerView>)
+
+        #expect(window.frame.origin == NSPoint(x: 160, y: 240))
+        #expect(window.frame.size == QuickPickerLayout.size)
+        #expect(host.safeAreaRegions.isEmpty)
+        #expect(window.accessibilityTitle() == "Yank Quick Picker")
+    }
+
+    @Test("Thumbnail frame clips drawing to the icon bounds")
+    func thumbnailDrawingStaysInsideIconFrame() throws {
+        let renderer = ImageRenderer(
+            content: ZStack(alignment: .leading) {
+                Color.clear.frame(width: 90, height: IconSize.clipRow)
+                QuickPickerThumbnailFrame {
+                    Color.red.frame(width: 90, height: IconSize.clipRow)
+                }
+            }
+        )
+        renderer.proposedSize = .init(width: 90, height: IconSize.clipRow)
+        renderer.scale = 1
+
+        let image = try #require(renderer.cgImage)
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        #expect(try #require(bitmap.colorAt(x: 15, y: 15)).alphaComponent > 0)
+        #expect(try #require(bitmap.colorAt(x: 45, y: 15)).alphaComponent == 0)
+    }
+
     @Test("Picker opens beside the focused field when its frame is available")
     func pickerOpensBesideFocusedFieldWhenFrameIsAvailable() throws {
         let directory = FileManager.default.temporaryDirectory

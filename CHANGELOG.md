@@ -8,6 +8,23 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-07-31
+
+### Added
+
+- Added a protected, manual TestFlight pipeline that validates, uploads, processes, assigns, and verifies an internal iOS build.
+
+### Changed
+
+- Split the macOS clipboard, paste, and Quick Picker implementations into focused source files without changing their public behavior.
+
+### Fixed
+
+- Suppressed delayed capture sounds after expensive clipboard processing while preserving immediate copy confirmation.
+- Kept Yank-authored clipboard suppression and synthetic paste dispatch bound to the exact pasteboard generation, so newer external copies and copied file paths are preserved.
+- Restored the Quick Picker's intended dimensions by removing titlebar safe-area inflation, constraining image thumbnails, and validating saved window frames.
+- Prevented stale deferred copy and paste work from overwriting or pasting newer clipboard content.
+
 ## [1.0.3] - 2026-07-26
 
 ### Added

@@ -247,3 +247,32 @@ struct ClipboardStorePersistenceTests {
         #expect(fileManager.fileExists(atPath: blobURL.path))
     }
 }
+
+@Suite("Capture Feedback Policy")
+struct CaptureFeedbackPolicyTests {
+    @Test("Fresh captures remain eligible for audible confirmation")
+    func freshCaptureAllowsSound() {
+        let observedAt = Date(timeIntervalSinceReferenceDate: 100)
+        let now = observedAt.addingTimeInterval(CaptureFeedbackPolicy.maximumAudibleLatency)
+
+        #expect(CaptureFeedbackPolicy.allowsSound(observedAt: observedAt, now: now))
+    }
+
+    @Test("Stale captures suppress audible confirmation")
+    func staleCaptureSuppressesSound() {
+        let observedAt = Date(timeIntervalSinceReferenceDate: 100)
+        let now = observedAt.addingTimeInterval(
+            CaptureFeedbackPolicy.maximumAudibleLatency + 0.001
+        )
+
+        #expect(!CaptureFeedbackPolicy.allowsSound(observedAt: observedAt, now: now))
+    }
+
+    @Test("Clock correction does not make a fresh capture silent")
+    func futureObservationAllowsSound() {
+        let now = Date(timeIntervalSinceReferenceDate: 100)
+        let observedAt = now.addingTimeInterval(1)
+
+        #expect(CaptureFeedbackPolicy.allowsSound(observedAt: observedAt, now: now))
+    }
+}

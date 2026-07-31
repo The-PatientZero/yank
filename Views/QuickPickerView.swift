@@ -2,64 +2,6 @@ import SwiftUI
 import Cocoa
 import Observation
 
-@MainActor
-@Observable
-final class QuickPickerSmartSearchState {
-    typealias Search = @MainActor @Sendable (String) async -> [ClipboardItem]
-
-    private(set) var results: [ClipboardItem]?
-    private(set) var isInterpreting = false
-    private(set) var resultRevision = 0
-
-    @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private var requestID: UUID?
-
-    var hasOwnedTask: Bool { task != nil }
-
-    func interpret(_ phrase: String, using search: @escaping Search) {
-        guard !phrase.isEmpty else {
-            queryDidChange()
-            return
-        }
-
-        invalidateOwnedRequest()
-        let requestID = UUID()
-        self.requestID = requestID
-        isInterpreting = true
-
-        let task = Task { @MainActor [weak self, search] in
-            let results = await search(phrase)
-            guard let self,
-                  !Task.isCancelled,
-                  self.requestID == requestID else {
-                return
-            }
-            self.task = nil
-            self.requestID = nil
-            self.results = results
-            self.isInterpreting = false
-            self.resultRevision &+= 1
-        }
-        self.task = task
-    }
-
-    func queryDidChange() {
-        invalidateOwnedRequest()
-        results = nil
-    }
-
-    func disappear() {
-        invalidateOwnedRequest()
-    }
-
-    private func invalidateOwnedRequest() {
-        task?.cancel()
-        task = nil
-        requestID = nil
-        isInterpreting = false
-    }
-}
-
 struct QuickPickerView: View {
     let store: ClipboardStore
     @Bindable var presentationState: QuickPickerPresentationState
@@ -98,7 +40,7 @@ struct QuickPickerView: View {
                 footer
             }
         }
-        .frame(width: 392, height: 430)
+        .frame(width: QuickPickerLayout.size.width, height: QuickPickerLayout.size.height)
         .tint(AppTheme.active.foreground)
         .background(keyMonitor.frame(width: 0, height: 0))
         .onAppear {
@@ -140,7 +82,7 @@ struct QuickPickerView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Radius.md)
                     .strokeBorder(searchFocused ? AppTheme.active.foreground.opacity(0.45) : Color.yankHairline,
-                                  lineWidth: searchFocused ? 1.25 : Hairline.width)
+                                  lineWidth: searchFocused ? Stroke.focusRing : Hairline.width)
             )
 
             if FoundationModelEnricher.isAvailable {
@@ -308,7 +250,9 @@ struct QuickPickerView: View {
             selection.selectDefault(in: items)
         }
     }
+}
 
+private extension QuickPickerView {
     private func moveSelection(by delta: Int) {
         selection.move(by: delta, in: items)
     }
@@ -389,7 +333,7 @@ private struct QuickPickerRow: View {
         .background(rowBackground)
         .overlay(
             RoundedRectangle(cornerRadius: Radius.md)
-                .strokeBorder(rowBorder, lineWidth: isSelected ? 1.5 : Hairline.width)
+                .strokeBorder(rowBorder, lineWidth: isSelected ? Stroke.focusRing : Hairline.width)
         )
         .onHover { isHovered = $0 }
         .animation(YankMotion.quick(reduceMotion), value: isHovered)
@@ -444,129 +388,11 @@ private struct QuickPickerRow: View {
                         .stroke(Color.yankSubtleBorder, lineWidth: Hairline.width)
                 )
         case .image:
-            ClipThumbnail(item: item, store: store, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
+            QuickPickerThumbnailFrame {
+                ClipThumbnail(item: item, store: store, contentMode: .fill)
+            }
         default:
             ClipKindIcon(glyph: kind.glyph)
         }
-    }
-}
-
-private struct PickerIconButton: View {
-    let systemName: String
-    let label: String
-    let action: () -> Void
-
-    @State private var isHovered = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: TypeScale.control, weight: .medium))
-                .frame(width: ControlTarget.compact, height: ControlTarget.compact)
-                .contentShape(RoundedRectangle(cornerRadius: Radius.sm))
-        }
-        .buttonStyle(.plain)
-        .foregroundColor(isHovered ? AppTheme.active.foreground : .yankTextTertiary)
-        .background(isHovered ? Color.yankHover : Color.clear, in: RoundedRectangle(cornerRadius: Radius.sm))
-        .scaleEffect(isHovered && !reduceMotion ? 1.04 : 1)
-        .onHover { isHovered = $0 }
-        .animation(YankMotion.quick(reduceMotion), value: isHovered)
-        .help(label)
-        .accessibilityLabel(label)
-    }
-}
-
-private struct QuickPickerKeyMonitor: NSViewRepresentable {
-    struct Handlers {
-        let onUp: () -> Void
-        let onDown: () -> Void
-        let onEnter: () -> Void
-        let onCopy: () -> Void
-        let onPasteAsText: () -> Void
-        let onEscape: () -> Void
-        let onOpenFullHistory: () -> Void
-        let onFocusSearch: () -> Void
-        let onPasteIndex: (Int) -> Void
-    }
-
-    let handlers: Handlers
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak view] event in
-            guard WindowKeyEventScope.shouldHandle(
-                monitoredWindow: view?.window,
-                keyWindow: NSApp.keyWindow
-            ) else { return event }
-            switch event.keyCode {
-            case 126:
-                handlers.onUp()
-                return nil
-            case 125:
-                handlers.onDown()
-                return nil
-            case 36:
-                if event.modifierFlags.contains(.option) {
-                    handlers.onPasteAsText()
-                } else if event.modifierFlags.contains(.command) {
-                    handlers.onCopy()
-                } else {
-                    handlers.onEnter()
-                }
-                return nil
-            case 53:
-                handlers.onEscape()
-                return nil
-            case 3:
-                if event.modifierFlags.contains(.command) {
-                    handlers.onFocusSearch()
-                    return nil
-                }
-                return event
-            case 31:
-                if event.modifierFlags.contains(.command) {
-                    handlers.onOpenFullHistory()
-                    return nil
-                }
-                return event
-            case 18, 19, 20, 21, 22, 23, 25, 26, 28:
-                if event.modifierFlags.contains(.command),
-                   let index = Self.quickIndex(for: event.keyCode) {
-                    handlers.onPasteIndex(index)
-                    return nil
-                }
-                return event
-            default:
-                return event
-            }
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.removeMonitor()
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    private static func quickIndex(for keyCode: UInt16) -> Int? {
-        [18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9][keyCode]
-    }
-
-    final class Coordinator {
-        var monitor: Any?
-
-        func removeMonitor() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-                self.monitor = nil
-            }
-        }
-
-        deinit { removeMonitor() }
     }
 }
