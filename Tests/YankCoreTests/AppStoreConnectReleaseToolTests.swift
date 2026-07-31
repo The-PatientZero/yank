@@ -170,9 +170,9 @@ struct AppStoreConnectReleaseToolTests {
         #expect(validation.standardError.isEmpty)
     }
 
-    @Test("Release scripts parse and archive validation fails closed")
-    func releaseScriptsParseAndArchiveValidationFailsClosed() throws {
-        for script in ["app_store_connect.sh", "validate_ios_archive.sh"] {
+    @Test("Release scripts parse and IPA validation fails closed")
+    func releaseScriptsParseAndIPAValidationFailsClosed() throws {
+        for script in ["app_store_connect.sh", "validate_ios_ipa.sh"] {
             let syntax = try runProcess(
                 executable: "/bin/bash",
                 arguments: [
@@ -194,21 +194,21 @@ struct AppStoreConnectReleaseToolTests {
             )
         )
 
-        let missingArchive = try runProcess(
+        let missingIPA = try runProcess(
             executable: "/bin/bash",
             arguments: [
                 repositoryRoot
-                    .appendingPathComponent("scripts/validate_ios_archive.sh")
+                    .appendingPathComponent("scripts/validate_ios_ipa.sh")
                     .path,
-                "/tmp/yank-missing-release-archive",
+                "/tmp/yank-missing-release.ipa",
                 "1.0.3",
                 "2",
                 "ABCDE12345"
             ]
         )
-        #expect(missingArchive.status != 0)
-        #expect(missingArchive.standardOutput.isEmpty)
-        #expect(missingArchive.standardError.contains("archive does not exist"))
+        #expect(missingIPA.status != 0)
+        #expect(missingIPA.standardOutput.isEmpty)
+        #expect(missingIPA.standardError.contains("IPA does not exist"))
     }
 
     private func prereleaseResponse(

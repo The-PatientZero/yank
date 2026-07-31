@@ -251,8 +251,11 @@ struct PublicRepositoryTests {
         let uploadRange = try #require(
             promoteSection.range(of: "- name: Upload to App Store Connect")
         )
+        let exportRange = try #require(
+            promoteSection.range(of: "- name: Export signed TestFlight package")
+        )
         let validateRange = try #require(
-            promoteSection.range(of: "- name: Validate signed archive")
+            promoteSection.range(of: "- name: Validate signed TestFlight package")
         )
         let cleanupRange = try #require(
             promoteSection.range(
@@ -282,13 +285,22 @@ struct PublicRepositoryTests {
         #expect(promoteSection.contains(#"ARCHIVE_PATH=$RUNNER_TEMP/YankiOS.xcarchive"#))
         #expect(!verifySection.contains("secrets."))
         #expect(!verifySection.contains("environment:"))
-        #expect(materializeRange.lowerBound < uploadRange.lowerBound)
+        #expect(materializeRange.lowerBound < exportRange.lowerBound)
+        #expect(exportRange.lowerBound < validateRange.lowerBound)
         #expect(validateRange.lowerBound < uploadRange.lowerBound)
         #expect(cleanupRange.lowerBound > uploadRange.lowerBound)
         #expect(promoteSection.contains("if: always()"))
         #expect(promoteSection.contains(#"rm -f "$ASC_KEY_PATH""#))
         #expect(promoteSection.contains("testFlightInternalTestingOnly -bool NO"))
         #expect(promoteSection.contains("manageAppVersionAndBuildNumber -bool NO"))
+        #expect(promoteSection.contains("destination -string export"))
+        #expect(promoteSection.contains("scripts/validate_ios_ipa.sh"))
+        #expect(promoteSection.contains("xcrun altool --upload-app"))
+        #expect(
+            promoteSection.contains(
+                #"API_PRIVATE_KEYS_DIR="$(dirname "$ASC_KEY_PATH")""#
+            )
+        )
         #expect(promoteSection.contains("verify-assignment"))
         #expect(promoteSection.contains("External group assignment: verified"))
         #expect(!workflow.contains("actions/upload-artifact"))
