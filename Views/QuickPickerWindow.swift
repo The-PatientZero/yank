@@ -2,6 +2,17 @@ import Cocoa
 import Observation
 import SwiftUI
 
+enum QuickPickerLayout {
+    static let size = NSSize(width: 392, height: 430)
+    static let accessibilityTitle = "Yank Quick Picker"
+    static let styleMask: NSWindow.StyleMask = [
+        .titled,
+        .closable,
+        .nonactivatingPanel,
+        .fullSizeContentView
+    ]
+}
+
 @MainActor
 @Observable
 final class QuickPickerPresentationState {
@@ -37,7 +48,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private var previousApp: NSRunningApplication?
     private var isApplyingProgrammaticFrame = false
 
-    private static let defaultSize = NSSize(width: 392, height: 430)
     private static let frameDefaultsKey = "QuickPickerWindowFrame"
 
     init(
@@ -59,10 +69,14 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         self.onOpenFullHistory = onOpenFullHistory
         self.onStartPasteSequence = onStartPasteSequence
 
-        let initialRect = Self.savedFrame() ?? NSRect(origin: .zero, size: Self.defaultSize)
+        let initialFrame = Self.savedFrame() ?? NSRect(origin: .zero, size: QuickPickerLayout.size)
+        let initialContentRect = NSWindow.contentRect(
+            forFrameRect: initialFrame,
+            styleMask: QuickPickerLayout.styleMask
+        )
         let panel = QuickPickerPanel(
-            contentRect: initialRect,
-            styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView],
+            contentRect: initialContentRect,
+            styleMask: QuickPickerLayout.styleMask,
             backing: .buffered,
             defer: false
         )
@@ -81,8 +95,15 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private static func savedFrame() -> NSRect? {
         guard let value = UserDefaults.standard.string(forKey: frameDefaultsKey) else { return nil }
         let frame = NSRectFromString(value)
-        guard frame.width >= 320, frame.height >= 320 else { return nil }
-        return frame
+        guard frame.origin.x.isFinite,
+              frame.origin.y.isFinite,
+              frame.width.isFinite,
+              frame.height.isFinite,
+              frame.width >= 320,
+              frame.height >= 320 else {
+            return nil
+        }
+        return NSRect(origin: frame.origin, size: QuickPickerLayout.size)
     }
 
     private func setupPanel(_ panel: NSPanel) {
@@ -91,6 +112,8 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
         panel.hidesOnDeactivate = false
+        panel.title = QuickPickerLayout.accessibilityTitle
+        panel.setAccessibilityTitle(QuickPickerLayout.accessibilityTitle)
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
         panel.backgroundColor = .clear
@@ -116,6 +139,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             onSmartSearch: { [weak self] phrase in await self?.smartSearch(phrase) ?? [] }
         )
         let host = NSHostingView(rootView: view)
+        host.safeAreaRegions = []
         host.wantsLayer = true
         host.layer?.cornerRadius = Radius.window
         host.layer?.masksToBounds = true

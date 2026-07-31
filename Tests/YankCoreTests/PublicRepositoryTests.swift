@@ -157,6 +157,36 @@ struct PublicRepositoryTests {
         }
     }
 
+    @Test("Version 1.0.4 is shared by every application bundle")
+    func releaseVersionIsSharedByEveryApplicationBundle() throws {
+        let project = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("project.yml"),
+            encoding: .utf8
+        )
+        #expect(project.contains(#"MARKETING_VERSION: "1.0.4""#))
+        #expect(project.contains(#"CURRENT_PROJECT_VERSION: "1""#))
+
+        for relativePath in [
+            "Info.plist",
+            "iOS/App-Info.plist",
+            "iOS/Keyboard-Info.plist",
+            "iOS/Share-Info.plist"
+        ] {
+            let data = try Data(
+                contentsOf: repositoryRoot.appendingPathComponent(relativePath)
+            )
+            let plist = try #require(
+                try PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [],
+                    format: nil
+                ) as? [String: Any]
+            )
+            #expect(plist["CFBundleShortVersionString"] as? String == "$(MARKETING_VERSION)")
+            #expect(plist["CFBundleVersion"] as? String == "$(CURRENT_PROJECT_VERSION)")
+        }
+    }
+
     @Test("Workflow actions are immutable and checkout does not retain credentials")
     func workflowDependenciesArePinned() throws {
         let workflows = try publicRepositoryFiles(
@@ -205,6 +235,67 @@ struct PublicRepositoryTests {
             credentialedCheckouts.isEmpty,
             "Checkout retains credentials: \(credentialedCheckouts)"
         )
+    }
+
+    @Test("TestFlight workflow preserves the release security boundary")
+    func testFlightWorkflowPreservesReleaseSecurityBoundary() throws {
+        let workflowURL = repositoryRoot
+            .appendingPathComponent(".github/workflows/testflight.yml")
+        let workflow = try String(contentsOf: workflowURL, encoding: .utf8)
+        let promoteRange = try #require(workflow.range(of: "\n  promote:\n"))
+        let verifySection = workflow[..<promoteRange.lowerBound]
+        let promoteSection = workflow[promoteRange.lowerBound...]
+        let materializeRange = try #require(
+            promoteSection.range(of: "- name: Materialize dedicated App Store Connect key")
+        )
+        let uploadRange = try #require(
+            promoteSection.range(of: "- name: Upload to App Store Connect")
+        )
+        let validateRange = try #require(
+            promoteSection.range(of: "- name: Validate signed archive")
+        )
+        let cleanupRange = try #require(
+            promoteSection.range(
+                of: "- name: Remove signing credentials and temporary release files"
+            )
+        )
+
+        #expect(workflow.contains("  workflow_dispatch:"))
+        #expect(!workflow.contains("\n  push:"))
+        #expect(!workflow.contains("\n  pull_request:"))
+        #expect(!workflow.contains("\n  schedule:"))
+        #expect(workflow.contains("  contents: read"))
+        #expect(!workflow.contains("contents: write"))
+        #expect(!workflow.contains("actions: write"))
+        #expect(!workflow.contains("id-token: write"))
+        #expect(workflow.contains("group: testflight-internal-promotion"))
+        #expect(workflow.contains("cancel-in-progress: false"))
+        #expect(workflow.contains("queue: max"))
+        #expect(workflow.contains(#"if: github.ref == 'refs/heads/main'"#))
+        #expect(workflow.contains(#""refs/heads/main""#))
+        #expect(promoteSection.contains("name: testflight"))
+        #expect(promoteSection.contains("deployment: true"))
+        #expect(promoteSection.contains("APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}"))
+        #expect(!promoteSection.contains("APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}"))
+        #expect(!verifySection.contains("secrets."))
+        #expect(!verifySection.contains("environment:"))
+        #expect(materializeRange.lowerBound < uploadRange.lowerBound)
+        #expect(validateRange.lowerBound < uploadRange.lowerBound)
+        #expect(cleanupRange.lowerBound > uploadRange.lowerBound)
+        #expect(promoteSection.contains("if: always()"))
+        #expect(promoteSection.contains(#"rm -f "$ASC_KEY_PATH""#))
+        #expect(promoteSection.contains("testFlightInternalTestingOnly -bool YES"))
+        #expect(promoteSection.contains("manageAppVersionAndBuildNumber -bool NO"))
+        #expect(promoteSection.contains("verify-assignment"))
+        #expect(!workflow.contains("actions/upload-artifact"))
+
+        let sourceExportOptions = try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("scripts/ExportOptions-AppStore.plist"),
+            encoding: .utf8
+        )
+        #expect(sourceExportOptions.contains("<string>export</string>"))
+        #expect(sourceExportOptions.contains("<string>YOUR_TEAM_ID</string>"))
     }
 
     private var repositoryRoot: URL {

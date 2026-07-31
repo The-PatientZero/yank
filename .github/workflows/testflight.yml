@@ -1,0 +1,244 @@
+name: TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-internal-promotion
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  verify:
+    name: Verify release source
+    runs-on: macos-26
+    steps:
+      - name: Require main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "TestFlight promotion is restricted to main." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run package and public repository tests
+        run: swift test
+
+      - name: Install pinned XcodeGen
+        run: scripts/install_xcodegen.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Test macOS app (unsigned)
+        run: >
+          xcodebuild -project Yank.xcodeproj -scheme Yank -configuration Debug
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO test
+
+      - name: Test iOS app (simulator, unsigned)
+        run: >
+          xcodebuild -project Yank.xcodeproj -scheme YankiOS -configuration Debug
+          -destination 'platform=iOS Simulator,name=iPhone 17'
+          CODE_SIGNING_ALLOWED=NO test
+
+  promote:
+    name: Sign and promote to internal TestFlight
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    environment:
+      name: testflight
+      deployment: true
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      TESTFLIGHT_APP_ID: ${{ vars.TESTFLIGHT_APP_ID }}
+      TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+      ARCHIVE_PATH: ${{ runner.temp }}/YankiOS.xcarchive
+      EXPORT_PATH: ${{ runner.temp }}/TestFlightExport
+      EXPORT_OPTIONS_PATH: ${{ runner.temp }}/ExportOptions-TestFlight.plist
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Re-check release source
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "TestFlight promotion is restricted to main." >&2
+            exit 1
+          fi
+          if [ "$GITHUB_SHA" != "${{ github.sha }}" ]; then
+            echo "Checked-out commit does not match the dispatched commit." >&2
+            exit 1
+          fi
+
+      - name: Validate release configuration
+        run: |
+          case "$APPLE_TEAM_ID" in
+            *[!A-Z0-9]*|"") echo "APPLE_TEAM_ID is invalid." >&2; exit 1 ;;
+          esac
+          case "$TESTFLIGHT_APP_ID" in
+            *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_APP_ID is invalid." >&2; exit 1 ;;
+          esac
+          case "$TESTFLIGHT_INTERNAL_GROUP_ID" in
+            *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_INTERNAL_GROUP_ID is invalid." >&2; exit 1 ;;
+          esac
+
+      - name: Install pinned XcodeGen before loading signing secrets
+        run: scripts/install_xcodegen.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Materialize dedicated App Store Connect key
+        env:
+          TESTFLIGHT_ASC_KEY_B64: ${{ secrets.TESTFLIGHT_ASC_KEY_B64 }}
+          TESTFLIGHT_ASC_KEY_ID: ${{ secrets.TESTFLIGHT_ASC_KEY_ID }}
+          TESTFLIGHT_ASC_ISSUER_ID: ${{ secrets.TESTFLIGHT_ASC_ISSUER_ID }}
+        run: |
+          umask 077
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${TESTFLIGHT_ASC_KEY_ID}.p8"
+          printf '%s' "$TESTFLIGHT_ASC_KEY_B64" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          test -s "$KEY_PATH"
+          {
+            echo "ASC_KEY_PATH=$KEY_PATH"
+            echo "ASC_KEY_ID=$TESTFLIGHT_ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$TESTFLIGHT_ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate local API token signing
+        run: scripts/app_store_connect.sh validate-token
+
+      - name: Select version and next live build number
+        run: |
+          MARKETING_VERSION="$(
+            awk -F': ' '
+              /MARKETING_VERSION:/ {
+                gsub(/"/, "", $2)
+                print $2
+                exit
+              }
+            ' project.yml
+          )"
+          case "$MARKETING_VERSION" in
+            *[!0-9.]*|"") echo "MARKETING_VERSION is invalid." >&2; exit 1 ;;
+          esac
+          BUILD_NUMBER="$(
+            scripts/app_store_connect.sh \
+              next-build \
+              "$TESTFLIGHT_APP_ID" \
+              "$MARKETING_VERSION"
+          )"
+          case "$BUILD_NUMBER" in
+            *[!0-9]*|"") echo "Selected build number is invalid." >&2; exit 1 ;;
+          esac
+          {
+            echo "MARKETING_VERSION=$MARKETING_VERSION"
+            echo "BUILD_NUMBER=$BUILD_NUMBER"
+          } >> "$GITHUB_ENV"
+          echo "Selected Yank ${MARKETING_VERSION} (${BUILD_NUMBER})."
+
+      - name: Archive signed iOS release candidate
+        run: |
+          xcodebuild archive \
+            -project Yank.xcodeproj \
+            -scheme YankiOS \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            MARKETING_VERSION="$MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+
+      - name: Validate signed archive
+        run: |
+          scripts/validate_ios_archive.sh \
+            "$ARCHIVE_PATH" \
+            "$MARKETING_VERSION" \
+            "$BUILD_NUMBER" \
+            "$APPLE_TEAM_ID"
+
+      - name: Prepare internal-only upload options
+        run: |
+          cp scripts/ExportOptions-AppStore.plist "$EXPORT_OPTIONS_PATH"
+          plutil -replace method -string app-store-connect "$EXPORT_OPTIONS_PATH"
+          plutil -replace destination -string upload "$EXPORT_OPTIONS_PATH"
+          plutil -replace teamID -string "$APPLE_TEAM_ID" "$EXPORT_OPTIONS_PATH"
+          plutil -replace signingStyle -string automatic "$EXPORT_OPTIONS_PATH"
+          plutil -replace iCloudContainerEnvironment -string Production "$EXPORT_OPTIONS_PATH"
+          plutil -replace manageAppVersionAndBuildNumber -bool NO "$EXPORT_OPTIONS_PATH"
+          plutil -replace testFlightInternalTestingOnly -bool YES "$EXPORT_OPTIONS_PATH"
+          plutil -lint "$EXPORT_OPTIONS_PATH"
+
+      - name: Upload to App Store Connect
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Wait for Apple processing
+        run: |
+          BUILD_ID="$(
+            scripts/app_store_connect.sh \
+              wait-build \
+              "$TESTFLIGHT_APP_ID" \
+              "$MARKETING_VERSION" \
+              "$BUILD_NUMBER"
+          )"
+          case "$BUILD_ID" in
+            *[!A-Za-z0-9-]*|"") echo "Processed build ID is invalid." >&2; exit 1 ;;
+          esac
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+
+      - name: Assign exact build to internal testers
+        run: |
+          scripts/app_store_connect.sh \
+            assign-build \
+            "$TESTFLIGHT_INTERNAL_GROUP_ID" \
+            "$BUILD_ID"
+          scripts/app_store_connect.sh \
+            verify-assignment \
+            "$TESTFLIGHT_INTERNAL_GROUP_ID" \
+            "$BUILD_ID"
+
+      - name: Record non-secret promotion evidence
+        run: |
+          {
+            echo "## Internal TestFlight promotion"
+            echo ""
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Workflow run: \`$GITHUB_RUN_ID\`"
+            echo "- Version: \`$MARKETING_VERSION\`"
+            echo "- Build: \`$BUILD_NUMBER\`"
+            echo "- Archive validation: passed"
+            echo "- Apple processing: valid"
+            echo "- Internal group assignment: verified"
+            echo ""
+            echo "Physical-device QA and App Store submission remain separate gates."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove signing credentials and temporary release files
+        if: always()
+        run: |
+          if [ -n "${ASC_KEY_PATH:-}" ] && [ -f "$ASC_KEY_PATH" ]; then
+            rm -f "$ASC_KEY_PATH"
+          fi
+          rm -f "$EXPORT_OPTIONS_PATH"
+          rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"

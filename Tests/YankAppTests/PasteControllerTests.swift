@@ -5,6 +5,44 @@ import Testing
 @Suite("Plain Text Paste Dispatch")
 @MainActor
 struct PasteControllerTests {
+    @Test("Deferred write claims an unchanged pasteboard generation")
+    func deferredWriteClaimsUnchangedGeneration() {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("existing", forType: .string)
+        let coordinator = DeferredPasteboardWriteCoordinator()
+
+        let intent = coordinator.begin(for: pasteboard)
+
+        #expect(coordinator.claim(intent, for: pasteboard))
+    }
+
+    @Test("Deferred write preserves a newer external clipboard value")
+    func deferredWriteRejectsChangedGeneration() {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("existing", forType: .string)
+        let coordinator = DeferredPasteboardWriteCoordinator()
+        let intent = coordinator.begin(for: pasteboard)
+
+        pasteboard.clearContents()
+        pasteboard.setString("external", forType: .string)
+
+        #expect(!coordinator.claim(intent, for: pasteboard))
+        #expect(pasteboard.string(forType: .string) == "external")
+    }
+
+    @Test("Only the newest deferred write can claim a shared generation")
+    func newestDeferredWriteWins() {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("existing", forType: .string)
+        let coordinator = DeferredPasteboardWriteCoordinator()
+
+        let older = coordinator.begin(for: pasteboard)
+        let newer = coordinator.begin(for: pasteboard)
+
+        #expect(!coordinator.claim(older, for: pasteboard))
+        #expect(coordinator.claim(newer, for: pasteboard))
+    }
+
     @Test("Missing text is rejected before writing")
     func missingTextIsRejected() async {
         let pasteboard = makePasteboard()
@@ -157,6 +195,99 @@ struct PasteControllerTests {
         #expect(result == .cancelled)
         #expect(pasteboard.string(forType: .string) == "existing")
         #expect(!writeAttempted)
+        #expect(!eventDispatched)
+    }
+
+    @Test("External copy during focus settle cancels the deferred paste")
+    func externalCopyDuringFocusSettleWins() async {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("existing", forType: .string)
+        let gate = PasteFocusSettlementGate()
+        var eventDispatched = false
+
+        let task = Task { @MainActor in
+            await PasteController.pasteTextResult(
+                "queued",
+                pasteboard: pasteboard,
+                isAccessibilityTrusted: true,
+                focusSettleDelay: .seconds(1),
+                focusSettler: { _ in await gate.wait() },
+                eventDispatcher: {
+                    eventDispatched = true
+                    return true
+                }
+            )
+        }
+
+        await gate.waitUntilEntered()
+        pasteboard.clearContents()
+        pasteboard.setString("external", forType: .string)
+        await gate.release()
+        let result = await task.value
+
+        #expect(result == .cancelled)
+        #expect(pasteboard.string(forType: .string) == "external")
+        #expect(!eventDispatched)
+    }
+
+    @Test("Delayed dispatch uses the receipt while the pasteboard remains unchanged")
+    func delayedDispatchUsesCurrentReceipt() async throws {
+        let pasteboard = makePasteboard()
+        let receipt = try #require(
+            PasteController.copyTextToClipboard("queued", pasteboard: pasteboard)
+        )
+        let gate = PasteFocusSettlementGate()
+        var eventDispatched = false
+
+        let task = Task { @MainActor in
+            await PasteController.dispatchPasteIfCurrent(
+                receipt: receipt,
+                pasteboard: pasteboard,
+                delay: .seconds(1),
+                sleeper: { _ in await gate.wait() },
+                eventDispatcher: {
+                    eventDispatched = true
+                    return true
+                }
+            )
+        }
+
+        await gate.waitUntilEntered()
+        await gate.release()
+
+        #expect(await task.value)
+        #expect(eventDispatched)
+    }
+
+    @Test("External copy during delayed dispatch prevents pasting the newer value")
+    func externalCopyDuringDelayedDispatchWins() async throws {
+        let pasteboard = makePasteboard()
+        let receipt = try #require(
+            PasteController.copyTextToClipboard("queued", pasteboard: pasteboard)
+        )
+        let gate = PasteFocusSettlementGate()
+        var eventDispatched = false
+
+        let task = Task { @MainActor in
+            await PasteController.dispatchPasteIfCurrent(
+                receipt: receipt,
+                pasteboard: pasteboard,
+                delay: .seconds(1),
+                sleeper: { _ in await gate.wait() },
+                eventDispatcher: {
+                    eventDispatched = true
+                    return true
+                }
+            )
+        }
+
+        await gate.waitUntilEntered()
+        pasteboard.clearContents()
+        pasteboard.setString("external", forType: .string)
+        await gate.release()
+
+        #expect(!(await task.value))
+        #expect(pasteboard.string(forType: .string) == "external")
         #expect(!eventDispatched)
     }
 
