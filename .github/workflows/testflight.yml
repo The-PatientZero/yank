@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: testflight-internal-promotion
+  group: testflight-promotion
   cancel-in-progress: false
   queue: max
 
@@ -49,7 +49,7 @@ jobs:
           CODE_SIGNING_ALLOWED=NO test
 
   promote:
-    name: Sign and promote to internal TestFlight
+    name: Sign and promote to TestFlight
     needs: verify
     if: github.ref == 'refs/heads/main'
     runs-on: macos-26
@@ -60,10 +60,16 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       TESTFLIGHT_APP_ID: ${{ vars.TESTFLIGHT_APP_ID }}
       TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
-      ARCHIVE_PATH: ${{ runner.temp }}/YankiOS.xcarchive
-      EXPORT_PATH: ${{ runner.temp }}/TestFlightExport
-      EXPORT_OPTIONS_PATH: ${{ runner.temp }}/ExportOptions-TestFlight.plist
+      TESTFLIGHT_EXTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_EXTERNAL_GROUP_ID }}
     steps:
+      - name: Initialize release paths
+        run: |
+          {
+            echo "ARCHIVE_PATH=$RUNNER_TEMP/YankiOS.xcarchive"
+            echo "EXPORT_PATH=$RUNNER_TEMP/TestFlightExport"
+            echo "EXPORT_OPTIONS_PATH=$RUNNER_TEMP/ExportOptions-TestFlight.plist"
+          } >> "$GITHUB_ENV"
+
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
@@ -89,6 +95,9 @@ jobs:
           esac
           case "$TESTFLIGHT_INTERNAL_GROUP_ID" in
             *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_INTERNAL_GROUP_ID is invalid." >&2; exit 1 ;;
+          esac
+          case "$TESTFLIGHT_EXTERNAL_GROUP_ID" in
+            *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_EXTERNAL_GROUP_ID is invalid." >&2; exit 1 ;;
           esac
 
       - name: Install pinned XcodeGen before loading signing secrets
@@ -170,7 +179,7 @@ jobs:
             "$BUILD_NUMBER" \
             "$APPLE_TEAM_ID"
 
-      - name: Prepare internal-only upload options
+      - name: Prepare TestFlight upload options
         run: |
           cp scripts/ExportOptions-AppStore.plist "$EXPORT_OPTIONS_PATH"
           plutil -replace method -string app-store-connect "$EXPORT_OPTIONS_PATH"
@@ -179,7 +188,7 @@ jobs:
           plutil -replace signingStyle -string automatic "$EXPORT_OPTIONS_PATH"
           plutil -replace iCloudContainerEnvironment -string Production "$EXPORT_OPTIONS_PATH"
           plutil -replace manageAppVersionAndBuildNumber -bool NO "$EXPORT_OPTIONS_PATH"
-          plutil -replace testFlightInternalTestingOnly -bool YES "$EXPORT_OPTIONS_PATH"
+          plutil -replace testFlightInternalTestingOnly -bool NO "$EXPORT_OPTIONS_PATH"
           plutil -lint "$EXPORT_OPTIONS_PATH"
 
       - name: Upload to App Store Connect
@@ -218,10 +227,21 @@ jobs:
             "$TESTFLIGHT_INTERNAL_GROUP_ID" \
             "$BUILD_ID"
 
+      - name: Assign exact build to external testers
+        run: |
+          scripts/app_store_connect.sh \
+            assign-build \
+            "$TESTFLIGHT_EXTERNAL_GROUP_ID" \
+            "$BUILD_ID"
+          scripts/app_store_connect.sh \
+            verify-assignment \
+            "$TESTFLIGHT_EXTERNAL_GROUP_ID" \
+            "$BUILD_ID"
+
       - name: Record non-secret promotion evidence
         run: |
           {
-            echo "## Internal TestFlight promotion"
+            echo "## TestFlight promotion"
             echo ""
             echo "- Commit: \`$GITHUB_SHA\`"
             echo "- Workflow run: \`$GITHUB_RUN_ID\`"
@@ -230,6 +250,7 @@ jobs:
             echo "- Archive validation: passed"
             echo "- Apple processing: valid"
             echo "- Internal group assignment: verified"
+            echo "- External group assignment: verified; availability is subject to Beta App Review"
             echo ""
             echo "Physical-device QA and App Store submission remain separate gates."
           } >> "$GITHUB_STEP_SUMMARY"
