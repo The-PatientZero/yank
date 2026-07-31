@@ -171,19 +171,11 @@ jobs:
             MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
-      - name: Validate signed archive
-        run: |
-          scripts/validate_ios_archive.sh \
-            "$ARCHIVE_PATH" \
-            "$MARKETING_VERSION" \
-            "$BUILD_NUMBER" \
-            "$APPLE_TEAM_ID"
-
       - name: Prepare TestFlight upload options
         run: |
           cp scripts/ExportOptions-AppStore.plist "$EXPORT_OPTIONS_PATH"
           plutil -replace method -string app-store-connect "$EXPORT_OPTIONS_PATH"
-          plutil -replace destination -string upload "$EXPORT_OPTIONS_PATH"
+          plutil -replace destination -string export "$EXPORT_OPTIONS_PATH"
           plutil -replace teamID -string "$APPLE_TEAM_ID" "$EXPORT_OPTIONS_PATH"
           plutil -replace signingStyle -string automatic "$EXPORT_OPTIONS_PATH"
           plutil -replace iCloudContainerEnvironment -string Production "$EXPORT_OPTIONS_PATH"
@@ -191,7 +183,7 @@ jobs:
           plutil -replace testFlightInternalTestingOnly -bool NO "$EXPORT_OPTIONS_PATH"
           plutil -lint "$EXPORT_OPTIONS_PATH"
 
-      - name: Upload to App Store Connect
+      - name: Export signed TestFlight package
         run: |
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE_PATH" \
@@ -201,6 +193,33 @@ jobs:
             -authenticationKeyPath "$ASC_KEY_PATH" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+          shopt -s nullglob
+          IPA_FILES=("$EXPORT_PATH"/*.ipa)
+          shopt -u nullglob
+          if [ "${#IPA_FILES[@]}" -ne 1 ]; then
+            echo "Expected exactly one exported IPA, found ${#IPA_FILES[@]}." >&2
+            exit 1
+          fi
+          echo "IPA_PATH=${IPA_FILES[0]}" >> "$GITHUB_ENV"
+
+      - name: Validate signed TestFlight package
+        run: |
+          scripts/validate_ios_ipa.sh \
+            "$IPA_PATH" \
+            "$MARKETING_VERSION" \
+            "$BUILD_NUMBER" \
+            "$APPLE_TEAM_ID"
+
+      - name: Upload to App Store Connect
+        run: |
+          API_PRIVATE_KEYS_DIR="$(dirname "$ASC_KEY_PATH")" \
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA_PATH" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            --output-format json
 
       - name: Wait for Apple processing
         run: |
@@ -247,7 +266,7 @@ jobs:
             echo "- Workflow run: \`$GITHUB_RUN_ID\`"
             echo "- Version: \`$MARKETING_VERSION\`"
             echo "- Build: \`$BUILD_NUMBER\`"
-            echo "- Archive validation: passed"
+            echo "- Exported IPA validation: passed"
             echo "- Apple processing: valid"
             echo "- Internal group assignment: verified"
             echo "- External group assignment: verified; availability is subject to Beta App Review"

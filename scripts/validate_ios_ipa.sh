@@ -8,27 +8,33 @@ readonly APP_GROUP_ID="group.com.thepatientzero.yank"
 readonly ICLOUD_CONTAINER_ID="iCloud.com.thepatientzero.yank"
 
 if [[ "$#" -ne 4 ]]; then
-    echo "usage: $0 <archive.xcarchive> <marketing-version> <build-number> <team-id>" >&2
+    echo "usage: $0 <package.ipa> <marketing-version> <build-number> <team-id>" >&2
     exit 64
 fi
 
-ARCHIVE_PATH="$1"
+IPA_PATH="$1"
 EXPECTED_VERSION="$2"
 EXPECTED_BUILD="$3"
 EXPECTED_TEAM_ID="$4"
 
 fail() {
-    echo "Archive validation: $*" >&2
+    echo "IPA validation: $*" >&2
     exit 1
 }
 
-[[ -d "$ARCHIVE_PATH" ]] || fail "archive does not exist"
+[[ -f "$IPA_PATH" ]] || fail "IPA does not exist"
+[[ "$IPA_PATH" == *.ipa ]] || fail "package does not have an .ipa extension"
 [[ "$EXPECTED_VERSION" =~ ^[0-9]+([.][0-9]+){0,2}$ ]] || fail "invalid marketing version"
 [[ "$EXPECTED_BUILD" =~ ^[0-9]+$ ]] || fail "invalid build number"
 [[ "$EXPECTED_TEAM_ID" =~ ^[A-Z0-9]+$ ]] || fail "invalid team ID"
 
+TEMP_DIRECTORY="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIRECTORY"' EXIT
+/usr/bin/ditto -x -k "$IPA_PATH" "$TEMP_DIRECTORY" \
+    || fail "IPA cannot be extracted"
+
 HOST_APP="$(
-    find "$ARCHIVE_PATH/Products/Applications" \
+    find "$TEMP_DIRECTORY/Payload" \
         -mindepth 1 \
         -maxdepth 1 \
         -type d \
@@ -36,17 +42,14 @@ HOST_APP="$(
         -print
 )"
 [[ -n "$HOST_APP" && "$(wc -l <<<"$HOST_APP" | tr -d ' ')" -eq 1 ]] \
-    || fail "expected exactly one archived iOS app"
+    || fail "expected exactly one exported iOS app"
 
 PLUGINS_PATH="$HOST_APP/PlugIns"
-[[ -d "$PLUGINS_PATH" ]] || fail "archive does not contain PlugIns"
+[[ -d "$PLUGINS_PATH" ]] || fail "exported app does not contain PlugIns"
 shopt -s nullglob
 EXTENSIONS=("$PLUGINS_PATH"/*.appex)
 shopt -u nullglob
 [[ "${#EXTENSIONS[@]}" -eq 2 ]] || fail "expected exactly two embedded extensions"
-
-TEMP_DIRECTORY="$(mktemp -d)"
-trap 'rm -rf "$TEMP_DIRECTORY"' EXIT
 
 plist_value() {
     /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null
@@ -204,8 +207,8 @@ for extension_entitlements in "$KEYBOARD_ENTITLEMENTS" "$SHARE_ENTITLEMENTS"; do
     fi
 done
 
-if grep -R -I -q "YOUR_TEAM_ID" "$ARCHIVE_PATH/Info.plist" "$HOST_APP"; then
-    fail "archive contains placeholder team ID"
+if grep -R -I -q "YOUR_TEAM_ID" "$HOST_APP"; then
+    fail "exported app contains placeholder team ID"
 fi
 
-echo "Archive validation passed: ${EXPECTED_VERSION} (${EXPECTED_BUILD})"
+echo "IPA validation passed: ${EXPECTED_VERSION} (${EXPECTED_BUILD})"
