@@ -6,6 +6,12 @@ name: Release
 # docs/RELEASE.md.
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable version tag to publish or recover
+        required: true
+        type: string
   push:
     tags:
       - "v[0-9]*"
@@ -18,21 +24,42 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Validate immutable release source
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "Invalid release tag: $RELEASE_TAG"; exit 1; }
+          TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
+          [ -n "$TAG_SHA" ] && [ "$TAG_SHA" = "$(git rev-parse HEAD)" ] \
+            || { echo "Checkout does not match immutable tag $RELEASE_TAG"; exit 1; }
+
+      - name: Load current release tooling for manual recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH" \
+            --jq .content | base64 --decode > "$RUNNER_TEMP/build_dmg.sh"
+          install -m 755 "$RUNNER_TEMP/build_dmg.sh" scripts/build_dmg.sh
 
       - name: Check the tag matches MARKETING_VERSION
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           grep -q "MARKETING_VERSION: \"${VERSION}\"" project.yml \
-            || { echo "Tag ${GITHUB_REF_NAME} does not match MARKETING_VERSION in project.yml"; exit 1; }
+            || { echo "Tag ${RELEASE_TAG} does not match MARKETING_VERSION in project.yml"; exit 1; }
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
       - name: Prepare release notes from CHANGELOG.md
         run: |
-          bash scripts/extract_release_notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          bash scripts/extract_release_notes.sh "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes.md"
           echo "RELEASE_NOTES_FILE=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
 
       - name: Install pinned XcodeGen before loading signing secrets
@@ -97,7 +124,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             --title "Yank $VERSION" \
             --notes-file "$RELEASE_NOTES_FILE" \
             build/dist/Yank.dmg \
@@ -114,7 +141,7 @@ jobs:
           for attempt in {1..30}; do
             gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
             if jq -e \
-              --arg tag "$GITHUB_REF_NAME" \
+              --arg tag "$RELEASE_TAG" \
               --arg zip "$EXPECTED_ZIP" \
               --arg checksum "$EXPECTED_CHECKSUM" \
               'any(.[]; .tag_name == $tag and .draft == false and (.assets | any(.name == $zip)) and (.assets | any(.name == $checksum)))' \
@@ -122,14 +149,14 @@ jobs:
               break
             fi
             if [ "$attempt" -eq 30 ]; then
-              echo "Release feed did not include $GITHUB_REF_NAME with $EXPECTED_ZIP and $EXPECTED_CHECKSUM" >&2
+              echo "Release feed did not include $RELEASE_TAG with $EXPECTED_ZIP and $EXPECTED_CHECKSUM" >&2
               jq '[.[] | {tag_name, draft, assets: [.assets[].name]}]' releases.json >&2
               exit 1
             fi
             sleep 5
           done
 
-          SAFE_TAG="$(printf '%s' "$GITHUB_REF_NAME" | tr -cs 'A-Za-z0-9._-' '-')"
+          SAFE_TAG="$(printf '%s' "$RELEASE_TAG" | tr -cs 'A-Za-z0-9._-' '-')"
           FEED_BRANCH="automation/refresh-updater-feed-${SAFE_TAG}"
           BASE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FEED_BRANCH" >/dev/null 2>&1; then
@@ -144,14 +171,14 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/contents/releases.json?ref=$FEED_BRANCH" \
             --jq .content | base64 --decode > current-releases.json
           if cmp -s releases.json current-releases.json; then
-            echo "releases.json already includes $GITHUB_REF_NAME"
+            echo "releases.json already includes $RELEASE_TAG"
             exit 0
           fi
 
           CURRENT_SHA="$(gh api "repos/$GITHUB_REPOSITORY/contents/releases.json?ref=$FEED_BRANCH" --jq .sha)"
           CONTENT="$(base64 < releases.json | tr -d '\n')"
           gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/releases.json" \
-            -f message="chore: refresh updater feed for $GITHUB_REF_NAME" \
+            -f message="chore: refresh updater feed for $RELEASE_TAG" \
             -f branch="$FEED_BRANCH" \
             -f sha="$CURRENT_SHA" \
             -f content="$CONTENT" > /dev/null
@@ -167,8 +194,8 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --base main \
               --head "$FEED_BRANCH" \
-              --title "chore: refresh updater feed for $GITHUB_REF_NAME" \
-              --body "Updates releases.json after publishing $GITHUB_REF_NAME.")"
+              --title "chore: refresh updater feed for $RELEASE_TAG" \
+              --body "Updates releases.json after publishing $RELEASE_TAG.")"
           fi
           echo "Updater feed PR: $PR_URL"
           gh pr merge "$PR_URL" --auto --squash --delete-branch \
@@ -182,5 +209,5 @@ jobs:
           gh repo clone The-PatientZero/homebrew-tap "$RUNNER_TEMP/homebrew-tap"
           git -C "$RUNNER_TEMP/homebrew-tap" config user.name "The-PatientZero"
           git -C "$RUNNER_TEMP/homebrew-tap" config user.email "The-PatientZero@users.noreply.github.com"
-          RELEASE_TAG="$GITHUB_REF_NAME" TAP_DIR="$RUNNER_TEMP/homebrew-tap" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
+          RELEASE_TAG="$RELEASE_TAG" TAP_DIR="$RUNNER_TEMP/homebrew-tap" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
           git -C "$RUNNER_TEMP/homebrew-tap" push origin main

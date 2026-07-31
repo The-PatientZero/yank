@@ -96,6 +96,27 @@ if [ -n "${PROVISIONING_PROFILE_NAME:-}" ]; then
         "${EXPORT_OPTIONS_PLIST}"
 fi
 
+# The archive must use the same installed Developer ID assets as the export. Leaving
+# the project on automatic signing here makes a clean CI runner create a throwaway
+# Apple Development certificate and team profile. Besides being unnecessary, those
+# certificates accumulate until Apple's account quota blocks otherwise valid releases.
+ARCHIVE_SIGNING_ARGS=(
+    -allowProvisioningUpdates
+    "${ASC_AUTH_ARGS[@]}"
+)
+EXPORT_AUTH_ARGS=(
+    -allowProvisioningUpdates
+    "${ASC_AUTH_ARGS[@]}"
+)
+if [ -n "${PROVISIONING_PROFILE_NAME:-}" ]; then
+    ARCHIVE_SIGNING_ARGS=(
+        CODE_SIGN_STYLE=Manual
+        CODE_SIGN_IDENTITY="${SIGN_IDENTITY}"
+        PROVISIONING_PROFILE_SPECIFIER="${PROVISIONING_PROFILE_NAME}"
+    )
+    EXPORT_AUTH_ARGS=()
+fi
+
 echo "Archiving (universal arm64 + x86_64, hardened runtime, from the Yank scheme)..."
 xcodebuild archive \
     -project Yank.xcodeproj \
@@ -103,7 +124,7 @@ xcodebuild archive \
     -configuration "${CONFIG}" \
     -archivePath "${ARCHIVE_PATH}" \
     -destination "generic/platform=macOS" \
-    -allowProvisioningUpdates "${ASC_AUTH_ARGS[@]}" \
+    "${ARCHIVE_SIGNING_ARGS[@]}" \
     DEVELOPMENT_TEAM="${TEAM_ID}" \
     ONLY_ACTIVE_ARCH=NO
 
@@ -112,7 +133,7 @@ xcodebuild -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_DIR}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PLIST}" \
-    -allowProvisioningUpdates "${ASC_AUTH_ARGS[@]}"
+    "${EXPORT_AUTH_ARGS[@]}"
 
 echo "Verifying app signature + universality..."
 codesign --verify --deep --strict --verbose=2 "${APP_PATH}"

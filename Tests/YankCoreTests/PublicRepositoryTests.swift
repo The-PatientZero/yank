@@ -237,6 +237,42 @@ struct PublicRepositoryTests {
         )
     }
 
+    @Test("macOS release reuses installed Developer ID signing assets")
+    func macOSReleaseReusesInstalledDeveloperIDSigningAssets() throws {
+        let script = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("scripts/build_dmg.sh"),
+            encoding: .utf8
+        )
+
+        #expect(script.contains("CODE_SIGN_STYLE=Manual"))
+        #expect(script.contains(#"CODE_SIGN_IDENTITY="${SIGN_IDENTITY}""#))
+        #expect(
+            script.contains(
+                #"PROVISIONING_PROFILE_SPECIFIER="${PROVISIONING_PROFILE_NAME}""#
+            )
+        )
+        #expect(script.contains(#""${ARCHIVE_SIGNING_ARGS[@]}""#))
+        #expect(script.contains(#""${EXPORT_AUTH_ARGS[@]}""#))
+    }
+
+    @Test("manual macOS release recovery preserves the immutable tag")
+    func manualMacOSReleaseRecoveryPreservesImmutableTag() throws {
+        let workflow = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(".github/workflows/release.yml"),
+            encoding: .utf8
+        )
+
+        #expect(workflow.contains("  workflow_dispatch:"))
+        #expect(workflow.contains("release_tag:"))
+        #expect(workflow.contains("Validate immutable release source"))
+        #expect(workflow.contains(#"TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")""#))
+        #expect(workflow.contains(#"[ "$TAG_SHA" = "$(git rev-parse HEAD)" ]"#))
+        #expect(workflow.contains("Load current release tooling for manual recovery"))
+        #expect(workflow.contains(#"if: github.event_name == 'workflow_dispatch'"#))
+        #expect(workflow.contains("contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH"))
+        #expect(!workflow.contains("GITHUB_REF_NAME"))
+    }
+
     @Test("TestFlight workflow preserves the release security boundary")
     func testFlightWorkflowPreservesReleaseSecurityBoundary() throws {
         let workflowURL = repositoryRoot
