@@ -298,6 +298,16 @@ struct PublicRepositoryTests {
         #expect(promoteSection.contains("xcrun altool --upload-app"))
         #expect(
             promoteSection.contains(
+                "CLOUD_SIGNING_ASC_KEY_B64: ${{ secrets.ASC_KEY_B64 }}"
+            )
+        )
+        #expect(
+            promoteSection.contains(
+                #"trap 'rm -f "$CLOUD_SIGNING_KEY_PATH"' EXIT"#
+            )
+        )
+        #expect(
+            promoteSection.contains(
                 #"API_PRIVATE_KEYS_DIR="$(dirname "$ASC_KEY_PATH")""#
             )
         )
