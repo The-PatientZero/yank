@@ -128,6 +128,45 @@ struct AppStoreConnectReleaseToolTests {
         #expect(absent.status != 0)
     }
 
+    @Test("Beta review submission state is exact and unambiguous")
+    func betaReviewSubmissionStateIsExactAndUnambiguous() throws {
+        let waiting = try runTool(
+            arguments: ["beta-review-state-from-json"],
+            json: betaReviewResponse(id: "review-1", state: "WAITING_FOR_REVIEW")
+        )
+        let approved = try runTool(
+            arguments: ["beta-review-state-from-json"],
+            json: betaReviewResponse(id: "review-2", state: "APPROVED")
+        )
+        let missing = try runTool(
+            arguments: ["beta-review-state-from-json"],
+            json: #"{"data":[]}"#
+        )
+        let unknown = try runTool(
+            arguments: ["beta-review-state-from-json"],
+            json: betaReviewResponse(id: "review-3", state: "UNKNOWN")
+        )
+        let ambiguous = try runTool(
+            arguments: ["beta-review-state-from-json"],
+            json: """
+            {
+              "data": [
+                {"type":"betaAppReviewSubmissions","id":"a","attributes":{"betaReviewState":"WAITING_FOR_REVIEW"}},
+                {"type":"betaAppReviewSubmissions","id":"b","attributes":{"betaReviewState":"IN_REVIEW"}}
+              ]
+            }
+            """
+        )
+
+        #expect(waiting.standardOutput == "review-1 WAITING_FOR_REVIEW")
+        #expect(approved.standardOutput == "review-2 APPROVED")
+        #expect(missing.standardOutput == "MISSING")
+        #expect(unknown.status != 0)
+        #expect(unknown.standardError.contains("malformed beta review response"))
+        #expect(ambiguous.status != 0)
+        #expect(ambiguous.standardError.contains("multiple beta review submissions"))
+    }
+
     @Test("Generated API token has a valid ES256 signature")
     func generatedTokenHasValidSignature() throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -227,6 +266,20 @@ struct AppStoreConnectReleaseToolTests {
                 "version": "\(build)",
                 "processingState": "\(state)"
               }
+            }
+          ]
+        }
+        """
+    }
+
+    private func betaReviewResponse(id: String, state: String) -> String {
+        """
+        {
+          "data": [
+            {
+              "type": "betaAppReviewSubmissions",
+              "id": "\(id)",
+              "attributes": {"betaReviewState": "\(state)"}
             }
           ]
         }

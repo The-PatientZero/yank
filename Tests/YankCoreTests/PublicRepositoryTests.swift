@@ -257,6 +257,12 @@ struct PublicRepositoryTests {
         let validateRange = try #require(
             promoteSection.range(of: "- name: Validate signed TestFlight package")
         )
+        let externalAssignmentRange = try #require(
+            promoteSection.range(of: "- name: Assign exact build to external testers")
+        )
+        let betaReviewRange = try #require(
+            promoteSection.range(of: "- name: Submit exact build to Beta App Review")
+        )
         let cleanupRange = try #require(
             promoteSection.range(
                 of: "- name: Remove signing credentials and temporary release files"
@@ -288,6 +294,7 @@ struct PublicRepositoryTests {
         #expect(materializeRange.lowerBound < exportRange.lowerBound)
         #expect(exportRange.lowerBound < validateRange.lowerBound)
         #expect(validateRange.lowerBound < uploadRange.lowerBound)
+        #expect(externalAssignmentRange.lowerBound < betaReviewRange.lowerBound)
         #expect(cleanupRange.lowerBound > uploadRange.lowerBound)
         #expect(promoteSection.contains("if: always()"))
         #expect(promoteSection.contains(#"rm -f "$ASC_KEY_PATH""#))
@@ -313,6 +320,8 @@ struct PublicRepositoryTests {
         )
         #expect(promoteSection.contains("verify-assignment"))
         #expect(promoteSection.contains("External group assignment: verified"))
+        #expect(promoteSection.contains("submit-beta-review"))
+        #expect(promoteSection.contains("Beta App Review:"))
         #expect(!workflow.contains("actions/upload-artifact"))
 
         let sourceExportOptions = try String(

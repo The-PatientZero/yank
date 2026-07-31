@@ -276,6 +276,19 @@ jobs:
             "$TESTFLIGHT_EXTERNAL_GROUP_ID" \
             "$BUILD_ID"
 
+      - name: Submit exact build to Beta App Review
+        run: |
+          BETA_REVIEW_STATE="$(
+            scripts/app_store_connect.sh \
+              submit-beta-review \
+              "$BUILD_ID"
+          )"
+          case "$BETA_REVIEW_STATE" in
+            WAITING_FOR_REVIEW|IN_REVIEW|APPROVED) ;;
+            *) echo "Unexpected Beta App Review state: $BETA_REVIEW_STATE" >&2; exit 1 ;;
+          esac
+          echo "BETA_REVIEW_STATE=$BETA_REVIEW_STATE" >> "$GITHUB_ENV"
+
       - name: Record non-secret promotion evidence
         run: |
           {
@@ -288,7 +301,8 @@ jobs:
             echo "- Exported IPA validation: passed"
             echo "- Apple processing: valid"
             echo "- Internal group assignment: verified"
-            echo "- External group assignment: verified; availability is subject to Beta App Review"
+            echo "- External group assignment: verified"
+            echo "- Beta App Review: \`$BETA_REVIEW_STATE\`"
             echo ""
             echo "Physical-device QA and App Store submission remain separate gates."
           } >> "$GITHUB_STEP_SUMMARY"

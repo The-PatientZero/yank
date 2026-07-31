@@ -15,11 +15,13 @@ usage:
   app_store_connect.sh wait-build <app-id> <marketing-version> <build-number> [timeout-seconds] [poll-seconds]
   app_store_connect.sh assign-build <group-id> <build-id>
   app_store_connect.sh verify-assignment <group-id> <build-id>
+  app_store_connect.sh submit-beta-review <build-id>
 
 test-only parsers:
   app_store_connect.sh next-build-from-json <builds-response.json>
   app_store_connect.sh build-state-from-json <prerelease-response.json> <build-number>
   app_store_connect.sh relationship-has-build-from-json <relationship-response.json> <build-id>
+  app_store_connect.sh beta-review-state-from-json <submission-response.json>
 
 Live commands require ASC_KEY_PATH, ASC_KEY_ID, and ASC_ISSUER_ID.
 EOF
@@ -302,6 +304,34 @@ relationship_has_build_from_json() {
     jq -e --arg build "$build_id" 'any(.data[]; .id == $build)' "$json_file" >/dev/null
 }
 
+beta_review_state_from_json() {
+    local json_file="$1"
+    [[ -f "$json_file" ]] || fail "beta review response does not exist"
+
+    jq -e '
+        (.data | type == "array")
+        and all(
+            .data[];
+            .type == "betaAppReviewSubmissions"
+            and (.id | type == "string" and length > 0)
+            and (
+                .attributes.betaReviewState
+                | IN("WAITING_FOR_REVIEW", "IN_REVIEW", "REJECTED", "APPROVED")
+            )
+        )
+    ' "$json_file" >/dev/null || fail "malformed beta review response"
+
+    local count
+    count="$(jq -r '.data | length' "$json_file")"
+    [[ "$count" -le 1 ]] || fail "multiple beta review submissions matched"
+    if [[ "$count" -eq 0 ]]; then
+        echo "MISSING"
+        return
+    fi
+
+    jq -r '.data[0] | "\(.id) \(.attributes.betaReviewState)"' "$json_file"
+}
+
 find_prerelease_version() {
     local app_id="$1"
     local marketing_version="$2"
@@ -445,6 +475,56 @@ verify_assignment() {
         || fail "group does not contain build ${build_id}"
 }
 
+submit_beta_review() {
+    local build_id="$1"
+    local response_file
+    local state
+    local body
+
+    validate_identifier "build ID" "$build_id"
+    require_authentication
+    ensure_work_directory
+    response_file="$WORK_DIRECTORY/beta-review.json"
+
+    api_request GET \
+        "${ASC_API_BASE}/v1/betaAppReviewSubmissions?filter%5Bbuild%5D=${build_id}&fields%5BbetaAppReviewSubmissions%5D=betaReviewState&limit=2" \
+        >"$response_file"
+    state="$(beta_review_state_from_json "$response_file")"
+    if [[ "$state" != "MISSING" ]]; then
+        state="${state#* }"
+        [[ "$state" != "REJECTED" ]] \
+            || fail "build ${build_id} has a rejected beta review submission"
+        echo "$state"
+        return
+    fi
+
+    body="$(
+        jq -cn \
+            --arg id "$build_id" \
+            '{
+                data: {
+                    type: "betaAppReviewSubmissions",
+                    relationships: {
+                        build: {data: {type: "builds", id: $id}}
+                    }
+                }
+            }'
+    )"
+    api_request POST \
+        "${ASC_API_BASE}/v1/betaAppReviewSubmissions" \
+        "$body" \
+        >"$response_file"
+    jq -e '
+        .data.type == "betaAppReviewSubmissions"
+        and (.data.id | type == "string" and length > 0)
+        and (
+            .data.attributes.betaReviewState
+            | IN("WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED")
+        )
+    ' "$response_file" >/dev/null || fail "malformed beta review submission response"
+    jq -r '.data.attributes.betaReviewState' "$response_file"
+}
+
 require_command jq
 command="${1:-}"
 case "$command" in
@@ -468,6 +548,10 @@ case "$command" in
         [[ "$#" -eq 3 ]] || usage
         verify_assignment "$2" "$3"
         ;;
+    submit-beta-review)
+        [[ "$#" -eq 2 ]] || usage
+        submit_beta_review "$2"
+        ;;
     next-build-from-json)
         [[ "$#" -eq 2 ]] || usage
         next_build_from_json "$2"
@@ -479,6 +563,10 @@ case "$command" in
     relationship-has-build-from-json)
         [[ "$#" -eq 3 ]] || usage
         relationship_has_build_from_json "$2" "$3"
+        ;;
+    beta-review-state-from-json)
+        [[ "$#" -eq 2 ]] || usage
+        beta_review_state_from_json "$2"
         ;;
     *)
         usage
