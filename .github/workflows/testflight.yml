@@ -184,15 +184,34 @@ jobs:
           plutil -lint "$EXPORT_OPTIONS_PATH"
 
       - name: Export signed TestFlight package
+        env:
+          CLOUD_SIGNING_ASC_KEY_B64: ${{ secrets.ASC_KEY_B64 }}
+          CLOUD_SIGNING_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          CLOUD_SIGNING_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          case "$CLOUD_SIGNING_ASC_KEY_ID" in
+            *[!A-Za-z0-9-]*|"") echo "Cloud-signing key ID is invalid." >&2; exit 1 ;;
+          esac
+          case "$CLOUD_SIGNING_ASC_ISSUER_ID" in
+            *[!A-Za-z0-9-]*|"") echo "Cloud-signing issuer ID is invalid." >&2; exit 1 ;;
+          esac
+
+          umask 077
+          CLOUD_SIGNING_KEY_PATH="$RUNNER_TEMP/CloudSigningAuthKey_${CLOUD_SIGNING_ASC_KEY_ID}.p8"
+          trap 'rm -f "$CLOUD_SIGNING_KEY_PATH"' EXIT
+          printf '%s' "$CLOUD_SIGNING_ASC_KEY_B64" \
+            | base64 --decode > "$CLOUD_SIGNING_KEY_PATH"
+          chmod 600 "$CLOUD_SIGNING_KEY_PATH"
+          test -s "$CLOUD_SIGNING_KEY_PATH"
+
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE_PATH" \
             -exportPath "$EXPORT_PATH" \
             -exportOptionsPlist "$EXPORT_OPTIONS_PATH" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+            -authenticationKeyPath "$CLOUD_SIGNING_KEY_PATH" \
+            -authenticationKeyID "$CLOUD_SIGNING_ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$CLOUD_SIGNING_ASC_ISSUER_ID"
 
           shopt -s nullglob
           IPA_FILES=("$EXPORT_PATH"/*.ipa)
