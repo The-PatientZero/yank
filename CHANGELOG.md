@@ -8,6 +8,8 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-09
+
 ### Added
 
 - Synced the history-limit setting across devices through CloudKit with last-writer-wins resolution, so every device keeps the same amount of history.
@@ -15,6 +17,13 @@ and passes that section to `gh release create --notes-file`.
 ### Changed
 
 - Asked for confirmation before a history-limit reduction on iPhone and iPad, and warned on either platform only when the smaller limit would actually delete clips.
+
+### Fixed
+
+- Suppressed duplicate history entries and phantom copy sounds caused by apps that re-assert the clipboard with identical content when they gain focus.
+- Made CloudKit pushes retry with bounded backoff, persist progress after every accepted batch, and skip unmappable items instead of blocking all syncing.
+- Quarantined permanently unresolvable CloudKit records so a single broken record no longer freezes sync for every later item, with automatic recovery attempts on later pulls.
+- Kept iOS registered for sync push notifications through transient iCloud account states and replayed silent pushes that arrived before startup finished wiring the handler.
 
 ## [1.0.4] - 2026-07-31
 
