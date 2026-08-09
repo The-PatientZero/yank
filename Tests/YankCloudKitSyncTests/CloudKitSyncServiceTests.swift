@@ -89,18 +89,17 @@ struct CloudKitSyncServiceTests {
         #expect(applied.contains { $0.id == second.id })
     }
 
-    @Test func pullDoesNotApplyOrAdvanceTokenPastAPartialRecordFailure() async throws {
+    @Test func pullHoldsTheTokenWhenAServerRecordFailureIsRetryable() async throws {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let tokenKey = "cloudkit.changeToken.\(containerID)"
         let staleTokenData = Data([0x01, 0x02, 0x03])
         defaults.set(staleTokenData, forKey: tokenKey)
         let remote = makeTextItem(text: "partial-page-success", modifiedAt: 500)
-        let failedID = UUID().uuidString
         let database = FakeCloudKitDatabase()
         database.pages = [page(
             changed: [try record(for: remote)],
-            failedRecordNames: [failedID],
+            failedRecords: [retryableRecordFailure()],
             moreComing: false
         )]
         let store = FakeSyncableStore()
@@ -114,12 +113,45 @@ struct CloudKitSyncServiceTests {
         let result = await service.start()
 
         guard case .failed = result else {
-            Issue.record("Expected a partial pull page to fail sync")
+            Issue.record("Expected a retryable partial pull page to fail sync")
             return
         }
         #expect(store.appliedReconciled == nil)
         #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
         #expect(database.savedBatches.isEmpty)
+    }
+
+    @Test func pullQuarantinesAPermanentlyMissingServerRecordAndAdvancesTheToken() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        defaults.set(Data([0x01, 0x02, 0x03]), forKey: tokenKey)
+        let remote = makeTextItem(text: "healthy-sibling", modifiedAt: 500)
+        let goneRecordName = UUID().uuidString
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(
+            changed: [try record(for: remote)],
+            failedRecords: [permanentRecordFailure(goneRecordName)],
+            moreComing: false
+        )]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == remote.id })
+        #expect(defaults.data(forKey: tokenKey) == nil)
+        let quarantine = try pullQuarantine(defaults: defaults, containerID: containerID)
+        #expect(quarantine[goneRecordName]?.attemptCount == 1)
+        #expect(quarantine[goneRecordName]?.reason.isEmpty == false)
     }
 
     @Test func partialLaterPageCleansUpPreviouslyDownloadedUnreferencedBlobs() async throws {
@@ -131,7 +163,7 @@ struct CloudKitSyncServiceTests {
         let database = FakeCloudKitDatabase()
         database.pages = [
             page(changed: [try record(for: remote, blobURL: assetURL)], moreComing: true),
-            page(failedRecordNames: [UUID().uuidString], moreComing: false)
+            page(failedRecords: [retryableRecordFailure()], moreComing: false)
         ]
         let store = FakeSyncableStore()
         let service = makeService(database: database, store: store)
@@ -192,35 +224,152 @@ struct CloudKitSyncServiceTests {
         #expect(store.items.contains { $0.id == remote.id })
     }
 
-    @Test func pullFailsClosedUntilARequiredCloudKitAssetBecomesAvailable() async throws {
+    @Test func poisonRecordIsQuarantinedWhileHealthyRecordsApplyAndTheTokenAdvances() async throws {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let tokenKey = "cloudkit.changeToken.\(containerID)"
-        let staleTokenData = Data([0x01, 0x02, 0x03])
-        defaults.set(staleTokenData, forKey: tokenKey)
-        let missingFilename = "\(UUID().uuidString).txt"
-        let missing = makeLargeTextItem(
+        defaults.set(Data([0x01, 0x02, 0x03]), forKey: tokenKey)
+        let poison = makeLargeTextItem(
             id: UUID(),
-            filename: missingFilename,
+            filename: "\(UUID().uuidString).txt",
             modifiedAt: 100
         )
         let available = makeTextItem(text: "available", modifiedAt: 200)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(
+            changed: [try record(for: poison), try record(for: available)],
+            moreComing: false
+        )]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == available.id })
+        #expect(!applied.contains { $0.id == poison.id })
+        #expect(store.writtenBlobs.isEmpty)
+        #expect(defaults.data(forKey: tokenKey) == nil)
+        let quarantine = try pullQuarantine(defaults: defaults, containerID: containerID)
+        #expect(Array(quarantine.keys) == [poison.id.uuidString])
+        #expect(quarantine[poison.id.uuidString]?.attemptCount == 1)
+    }
+
+    @Test func quarantinedRecordIsRecoveredOnALaterSuccessfulFetch() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let filename = "\(UUID().uuidString).txt"
+        let poison = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
         let recoveredAssetURL = try writeAsset("recovered blob")
         defer { try? FileManager.default.removeItem(at: recoveredAssetURL) }
-        let missingBlob = try #require(SyncBlobReference(filename: missingFilename, kind: .text))
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: poison)], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        #expect(await service.start() == .started)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID)
+                .keys.contains(poison.id.uuidString))
+
+        database.fetchableRecords[poison.id.uuidString] =
+            try record(for: poison, blobURL: recoveredAssetURL)
+        let recoveredResult = await service.start()
+
+        #expect(recoveredResult == .started)
+        #expect(database.fetchedRecordNameBatches == [[poison.id.uuidString]])
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == poison.id })
+        let staged = try #require(store.writtenBlobs.first)
+        #expect(staged != blob)
+        #expect(store.deletedBlobs == [staged])
+        #expect(store.blobURL(for: blob).map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } == true)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
+        #expect(defaults.data(forKey: tokenKey) == nil)
+    }
+
+    @Test func quarantineRecoveryStopsAtTheAttemptCapButKeepsTheRecordListed() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let poison = makeLargeTextItem(
+            id: UUID(),
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: poison)], moreComing: false)]
+        // The re-fetch keeps returning the same unresolvable record.
+        database.fetchableRecords[poison.id.uuidString] = try record(for: poison)
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        for _ in 0..<8 {
+            #expect(await service.start() == .started)
+        }
+
+        #expect(database.fetchedRecordNameBatches.count == 4)
+        let quarantine = try pullQuarantine(defaults: defaults, containerID: containerID)
+        #expect(quarantine[poison.id.uuidString]?.attemptCount == 5)
+        #expect(store.writtenBlobs.isEmpty)
+    }
+
+    @Test func quarantinedRecordDroppedWhenCloudKitNoLongerHasIt() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let poison = makeLargeTextItem(
+            id: UUID(),
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: poison)], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        #expect(await service.start() == .started)
+        database.permanentlyMissingFetchRecordNames = [poison.id.uuidString]
+        #expect(await service.start() == .started)
+
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
+    }
+
+    @Test func quarantineRecoveryFetchFailureLeavesTheEntryUntouched() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let remote = makeTextItem(text: "healthy", modifiedAt: 200)
+        let poison = makeLargeTextItem(
+            id: UUID(),
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
         let database = FakeCloudKitDatabase()
         database.pages = [
-            page(
-                changed: [try record(for: missing), try record(for: available)],
-                moreComing: false
-            ),
-            page(
-                changed: [
-                    try record(for: missing, blobURL: recoveredAssetURL),
-                    try record(for: available)
-                ],
-                moreComing: false
-            )
+            page(changed: [try record(for: poison)], moreComing: false),
+            page(changed: [try record(for: remote)], moreComing: false)
         ]
         let store = FakeSyncableStore()
         let service = CloudKitSyncService(
@@ -230,30 +379,14 @@ struct CloudKitSyncServiceTests {
             defaults: defaults
         )
 
-        let firstResult = await service.start()
+        #expect(await service.start() == .started)
+        database.fetchRecordsError = TestError.boom
+        let result = await service.start()
 
-        guard case .failed(let failureMessage) = firstResult else {
-            Issue.record("Expected a missing required CloudKit asset to fail sync")
-            return
-        }
-        #expect(store.syncStatus == .failed(message: failureMessage))
-        #expect(store.appliedReconciled == nil)
-        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
-        #expect(database.savedBatches.isEmpty)
-
-        let retryResult = await service.start()
-
-        #expect(retryResult == .started)
-        let applied = try #require(store.appliedReconciled)
-        #expect(applied.contains { $0.id == missing.id })
-        #expect(applied.contains { $0.id == available.id })
-        let staged = try #require(store.writtenBlobs.first)
-        #expect(staged != missingBlob)
-        #expect(store.deletedBlobs == [staged])
-        #expect(store.blobURL(for: missingBlob).map {
-            FileManager.default.fileExists(atPath: $0.path)
-        } == true)
-        #expect(defaults.data(forKey: tokenKey) == nil)
+        #expect(result == .started)
+        #expect(store.appliedReconciled?.contains { $0.id == remote.id } == true)
+        let quarantine = try pullQuarantine(defaults: defaults, containerID: containerID)
+        #expect(quarantine[poison.id.uuidString]?.attemptCount == 1)
     }
 
     @Test func pullBypassesMissingAssetWhenNewerLocalTombstoneDominates() async throws {
@@ -338,12 +471,11 @@ struct CloudKitSyncServiceTests {
         #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
     }
 
-    @Test func pullFailsClosedWhenMissingAssetRemoteIsNewerThanLocalTombstone() async throws {
+    @Test func missingAssetRemoteNewerThanTheLocalTombstoneIsQuarantined() async throws {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let tokenKey = "cloudkit.changeToken.\(containerID)"
-        let staleTokenData = Data([0x01, 0x02, 0x03])
-        defaults.set(staleTokenData, forKey: tokenKey)
+        defaults.set(Data([0x01, 0x02, 0x03]), forKey: tokenKey)
         let id = UUID()
         let remote = makeLargeTextItem(
             id: id,
@@ -364,14 +496,15 @@ struct CloudKitSyncServiceTests {
 
         let result = await service.start()
 
-        guard case .failed = result else {
-            Issue.record("Expected the newer broken remote item to fail sync")
-            return
-        }
-        #expect(store.appliedReconciled == nil)
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        let winner = try #require(applied.first { $0.id == id })
+        #expect(winner.isDeleted)
+        #expect(winner.modifiedAt == tombstone.modifiedAt)
         #expect(store.writtenBlobs.isEmpty)
-        #expect(database.savedBatches.isEmpty)
-        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(defaults.data(forKey: tokenKey) == nil)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID)[id.uuidString]?
+                .attemptCount == 1)
     }
 
     @Test func pullFailsClosedWhenDominatingTombstoneDisappearsBeforeReconciliation() async throws {
@@ -561,7 +694,7 @@ struct CloudKitSyncServiceTests {
                 == item.modifiedAt)
     }
 
-    @Test func missingRemoteAssetWithoutALocalBlobLeavesReceiptAndTokenUntouched() async throws {
+    @Test func missingRemoteAssetWithoutALocalBlobIsQuarantinedAndTheTokenAdvances() async throws {
         let item = makeLargeTextItem(
             id: UUID(),
             filename: "\(UUID().uuidString).txt",
@@ -570,8 +703,7 @@ struct CloudKitSyncServiceTests {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let tokenKey = "cloudkit.changeToken.\(containerID)"
-        let staleTokenData = Data([0x01, 0x02, 0x03])
-        defaults.set(staleTokenData, forKey: tokenKey)
+        defaults.set(Data([0x01, 0x02, 0x03]), forKey: tokenKey)
         try setPushReceipts([item.id: item.modifiedAt], defaults: defaults, containerID: containerID)
         let database = FakeCloudKitDatabase()
         database.pages = [page(changed: [try record(for: item)], moreComing: false)]
@@ -585,14 +717,11 @@ struct CloudKitSyncServiceTests {
 
         let result = await service.start()
 
-        guard case .failed = result else {
-            Issue.record("Expected a remote record without any recoverable asset to fail closed")
-            return
-        }
-        #expect(store.appliedReconciled == nil)
-        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
-                == item.modifiedAt)
-        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+        #expect(result == .started)
+        #expect(store.appliedReconciled?.isEmpty == true)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID)[item.id.uuidString]?
+                .attemptCount == 1)
+        #expect(defaults.data(forKey: tokenKey) == nil)
         #expect(database.savedBatches.isEmpty)
     }
 
@@ -641,7 +770,7 @@ struct CloudKitSyncServiceTests {
         let database = FakeCloudKitDatabase()
         database.pages = [
             page(changed: [try record(for: item)], moreComing: true),
-            page(failedRecordNames: [UUID().uuidString], moreComing: false)
+            page(failedRecords: [retryableRecordFailure()], moreComing: false)
         ]
         let store = FakeSyncableStore()
         store.items = [item]
@@ -1003,12 +1132,11 @@ struct CloudKitSyncServiceTests {
                 == pushedVersion)
     }
 
-    @Test func secondBatchFailurePersistsNoReceiptsAndKeepsLegacyMigrationSignal() async throws {
+    @Test func firstBatchReceiptsSurviveASecondBatchFailure() async throws {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
-        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 50_000)
-        defaults.set(legacyWatermark, forKey: watermarkKey)
+        defaults.set(Date(timeIntervalSinceReferenceDate: 50_000), forKey: watermarkKey)
         let store = FakeSyncableStore()
         store.items = (0..<250).map {
             makeTextItem(text: "retry-\($0)", modifiedAt: Double($0))
@@ -1029,19 +1157,24 @@ struct CloudKitSyncServiceTests {
             return
         }
         #expect(database.savedBatches.map(\.count) == [100, 100])
-        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
-        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+        let receipts = try #require(
+            try pushReceipts(defaults: defaults, containerID: containerID)
+        )
+        let acceptedRecordNames = Set(database.savedBatches[0].map(\.recordID.recordName))
+        let failedRecordNames = Set(database.savedBatches[1].map(\.recordID.recordName))
+        #expect(Set(receipts.keys.map(\.uuidString)) == acceptedRecordNames)
+        #expect(receipts.keys.allSatisfy { !failedRecordNames.contains($0.uuidString) })
+        #expect(defaults.object(forKey: watermarkKey) == nil)
     }
 
-    @Test func allInvalidPreparationFailsBeforeSaveAndRetriesAfterBlobRestoration() async throws {
+    @Test func unpreparableItemIsSkippedAndReplaysAfterBlobRestoration() async throws {
         let filename = "\(UUID().uuidString).txt"
         let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
         let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
-        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 10_000)
-        defaults.set(legacyWatermark, forKey: watermarkKey)
+        defaults.set(Date(timeIntervalSinceReferenceDate: 10_000), forKey: watermarkKey)
         let database = FakeCloudKitDatabase()
         let store = FakeSyncableStore()
         store.items = [item]
@@ -1052,15 +1185,11 @@ struct CloudKitSyncServiceTests {
             defaults: defaults
         )
 
-        let failedResult = await service.start()
+        let skippedResult = await service.start()
 
-        guard case .failed = failedResult else {
-            Issue.record("Expected missing local blob preparation to fail")
-            return
-        }
+        #expect(skippedResult == .started)
         #expect(database.savedBatches.isEmpty)
-        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
-        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == [:])
 
         let restoredBlobURL = try writeAsset("restored")
         defer { try? FileManager.default.removeItem(at: restoredBlobURL) }
@@ -1075,7 +1204,7 @@ struct CloudKitSyncServiceTests {
         #expect(defaults.object(forKey: watermarkKey) == nil)
     }
 
-    @Test func mixedValidInvalidPreparationSavesNothingUntilTheWholeSetIsRestored() async throws {
+    @Test func unpreparableItemDoesNotBlockAHealthyItemInTheSameSet() async throws {
         let valid = makeTextItem(text: "valid", modifiedAt: 100)
         let filename = "\(UUID().uuidString).txt"
         let invalid = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 200)
@@ -1083,8 +1212,7 @@ struct CloudKitSyncServiceTests {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let watermarkKey = "cloudkit.lastPushedModifiedAt.\(containerID)"
-        let legacyWatermark = Date(timeIntervalSinceReferenceDate: 10_000)
-        defaults.set(legacyWatermark, forKey: watermarkKey)
+        defaults.set(Date(timeIntervalSinceReferenceDate: 10_000), forKey: watermarkKey)
         let database = FakeCloudKitDatabase()
         let store = FakeSyncableStore()
         store.items = [valid, invalid]
@@ -1095,15 +1223,14 @@ struct CloudKitSyncServiceTests {
             defaults: defaults
         )
 
-        let failedResult = await service.start()
+        let partialResult = await service.start()
 
-        guard case .failed = failedResult else {
-            Issue.record("Expected mixed preparation to fail as one save set")
-            return
-        }
-        #expect(database.savedBatches.isEmpty)
-        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == nil)
-        #expect(defaults.object(forKey: watermarkKey) as? Date == legacyWatermark)
+        #expect(partialResult == .started)
+        #expect(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName)
+                == [valid.id.uuidString])
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)
+                == [valid.id: valid.modifiedAt])
+        #expect(defaults.object(forKey: watermarkKey) == nil)
 
         let restoredBlobURL = try writeAsset("restored")
         defer { try? FileManager.default.removeItem(at: restoredBlobURL) }
@@ -1111,14 +1238,108 @@ struct CloudKitSyncServiceTests {
         let retryResult = await service.start()
 
         #expect(retryResult == .started)
-        #expect(Set(database.savedBatches.flatMap { $0 }.map(\.recordID.recordName))
-                == [valid.id.uuidString, invalid.id.uuidString])
+        #expect(database.savedBatches.count == 2)
+        #expect(database.savedBatches[1].map(\.recordID.recordName) == [invalid.id.uuidString])
         let receipts = try #require(
             try pushReceipts(defaults: defaults, containerID: containerID)
         )
         #expect(receipts[valid.id] == valid.modifiedAt)
         #expect(receipts[invalid.id] == invalid.modifiedAt)
-        #expect(defaults.object(forKey: watermarkKey) == nil)
+    }
+
+    // MARK: - Push retry
+
+    @Test func failedScheduledPushRetriesUntilItSucceeds() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            pushDebounceNanoseconds: 0,
+            pushRetryDelaysNanoseconds: [0, 0, 0]
+        )
+        #expect(await service.start() == .started)
+
+        let item = makeTextItem(text: "retry-until-accepted", modifiedAt: 100)
+        database.failedSaveCallIndices = [0]
+        store.items = [item]
+        NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: store)
+        while database.savedBatches.count < 2 {
+            await Task.yield()
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        #expect(database.savedBatches.count == 2)
+        #expect(database.savedBatches.allSatisfy {
+            $0.map(\.recordID.recordName) == [item.id.uuidString]
+        })
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
+                == item.modifiedAt)
+        guard case .healthy = store.syncStatus else {
+            Issue.record("Expected the successful retry to report a healthy sync")
+            return
+        }
+    }
+
+    @Test func scheduledPushRetriesStopAfterTheBoundedChain() async throws {
+        let item = makeTextItem(text: "never-accepted", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let database = FakeCloudKitDatabase()
+        database.failedSaveRecordNames = [item.id.uuidString]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            pushDebounceNanoseconds: 0,
+            pushRetryDelaysNanoseconds: [0, 0, 0]
+        )
+        #expect(await service.start() == .started)
+
+        store.items = [item]
+        NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: store)
+        while database.savedBatches.count < 4 {
+            await Task.yield()
+        }
+        for _ in 0..<50 {
+            await Task.yield()
+        }
+
+        #expect(database.savedBatches.count == 4)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID) == [:])
+        guard case .failed = store.syncStatus else {
+            Issue.record("Expected the exhausted retry chain to leave sync failed")
+            return
+        }
+    }
+
+    @Test func pushRetryDelayHonorsCloudKitRetryAfterSeconds() {
+        let fallback: UInt64 = 5_000_000_000
+
+        #expect(CloudKitSyncService.pushRetryDelayNanoseconds(
+            for: rateLimitedError(retryAfterSeconds: 12),
+            fallback: fallback
+        ) == 12_000_000_000)
+        #expect(CloudKitSyncService.pushRetryDelayNanoseconds(
+            for: TestError.boom,
+            fallback: fallback
+        ) == fallback)
+        #expect(CloudKitSyncService.pushRetryDelayNanoseconds(
+            for: rateLimitedError(retryAfterSeconds: -1),
+            fallback: fallback
+        ) == fallback)
+        #expect(CloudKitSyncService.pushRetryDelayNanoseconds(
+            for: rateLimitedError(retryAfterSeconds: .greatestFiniteMagnitude),
+            fallback: fallback
+        ) == 3_600_000_000_000)
     }
 
     @Test func pushChunksTwoHundredFiftyRecordsIntoStableGroupsOf100() async throws {
@@ -2013,19 +2234,61 @@ struct CloudKitSyncServiceTests {
         NSError(domain: CKError.errorDomain, code: CKError.Code.changeTokenExpired.rawValue)
     }
 
+    private func rateLimitedError(retryAfterSeconds: Double) -> any Error {
+        NSError(
+            domain: CKError.errorDomain,
+            code: CKError.Code.requestRateLimited.rawValue,
+            userInfo: [CKErrorRetryAfterKey: retryAfterSeconds]
+        )
+    }
+
     private func page(
         changed: [CKRecord] = [],
         deletedNames: [String] = [],
-        failedRecordNames: [String] = [],
+        failedRecords: [CloudKitRecordFailure] = [],
         moreComing: Bool
     ) -> CloudKitZoneChanges {
         CloudKitZoneChanges(
             changedRecords: changed,
             deletedRecordNames: deletedNames,
-            failedRecordNames: failedRecordNames,
+            failedRecords: failedRecords,
             changeToken: nil,
             moreComing: moreComing
         )
+    }
+
+    private func retryableRecordFailure(
+        _ recordName: String = UUID().uuidString
+    ) -> CloudKitRecordFailure {
+        CloudKitRecordFailure(
+            recordName: recordName,
+            error: NSError(
+                domain: CKError.errorDomain,
+                code: CKError.Code.networkFailure.rawValue
+            )
+        )
+    }
+
+    private func permanentRecordFailure(_ recordName: String) -> CloudKitRecordFailure {
+        CloudKitRecordFailure(
+            recordName: recordName,
+            error: NSError(
+                domain: CKError.errorDomain,
+                code: CKError.Code.unknownItem.rawValue
+            )
+        )
+    }
+
+    private func pullQuarantineKey(_ containerID: String) -> String {
+        "cloudkit.pullQuarantine.\(containerID)"
+    }
+
+    private func pullQuarantine(
+        defaults: UserDefaults,
+        containerID: String
+    ) throws -> [String: CloudKitPullQuarantineEntry] {
+        guard let data = defaults.data(forKey: pullQuarantineKey(containerID)) else { return [:] }
+        return try CloudKitPullQuarantineCodec.decode(data)
     }
 }
 
@@ -2065,6 +2328,9 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
     var saveError: (any Error)?
     var failedSaveRecordNames: [String] = []
     var failedSaveCallIndices: Set<Int> = []
+    var fetchableRecords: [String: CKRecord] = [:]
+    var permanentlyMissingFetchRecordNames: Set<String> = []
+    var fetchRecordsError: (any Error)?
     var onFetchZoneChanges: (() async -> Void)?
     var onSaveRecords: (([CKRecord]) async -> Void)?
 
@@ -2072,6 +2338,7 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
     private(set) var ensuredSubscription = false
     private(set) var savedBatches: [[CKRecord]] = []
     private(set) var presenceBatchSizes: [Int] = []
+    private(set) var fetchedRecordNameBatches: [[String]] = []
     private(set) var fetchCount = 0
     private var saveCallIndex = 0
     private var pageIndex = 0
@@ -2112,6 +2379,23 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
             presentRecordNames: requested.intersection(existingRecordNames),
             missingRecordNames: requested.subtracting(existingRecordNames)
         )
+    }
+
+    func fetchRecords(
+        for recordNames: [String],
+        in zoneID: CKRecordZone.ID
+    ) async throws -> CloudKitFetchedRecords {
+        fetchedRecordNameBatches.append(recordNames)
+        if let fetchRecordsError { throw fetchRecordsError }
+        var fetched = CloudKitFetchedRecords()
+        for recordName in recordNames {
+            if permanentlyMissingFetchRecordNames.contains(recordName) {
+                fetched.permanentlyMissingRecordNames.insert(recordName)
+            } else if let record = fetchableRecords[recordName] {
+                fetched.records.append(record)
+            }
+        }
+        return fetched
     }
 
     func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {

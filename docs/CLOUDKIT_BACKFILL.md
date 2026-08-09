@@ -44,5 +44,8 @@ Backfill repairs records that are absent; it does not overwrite an existing reco
 `CKAsset` is missing. Bring a device that still has the referenced local blob online so ordinary
 sync can re-upload it. If a durable, same-ID local tombstone is at least as new as the damaged
 remote record, Yank can instead reconcile and upload that deletion after revalidating it at the
-sync checkpoint. Otherwise sync deliberately fails closed. Do not manufacture placeholder content,
-discard the local record, or advance CloudKit checkpoints to bypass the failure.
+sync checkpoint. Otherwise the pull quarantines that one record: it is skipped so the rest of the
+zone keeps syncing, its record ID and reason are recorded under
+`cloudkit.pullQuarantine.<container-id>`, and later pulls re-fetch it a bounded number of times
+before leaving it listed for recovery. Do not manufacture placeholder content, discard the local
+record, or advance CloudKit checkpoints to bypass the failure.
