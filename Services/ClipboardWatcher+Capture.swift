@@ -24,6 +24,13 @@ final class ClipboardWatcher {
     @ObservationIgnored private let captureQueue = SerialCaptureQueue<PreparedClipboardCapture>()
     private var changeSuppression = PasteboardChangeSuppression()
 
+    /// Consecutive-capture suppression: some apps re-assert pasteboard ownership with
+    /// byte-identical content (lazy-promise re-declares, activation-time rewrites), which
+    /// bumps `changeCount` without a user copy. Durable-history dedup cannot absorb those
+    /// for rich/image/file-backed captures, so the watcher drops any capture whose content
+    /// matches the one it applied last.
+    private var lastContentFingerprint: ClipboardContentFingerprint?
+
     /// Reports eligible text occurrences before durable-history deduplication.
     var onEligibleTextCopy: ((Int, String, Date) -> Void)?
 
@@ -39,10 +46,19 @@ final class ClipboardWatcher {
     nonisolated static let maxImageInputBytes = 32 * 1024 * 1024
     nonisolated static let maxRasterPixels: Int64 = 40_000_000
 
-    init(store: ClipboardStore, settings: CaptureSettings) {
+    /// Injectable for tests only; production always watches the general pasteboard.
+    private let pasteboardName: NSPasteboard.Name
+    private var pasteboard: NSPasteboard { NSPasteboard(name: pasteboardName) }
+
+    init(
+        store: ClipboardStore,
+        settings: CaptureSettings,
+        pasteboardName: NSPasteboard.Name = .general
+    ) {
         self.store = store
         self.captureSettings = settings
-        self.lastChangeCount = NSPasteboard.general.changeCount
+        self.pasteboardName = pasteboardName
+        self.lastChangeCount = NSPasteboard(name: pasteboardName).changeCount
 
         // Listen for ignore notification (when copying from history)
         NotificationCenter.default.addObserver(
@@ -59,7 +75,7 @@ final class ClipboardWatcher {
 
     @objc private func handleIgnoreNextChange(_ notification: Notification) {
         guard let receipt = notification.object as? PasteboardWriteReceipt,
-              receipt.pasteboardName == NSPasteboard.Name.general.rawValue else {
+              receipt.pasteboardName == pasteboardName.rawValue else {
             return
         }
         changeSuppression.register(receipt.generation)
@@ -105,7 +121,7 @@ final class ClipboardWatcher {
 
     func resume() {
         isPaused = false
-        lastChangeCount = NSPasteboard.general.changeCount
+        lastChangeCount = pasteboard.changeCount
         installTimerIfNeeded()
     }
 
@@ -125,10 +141,16 @@ final class ClipboardWatcher {
         ignoreNextChange.toggle()
     }
 
-    private func checkClipboard() {
+    /// Test hook: await the serial capture pipeline draining so assertions observe the
+    /// applied history state.
+    func waitForCaptureQueueIdle() async {
+        await captureQueue.waitUntilIdle()
+    }
+
+    func checkClipboard() {
         guard !isPaused else { return }
 
-        let currentChangeCount = NSPasteboard.general.changeCount
+        let currentChangeCount = pasteboard.changeCount
 
         // No change detected
         guard currentChangeCount != lastChangeCount else { return }
@@ -157,7 +179,7 @@ final class ClipboardWatcher {
             return
         }
 
-        let pasteboardName = NSPasteboard.Name.general.rawValue
+        let pasteboardName = self.pasteboardName.rawValue
         let observedAt = Date()
         captureQueue.enqueue(
             loader: {
@@ -246,13 +268,16 @@ private extension ClipboardWatcher {
             guard let capture = imageFileCapture(filePath) else { return .unsupported }
             return .image(
                 capture.pngData,
+                fingerprint: .image(capture.pngData),
                 richArchive: nil,
                 sourceApp: context.sourceApp,
                 observedAt: context.observedAt
             )
         }
+        let summary = filePaths.joined(separator: "\n")
         return .fileText(
-            filePaths.joined(separator: "\n"),
+            summary,
+            fingerprint: .fileList(summary),
             sourceApp: context.sourceApp,
             observedAt: context.observedAt
         )
@@ -278,6 +303,7 @@ private extension ClipboardWatcher {
                 maxStoredBytes: SyncBlobKind.text.maximumBytes
             ),
             originalText: text,
+            fingerprint: .text(text),
             richArchive: richArchive,
             sourceApp: context.sourceApp,
             generation: snapshotGeneration,
@@ -301,6 +327,7 @@ private extension ClipboardWatcher {
         }
         return .image(
             pngData,
+            fingerprint: .image(pngData),
             richArchive: retainedArchive,
             sourceApp: context.sourceApp,
             observedAt: context.observedAt
@@ -311,7 +338,8 @@ private extension ClipboardWatcher {
         guard !Task.isCancelled else { return }
 
         switch capture {
-        case .fileText(let summary, let sourceApp, let observedAt):
+        case .fileText(let summary, let fingerprint, let sourceApp, let observedAt):
+            guard markContentFingerprintIfNew(fingerprint) else { return }
             store.add(
                 ClipboardItem.text(summary, sourceApp: sourceApp),
                 observedAt: observedAt
@@ -320,11 +348,13 @@ private extension ClipboardWatcher {
         case .text(
             let plan,
             let originalText,
+            let fingerprint,
             let archive,
             let sourceApp,
             let generation,
             let observedAt
         ):
+            guard markContentFingerprintIfNew(fingerprint) else { return }
             onEligibleTextCopy?(generation, originalText, observedAt)
             await applyTextCapture(
                 plan,
@@ -333,7 +363,8 @@ private extension ClipboardWatcher {
                 observedAt: observedAt
             )
 
-        case .image(let pngData, let archive, let sourceApp, let observedAt):
+        case .image(let pngData, let fingerprint, let archive, let sourceApp, let observedAt):
+            guard markContentFingerprintIfNew(fingerprint) else { return }
             var item = ClipboardItem(type: .image, sourceApp: sourceApp)
             item.hasRichContent = archive != nil
             await store.addCaptured(
@@ -346,6 +377,12 @@ private extension ClipboardWatcher {
         case .unsupported:
             break
         }
+    }
+
+    private func markContentFingerprintIfNew(_ fingerprint: ClipboardContentFingerprint) -> Bool {
+        guard fingerprint != lastContentFingerprint else { return false }
+        lastContentFingerprint = fingerprint
+        return true
     }
 
     private func applyTextCapture(
