@@ -61,6 +61,20 @@ enum ClipboardRetention {
         )
     }
 
+    /// Whether tightening to `limit` would actually delete anything. Protected clips are never
+    /// evicted and still consume budget, so a history made mostly of pinned / bookmarked /
+    /// tagged clips can sit well above a new cap without a single clip being removed — and a
+    /// destructive warning would be a lie. Mirrors `cap` without building the result.
+    static func wouldEvict(_ items: [ClipboardItem], limit: Int) -> Bool {
+        guard limit > 0 else { return false }
+        // Counted in place rather than via `filter`: the settings screen asks this for every
+        // tier on every render, so an allocation per tier is not worth paying.
+        var protectedCount = 0
+        for item in items where item.isProtected { protectedCount += 1 }
+        let budget = max(0, limit - protectedCount)
+        return items.count - protectedCount > budget
+    }
+
     /// Merge two newest-first runs into one newest-first array (ties keep `a`'s element first).
     private static func mergedNewestFirst(_ a: [ClipboardItem], _ b: [ClipboardItem]) -> [ClipboardItem] {
         var result: [ClipboardItem] = []

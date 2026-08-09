@@ -12,6 +12,10 @@ and passes that section to `gh release create --notes-file`.
 
 - Synced the history-limit setting across devices through CloudKit with last-writer-wins resolution, so every device keeps the same amount of history.
 
+### Changed
+
+- Asked for confirmation before a history-limit reduction on iPhone and iPad, and warned on either platform only when the smaller limit would actually delete clips.
+
 ## [1.0.4] - 2026-07-31
 
 ### Added

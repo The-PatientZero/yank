@@ -107,6 +107,7 @@ targets:
       - iOS/ClipStore+Mutations.swift
       - iOS/IOSSettings.swift
       - iOS/IOSSyncedSettingsBridge.swift
+      - iOS/HistoryLimitConfirmation.swift
       - iOS/YankIOSDesignSystem.swift
       - iOS/YankApp.swift
       - iOS/HistoryView.swift

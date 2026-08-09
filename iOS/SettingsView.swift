@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showClearConfirm = false
+    @State private var historyLimitConfirmation = HistoryLimitConfirmation()
 
     @ScaledMetric(relativeTo: .caption) private var checkmarkSize: CGFloat = TypeScale.caption
 
@@ -212,6 +213,15 @@ struct SettingsView: View {
         }
     }
 
+    private func selectHistoryLimit(_ tier: HistoryLimit) {
+        guard let applied = historyLimitConfirmation.select(
+            tier,
+            current: settings.historyLimit,
+            items: store.items
+        ) else { return }
+        settings.setHistoryLimit(applied)
+    }
+
     private func coerceMacOnlyViewMode(_ mode: ClipViewMode) {
         if mode == .split { settings.viewMode = .list }
     }
@@ -220,11 +230,30 @@ struct SettingsView: View {
 
     private var historySection: some View {
         Section {
+            // The binding reads the committed value, so a cancelled reduction snaps the picker
+            // back on its own — nothing is written until the user agrees.
             Picker("Keep", selection: Binding(
                 get: { settings.historyLimit },
-                set: { settings.setHistoryLimit($0) }
+                set: { selectHistoryLimit($0) }
             )) {
                 ForEach(HistoryLimit.allCases, id: \.self) { tier in Text(tier.label).tag(tier) }
+            }
+            .confirmationDialog(
+                "Reduce History Limit?",
+                isPresented: Binding(
+                    get: { historyLimitConfirmation.isConfirming },
+                    set: { if !$0 { historyLimitConfirmation.cancel() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Reduce & Delete", role: .destructive) {
+                    if let tier = historyLimitConfirmation.confirm() {
+                        settings.setHistoryLimit(tier)
+                    }
+                }
+                Button("Cancel", role: .cancel) { historyLimitConfirmation.cancel() }
+            } message: {
+                Text(SyncCopy.historyLimitReduction(syncEnabled: settings.syncEnabled))
             }
             Picker("Auto-delete", selection: $settings.retentionDays) {
                 Text("Never").tag(0)
