@@ -53,9 +53,21 @@ final class IOSSettings {
     var themeID: String { didSet { defaults?.set(themeID, forKey: SettingsKeys.themeID) } }
     var viewMode: ClipViewMode { didSet { defaults?.set(viewMode.rawValue, forKey: SettingsKeys.viewMode) } }
     var density: ClipDensity { didSet { defaults?.set(density.rawValue, forKey: SettingsKeys.density) } }
-    var historyLimit: HistoryLimit {
-        didSet { defaults?.set(historyLimit.rawValue, forKey: SettingsKeys.historyLimit) }
+    /// Value plus stamp in one place, so the limit can never move without its stamp. The
+    /// choose-versus-adopt rule lives in `SyncedHistoryLimit` and is shared with macOS.
+    private var syncedHistoryLimit: SyncedHistoryLimit {
+        didSet {
+            defaults?.set(syncedHistoryLimit.historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
+            defaults?.set(syncedHistoryLimit.updatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
+        }
     }
+
+    var historyLimit: HistoryLimit { syncedHistoryLimit.historyLimit }
+    /// When the history limit was last chosen. `distantPast` means "never explicitly chosen on
+    /// this device", which lets any device that has made a real choice win the first sync
+    /// without silently resizing anyone's history on upgrade.
+    var historyLimitUpdatedAt: Date { syncedHistoryLimit.updatedAt }
+    var syncedSettings: SyncedSettings { syncedHistoryLimit.current }
     var retentionDays: Int { didSet { defaults?.set(retentionDays, forKey: SettingsKeys.retentionDays) } }
     var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
     var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
@@ -91,9 +103,13 @@ final class IOSSettings {
         self.density = ClipDensity(
             rawValue: defaults?.string(forKey: SettingsKeys.density) ?? ""
         ) ?? SettingsDefaults.density
-        self.historyLimit = HistoryLimit(
-            rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
-        ) ?? SettingsDefaults.historyLimit
+        self.syncedHistoryLimit = SyncedHistoryLimit(
+            historyLimit: HistoryLimit(
+                rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
+            ) ?? SettingsDefaults.historyLimit,
+            updatedAt: defaults?.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
+                ?? .distantPast
+        )
         self.retentionDays = defaults?.integer(forKey: SettingsKeys.retentionDays) ?? SettingsDefaults.retentionDays
         self.syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
         self.spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
@@ -117,6 +133,9 @@ final class IOSSettings {
         guard let defaults else { return }
         if defaults.object(forKey: SettingsKeys.historyLimit) == nil {
             defaults.set(historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
+        }
+        if defaults.object(forKey: SettingsKeys.historyLimitUpdatedAt) == nil {
+            defaults.set(historyLimitUpdatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         }
         if defaults.object(forKey: SettingsKeys.retentionDays) == nil {
             defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
@@ -142,6 +161,18 @@ final class IOSSettings {
         if defaults.object(forKey: Self.captureSetupCompletedKey) == nil {
             defaults.set(captureSetupCompleted, forKey: Self.captureSetupCompletedKey)
         }
+    }
+
+    /// A user-driven history-limit change. Announced so the sync service reconciles it.
+    func setHistoryLimit(_ value: HistoryLimit) {
+        guard syncedHistoryLimit.choose(value) else { return }
+        NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
+    }
+
+    /// A history-limit change adopted from another device. Stays silent on
+    /// `.yankSyncedSettingsChanged` so the value is not echoed back where it came from.
+    func adoptHistoryLimit(_ settings: SyncedSettings) {
+        syncedHistoryLimit.adopt(settings)
     }
 
     func setCaptureMethod(_ method: IOSCaptureMethod, confirmed: Bool) {

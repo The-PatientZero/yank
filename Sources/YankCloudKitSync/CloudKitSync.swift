@@ -220,6 +220,14 @@ struct CloudKitRecordSaveResult {
     var failedRecordNames: [String] = []
 }
 
+/// Outcome of a conditional (`.ifServerRecordUnchanged`) save. `conflict` means the server's
+/// copy moved on since the record being saved was fetched — the caller has to re-read it and
+/// decide who wins rather than blindly overwriting.
+enum CloudKitConditionalSaveOutcome: Equatable {
+    case saved
+    case conflict
+}
+
 struct CloudKitRecordPresence {
     var presentRecordNames: Set<String> = []
     var missingRecordNames: Set<String> = []
@@ -249,6 +257,10 @@ protocol CloudKitDatabase {
         in zoneID: CKRecordZone.ID
     ) async throws -> CloudKitFetchedRecords
     func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult
+    /// Save one record only while the server's copy still matches the change tag it carries.
+    /// Separate from `saveRecords` because the clip path deliberately uses `.changedKeys`
+    /// last-writer-wins, while the singleton settings record must never clobber a newer remote.
+    func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome
 }
 
 /// Live CloudKit conformance. The idempotent "subscription already exists" handling and the
@@ -362,6 +374,30 @@ extension CKDatabase: CloudKitDatabase {
         return CloudKitRecordSaveResult(failedRecordNames: failedRecordNames.sorted())
     }
 
+    func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome {
+        do {
+            let results = try await modifyRecords(
+                saving: [record],
+                deleting: [],
+                savePolicy: .ifServerRecordUnchanged
+            )
+            guard let result = results.saveResults[record.recordID] else {
+                throw CloudKitSyncError.partialRecordSaves(1)
+            }
+            switch result {
+            case .success:
+                return .saved
+            case .failure(let error):
+                guard Self.isServerRecordChangedError(error) else { throw error }
+                return .conflict
+            }
+        } catch let error where Self.isServerRecordChangedError(error) {
+            // A single-record modify can surface the conflict as a thrown partial failure
+            // instead of a per-record result, depending on how the operation is rejected.
+            return .conflict
+        }
+    }
+
     private static func isUnknownItemError(_ error: any Error) -> Bool {
         if let cloudKitError = error as? CKError {
             return cloudKitError.code == .unknownItem
@@ -369,6 +405,18 @@ extension CKDatabase: CloudKitDatabase {
         let nsError = error as NSError
         return nsError.domain == CKError.errorDomain
             && nsError.code == CKError.Code.unknownItem.rawValue
+    }
+
+    private static func isServerRecordChangedError(_ error: any Error) -> Bool {
+        guard let cloudKitError = error as? CKError else {
+            let nsError = error as NSError
+            return nsError.domain == CKError.errorDomain
+                && nsError.code == CKError.Code.serverRecordChanged.rawValue
+        }
+        if cloudKitError.code == .serverRecordChanged { return true }
+        guard cloudKitError.code == .partialFailure,
+              let itemErrors = cloudKitError.partialErrorsByItemID else { return false }
+        return itemErrors.values.contains { isServerRecordChangedError($0) }
     }
 }
 
@@ -390,10 +438,19 @@ public final class CloudKitSyncService {
     private let beforeReceiptPersistence: (() throws -> Void)?
     private let afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)?
     private weak var store: SyncableStore?
+    /// Weak for the same reason as `store`: the composition root owns the settings bridge and
+    /// outlives the service, and a strong edge here would keep the app's settings graph alive
+    /// past `stop()`.
+    private weak var settingsStore: (any SyncedSettingsStore)?
     private var changeToken: CKServerChangeToken?
     private var pushReceipts: [UUID: Date]?
     private var pullQuarantine: [String: CloudKitPullQuarantineEntry]
+    /// Whether the settings record is worth a round trip on the next push. Purely an
+    /// optimisation — the fetch-first reconcile decides by stamp, never by this flag — so a
+    /// change made while sync was down is still published by the next `start()`.
+    private var settingsReconciliationPending = false
     private var localChangeObserver: NSObjectProtocol?
+    private var settingsChangeObserver: NSObjectProtocol?
     private var scheduledPush: Task<Void, Never>?
     private var pushRetry: Task<Void, Never>?
     private var pushRetryAttempt = 0
@@ -404,11 +461,17 @@ public final class CloudKitSyncService {
     /// Live entry point: binds to the container's private database. `CKContainer(identifier:)`
     /// hard-traps on a binary not provisioned for the container, so callers must gate on
     /// provisioning before constructing the service (see `AppDelegate`).
-    public convenience init(containerIdentifier: String, store: SyncableStore, defaults: UserDefaults = .standard) {
+    public convenience init(
+        containerIdentifier: String,
+        store: SyncableStore,
+        settingsStore: (any SyncedSettingsStore)? = nil,
+        defaults: UserDefaults = .standard
+    ) {
         self.init(
             containerIdentifier: containerIdentifier,
             store: store,
             database: CKContainer(identifier: containerIdentifier).privateCloudDatabase,
+            settingsStore: settingsStore,
             defaults: defaults
         )
     }
@@ -418,6 +481,7 @@ public final class CloudKitSyncService {
         containerIdentifier: String,
         store: SyncableStore,
         database: any CloudKitDatabase,
+        settingsStore: (any SyncedSettingsStore)? = nil,
         defaults: UserDefaults = .standard,
         pushDebounceNanoseconds: UInt64 = 750_000_000,
         pushRetryDelaysNanoseconds: [UInt64] = CloudKitSyncService.defaultPushRetryDelaysNanoseconds,
@@ -426,6 +490,7 @@ public final class CloudKitSyncService {
     ) {
         self.database = database
         self.store = store
+        self.settingsStore = settingsStore
         self.defaults = defaults
         self.tokenKey = "cloudkit.changeToken.\(containerIdentifier)"
         self.pushWatermarkKey = "cloudkit.lastPushedModifiedAt.\(containerIdentifier)"
@@ -463,6 +528,10 @@ public final class CloudKitSyncService {
             NotificationCenter.default.removeObserver(localChangeObserver)
             self.localChangeObserver = nil
         }
+        if let settingsChangeObserver {
+            NotificationCenter.default.removeObserver(settingsChangeObserver)
+            self.settingsChangeObserver = nil
+        }
     }
 
     /// Mark sync as unavailable on the store (e.g. no iCloud account, container not provisioned),
@@ -485,9 +554,13 @@ public final class CloudKitSyncService {
             try requireActive(generation)
             try await ensureSubscription()
             try requireActive(generation)
+            // Bring-up always reconciles the settings record, which is what recovers a record
+            // an earlier build could not read and one this device never managed to publish.
+            settingsReconciliationPending = true
             try await pull(generation: generation)
             try requireActive(generation)
             try startObservingLocalChanges(generation: generation)
+            try startObservingSettingsChanges(generation: generation)
             try await pushLocal(generation: generation)
             try requireActive(generation)
             store?.markSyncSucceeded(at: Date())
@@ -569,6 +642,30 @@ public final class CloudKitSyncService {
                 guard let self else { return }
                 do {
                     try self.requireActive(generation)
+                    try self.schedulePush(generation: generation)
+                } catch {
+                    // A queued notification from a stopped generation is intentionally ignored.
+                }
+            }
+        }
+    }
+
+    /// Observes local settings choices directly, exactly as the clip path observes local store
+    /// changes — so no composition root has to relay them. Only a *choice* posts this; an
+    /// adopted value stays silent and cannot bounce back at the device it came from.
+    private func startObservingSettingsChanges(generation: UInt64) throws {
+        try requireActive(generation)
+        guard settingsChangeObserver == nil else { return }
+        settingsChangeObserver = NotificationCenter.default.addObserver(
+            forName: .yankSyncedSettingsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                do {
+                    try self.requireActive(generation)
+                    self.settingsReconciliationPending = true
                     try self.schedulePush(generation: generation)
                 } catch {
                     // A queued notification from a stopped generation is intentionally ignored.
@@ -787,6 +884,13 @@ public final class CloudKitSyncService {
             try store.applyReconciledDurably(reconciled)
             try requireActive(generation)
             deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
+            // After the clips land, so a tightened remote limit trims the merged set rather than
+            // the pre-merge one. Adoption is idempotent against the local stamp, so replaying
+            // this pull after a later failure re-decides the same way.
+            if let remoteSettings = accumulation.remoteSettings {
+                applySettingsFromChangeFeed(remoteSettings)
+                try requireActive(generation)
+            }
             if !accumulation.receiptInvalidationItemIDs.isEmpty {
                 // A push that started before this pull may still commit an older receipt
                 // snapshot. Let it finish, then make repair invalidation the last durable
@@ -821,6 +925,9 @@ public final class CloudKitSyncService {
         var downloadedBlobs: Set<SyncBlobReference> = []
         var bypassedMissingAssets: [(item: ClipboardItem, blob: SyncBlobReference)] = []
         var receiptInvalidationItemIDs: Set<UUID> = []
+        /// The settings record seen in this pull, if any. Last one wins within a pull — the
+        /// record is a singleton, so a later page can only be a newer copy of the same thing.
+        var remoteSettings: SyncedSettings?
     }
 
     /// In-flight quarantine list for one pull. Only persisted once the pull's records are durable.
@@ -872,6 +979,26 @@ public final class CloudKitSyncService {
     ) async throws {
         try requireActive(generation)
         let recordName = record.recordID.recordName
+        // Branch on the record type before any clip mapping: the settings record is not a clip,
+        // so it must never reach `ClipboardCloudMapping` (which would read it as unmappable) or
+        // the quarantine. This is the single choke point for remote records — the page loop and
+        // the quarantine-recovery re-fetch both come through here.
+        if record.recordType == SyncedSettingsCloudMapping.recordType {
+            if let settings = SyncedSettingsCloudMapping.settings(from: record) {
+                accumulation.remoteSettings = settings
+            } else {
+                // Not an error, and nothing to hold the change token for: a value this build
+                // cannot read now will not become readable by replaying the same page. The
+                // fetch-first reconcile on the next launch is what picks it up after an upgrade.
+                syncLog.info(
+                    "settings record \(recordName, privacy: .public) is not readable by this build; leaving it to the next reconcile"
+                )
+            }
+            // A 1.0.5 client quarantined this record as an unmappable clip. Now that the type is
+            // understood, drop that entry instead of leaving it to burn recovery attempts.
+            quarantine.clear(recordName)
+            return
+        }
         let resolved: RemoteItemResolution?
         do {
             resolved = try await resolveRemoteItem(
@@ -1119,6 +1246,30 @@ public final class CloudKitSyncService {
     private func performPushLocal(generation: UInt64) async throws {
         try requireActive(generation)
         guard let store else { return }
+        // Both halves are attempted before either failure is reported: the settings record is
+        // independent of the clip batches, so a failing clip batch must not strand a limit the
+        // user chose in the same session (nor the reverse).
+        var clipError: (any Error)?
+        do {
+            try await pushLocalClips(store: store, generation: generation)
+        } catch {
+            clipError = error
+        }
+
+        if settingsReconciliationPending, canMutate(generation) {
+            do {
+                try await reconcileSettings(generation: generation)
+            } catch {
+                // The clip failure came first and is the more consequential one to surface.
+                if clipError == nil { clipError = error }
+            }
+        }
+
+        if let clipError { throw clipError }
+    }
+
+    private func pushLocalClips(store: SyncableStore, generation: UInt64) async throws {
+        try requireActive(generation)
         let local = store.itemsForSync()
         let isReceiptMigration = pushReceipts == nil
 
@@ -1157,6 +1308,103 @@ public final class CloudKitSyncService {
             try persistPushReceipts(committedReceipts, generation: generation)
         }
     }
+
+    // MARK: - Synced settings
+
+    /// What to do with the settings record after reading the server's copy. Pure and total, so
+    /// the last-writer-wins rule is decided in one place and tested without a network.
+    enum SettingsResolution: Equatable {
+        case idle
+        case adopt(SyncedSettings)
+        case publish
+    }
+
+    /// Last-writer-wins, with two guards that matter more than the happy path:
+    /// a remote record this build *cannot read* still defends its slot by stamp alone, and a
+    /// limit the local user never chose is never published.
+    nonisolated static func settingsResolution(
+        local: SyncedSettings,
+        remote: RemoteSettingsRecord?
+    ) -> SettingsResolution {
+        if let remoteSettings = remote?.settings, remoteSettings.updatedAt > local.updatedAt {
+            return .adopt(remoteSettings)
+        }
+        if let remote, local.updatedAt <= remote.updatedAt {
+            // Older or tied — including against a value this build cannot interpret. The
+            // incumbent remote stands and this device stays quiet.
+            return .idle
+        }
+        guard local.wasChosen else { return .idle }
+        return .publish
+    }
+
+    /// Reconciles the singleton settings record fetch-first: read the server's copy, decide, and
+    /// save *that instance* so the conditional save carries a real change tag. A conflict is then
+    /// a genuine mid-flight race rather than the guaranteed cost of every publish.
+    private func reconcileSettings(generation: UInt64) async throws {
+        try requireActive(generation)
+        guard settingsStore?.syncedSettings != nil else { return }
+
+        for _ in 0..<Self.maximumSettingsSaveAttempts {
+            try requireActive(generation)
+            guard let local = settingsStore?.syncedSettings else { return }
+            let serverRecord = try await fetchSettingsRecord(generation: generation)
+            try requireActive(generation)
+
+            switch Self.settingsResolution(
+                local: local,
+                remote: serverRecord.flatMap(SyncedSettingsCloudMapping.remoteRecord(from:))
+            ) {
+            case .idle:
+                settingsReconciliationPending = false
+                return
+            case .adopt(let remote):
+                settingsStore?.applySyncedSettings(remote)
+                settingsReconciliationPending = false
+                return
+            case .publish:
+                let record: CKRecord
+                if let serverRecord {
+                    SyncedSettingsCloudMapping.apply(local, to: serverRecord)
+                    record = serverRecord
+                } else {
+                    record = SyncedSettingsCloudMapping.record(for: local, in: zoneID)
+                }
+                if try await database.saveRecordIfUnchanged(record) == .saved {
+                    try requireActive(generation)
+                    settingsReconciliationPending = false
+                    return
+                }
+                // Someone wrote between the fetch and the save. Re-read and re-decide; if they
+                // are newer, adopting their value *is* the resolution.
+                try requireActive(generation)
+            }
+        }
+        // Losing the race repeatedly is not a sync failure — nothing is lost, and the next
+        // trigger re-decides against whatever the server settled on.
+        syncLog.info("settings record kept changing mid-save; leaving it for the next sync")
+    }
+
+    private func fetchSettingsRecord(generation: UInt64) async throws -> CKRecord? {
+        let fetched = try await database.fetchRecords(
+            for: [SyncedSettingsCloudMapping.recordName],
+            in: zoneID
+        )
+        try requireActive(generation)
+        return fetched.records.first { $0.recordType == SyncedSettingsCloudMapping.recordType }
+    }
+
+    /// Live fast path for a settings record arriving in the change feed, so another device's
+    /// choice lands without waiting for the next launch. Purely an accelerator: the fetch-first
+    /// reconcile is what guarantees convergence, which is why an unreadable record here is
+    /// simply ignored rather than held onto.
+    private func applySettingsFromChangeFeed(_ remote: SyncedSettings) {
+        guard let settingsStore, let local = settingsStore.syncedSettings else { return }
+        guard remote.updatedAt > local.updatedAt else { return }
+        settingsStore.applySyncedSettings(remote)
+    }
+
+    private nonisolated static let maximumSettingsSaveAttempts = 2
 
     private func fetchRecordPresence(
         for recordNames: [String],
@@ -1367,6 +1615,9 @@ public final class CloudKitSyncService {
         try requireActive(generation)
         defaults.removeObject(forKey: pushReceiptsKey)
         pushReceipts = nil
+        // Settings need no equivalent invalidation: every reconcile reads the server's copy
+        // first, so there is no cached acknowledgement that could go stale.
+        settingsReconciliationPending = true
     }
 
     private static func loadPushReceipts(

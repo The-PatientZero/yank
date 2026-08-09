@@ -2148,14 +2148,486 @@ struct CloudKitSyncServiceTests {
         #expect(pushed.map(\.recordID.recordName) == [local.id.uuidString])
     }
 
+    // MARK: - Synced settings: resolution rule
+
+    @Test func resolutionAdoptsAStrictlyNewerRemoteValue() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.essential, 100),
+            remote: RemoteSettingsRecord(settings: settings(.deep, 200), updatedAt: stamp(200))
+        )
+
+        #expect(decision == .adopt(settings(.deep, 200)))
+    }
+
+    @Test func resolutionKeepsTheIncumbentWhenTheStampsTie() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.unlimited, 200),
+            remote: RemoteSettingsRecord(settings: settings(.essential, 200), updatedAt: stamp(200))
+        )
+
+        #expect(decision == .idle)
+    }
+
+    @Test func resolutionPublishesOverAStrictlyOlderRemoteValue() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.unlimited, 900),
+            remote: RemoteSettingsRecord(settings: settings(.essential, 200), updatedAt: stamp(200))
+        )
+
+        #expect(decision == .publish)
+    }
+
+    /// A tier this build cannot read is almost certainly a newer client's. Its stamp still
+    /// defends the slot, so an older local choice must not stomp on it.
+    @Test func resolutionBacksOffFromAnUnreadableRemoteValueWithANewerStamp() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.essential, 100),
+            remote: RemoteSettingsRecord(settings: nil, updatedAt: stamp(900))
+        )
+
+        #expect(decision == .idle)
+    }
+
+    @Test func resolutionBacksOffFromAnUnreadableRemoteValueWithATiedStamp() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.essential, 500),
+            remote: RemoteSettingsRecord(settings: nil, updatedAt: stamp(500))
+        )
+
+        #expect(decision == .idle)
+    }
+
+    /// Repair is still possible: a genuinely newer local choice may overwrite a record this
+    /// build cannot read, so a corrupt value is not permanent.
+    @Test func resolutionRepairsAnUnreadableRemoteValueWithAnOlderStamp() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.deep, 900),
+            remote: RemoteSettingsRecord(settings: nil, updatedAt: stamp(100))
+        )
+
+        #expect(decision == .publish)
+    }
+
+    @Test func resolutionNeverPublishesALimitTheUserNeverChose() {
+        let unchosen = SyncedSettings(historyLimit: .essential, updatedAt: .distantPast)
+
+        #expect(CloudKitSyncService.settingsResolution(local: unchosen, remote: nil) == .idle)
+        #expect(
+            CloudKitSyncService.settingsResolution(
+                local: unchosen,
+                remote: RemoteSettingsRecord(settings: nil, updatedAt: .distantPast)
+            ) == .idle
+        )
+    }
+
+    @Test func resolutionPublishesAChosenLimitWhenTheZoneHasNoRecord() {
+        let decision = CloudKitSyncService.settingsResolution(
+            local: settings(.deep, 500),
+            remote: nil
+        )
+
+        #expect(decision == .publish)
+    }
+
+    // MARK: - Synced settings: pull
+
+    @Test func pullAdoptsAStrictlyNewerRemoteHistoryLimit() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: 100)
+        let database = FakeCloudKitDatabase()
+        let remoteSettings = settingsRecord(rawLimit: 500, updatedAt: 200)
+        database.seedSettingsRecord(remoteSettings)
+        database.pages = [page(changed: [remoteSettings], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(settingsStore.applied.count == 1)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+        #expect(
+            settingsStore.syncedSettings?.updatedAt == Date(timeIntervalSinceReferenceDate: 200)
+        )
+        // The adopted value already matches the server, so reconcile writes nothing back.
+        #expect(database.conditionalSaves.isEmpty)
+    }
+
+    @Test func pullKeepsTheLocalHistoryLimitWhenTheRemoteStampIsOlder() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .deep, updatedAt: 300)
+        let database = FakeCloudKitDatabase()
+        let remoteSettings = settingsRecord(rawLimit: 100, updatedAt: 200)
+        database.seedSettingsRecord(remoteSettings)
+        database.pages = [page(changed: [remoteSettings], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        _ = await service.start()
+
+        #expect(settingsStore.applied.isEmpty)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+        // The newer local choice replaces the stale remote one.
+        #expect(remoteLimit(of: database.settingsRecord) == 500)
+    }
+
+    @Test func pullKeepsTheIncumbentHistoryLimitWhenTheStampsTie() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .deep, updatedAt: 200)
+        let database = FakeCloudKitDatabase()
+        let remoteSettings = settingsRecord(rawLimit: 100, updatedAt: 200)
+        database.seedSettingsRecord(remoteSettings)
+        database.pages = [page(changed: [remoteSettings], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        _ = await service.start()
+
+        #expect(settingsStore.applied.isEmpty)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+        // Neither side moves, so the two devices stop trading writes.
+        #expect(database.conditionalSaves.isEmpty)
+        #expect(remoteLimit(of: database.settingsRecord) == 100)
+    }
+
+    @Test func pullRejectsAMalformedRemoteHistoryLimitWithoutBreakingTheClipPull() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let clip = makeTextItem(text: "still-syncs", modifiedAt: 500)
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: 100)
+        let database = FakeCloudKitDatabase()
+        let remoteSettings = settingsRecord(rawLimit: 777, updatedAt: 900)
+        database.seedSettingsRecord(remoteSettings)
+        database.pages = [page(
+            changed: [remoteSettings, try record(for: clip)],
+            moreComing: false
+        )]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            settingsStore: settingsStore,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == clip.id })
+        #expect(settingsStore.applied.isEmpty)
+        #expect(settingsStore.syncedSettings?.historyLimit == .essential)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
+        // Its stamp is newer, so the unreadable value is left strictly alone.
+        #expect(database.conditionalSaves.isEmpty)
+        #expect(remoteLimit(of: database.settingsRecord) == 777)
+    }
+
+    @Test func pullNeverQuarantinesASettingsRecord() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: 100)
+        let database = FakeCloudKitDatabase()
+        // No fields at all: the record is unreadable, which is the case that would otherwise
+        // land in the quarantine as an unmappable clip.
+        let unreadable = CKRecord(
+            recordType: SyncedSettingsCloudMapping.recordType,
+            recordID: SyncedSettingsCloudMapping.recordID(in: zoneID)
+        )
+        database.seedSettingsRecord(unreadable)
+        database.pages = [page(changed: [unreadable], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            settingsStore: settingsStore,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(settingsStore.applied.isEmpty)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
+    }
+
+    /// The upgrade path for finding 4: a build that cannot read the record ignores it and lets
+    /// the token advance past it, and the build that *can* read it still adopts it — because
+    /// bring-up fetches the record by ID rather than relying on the change feed.
+    @Test func anUnreadableSettingsRecordIsAdoptedByALaterBuildAfterTheTokenMovedOn() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: 100)
+        let database = FakeCloudKitDatabase()
+        let unreadableSettings = settingsRecord(rawLimit: 777, updatedAt: 900)
+        database.seedSettingsRecord(unreadableSettings)
+        database.pages = [page(changed: [unreadableSettings], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            settingsStore: settingsStore,
+            defaults: defaults
+        )
+
+        #expect(await service.start() == .started)
+        #expect(settingsStore.applied.isEmpty)
+        service.stop()
+
+        // The tier becomes known (a later build), and the change feed is already drained.
+        database.pages = []
+        database.seedSettingsRecord(settingsRecord(rawLimit: 500, updatedAt: 900))
+        let upgraded = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            settingsStore: settingsStore,
+            defaults: defaults
+        )
+
+        #expect(await upgraded.start() == .started)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+    }
+
+    @Test func pullClearsASettingsRecordQuarantinedByAnEarlierBuild() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        defaults.set(
+            try CloudKitPullQuarantineCodec.encode([
+                SyncedSettingsCloudMapping.recordName: CloudKitPullQuarantineEntry(
+                    reason: "Record fields cannot be read as a clip.",
+                    attemptCount: 2
+                )
+            ]),
+            forKey: pullQuarantineKey(containerID)
+        )
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: 100)
+        let database = FakeCloudKitDatabase()
+        database.seedSettingsRecord(settingsRecord(rawLimit: 500, updatedAt: 400))
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            settingsStore: settingsStore,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
+    }
+
+    @Test func replayingTheSameSettingsRecordIsANoOp() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: 100)
+        let database = FakeCloudKitDatabase()
+        let remote = settingsRecord(rawLimit: 500, updatedAt: 200)
+        database.seedSettingsRecord(remote)
+        database.pages = [
+            page(changed: [remote], moreComing: false),
+            page(changed: [remote], moreComing: false)
+        ]
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        _ = await service.start()
+        _ = await service.handleRemoteChange()
+
+        #expect(settingsStore.applied.count == 1)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+        #expect(database.conditionalSaves.isEmpty)
+    }
+
+    // MARK: - Synced settings: publish
+
+    /// Finding 6: publishing costs one read and one write. No guaranteed conflict dance.
+    @Test func publishingAChosenLimitTakesOneFetchAndOneSave() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .deep, updatedAt: 500)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        _ = await service.start()
+
+        #expect(database.settingsFetchCount == 1)
+        #expect(database.conditionalSaves.count == 1)
+        #expect(remoteLimit(of: database.settingsRecord) == 500)
+
+        // Reconciling again finds its own value on the server and writes nothing.
+        _ = await service.start()
+
+        #expect(database.conditionalSaves.count == 1)
+    }
+
+    @Test func publishingOverAnOlderRemoteRecordReusesTheFetchedInstance() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .unlimited, updatedAt: 900)
+        let database = FakeCloudKitDatabase()
+        database.seedSettingsRecord(settingsRecord(rawLimit: 100, updatedAt: 200))
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(settingsStore.applied.isEmpty)
+        #expect(database.conditionalSaves.count == 1)
+        #expect(remoteLimit(of: database.settingsRecord) == 1_000)
+    }
+
+    @Test func publishingIsSkippedForALimitTheUserNeverChose() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .essential, updatedAt: nil)
+        let database = FakeCloudKitDatabase()
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        _ = await service.start()
+
+        #expect(database.conditionalSaves.isEmpty)
+        #expect(database.settingsRecord == nil)
+    }
+
+    /// Finding 5: losing the race is a resolution, not a failure — the newer value simply wins.
+    @Test func aConcurrentChangeMidSaveConvergesWithoutFailingSync() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .unlimited, updatedAt: 300)
+        let database = FakeCloudKitDatabase()
+        database.seedSettingsRecord(settingsRecord(rawLimit: 100, updatedAt: 200))
+        database.forcedConditionalSaveConflicts = 1
+        // Another device lands a newer choice in the window between our fetch and our save.
+        let newerRemote = settingsRecord(rawLimit: 500, updatedAt: 800)
+        database.onConditionalSave = { [weak database] _ in
+            database?.seedSettingsRecord(newerRemote)
+        }
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(store.syncStatus.isHealthy)
+        #expect(settingsStore.syncedSettings?.historyLimit == .deep)
+        #expect(remoteLimit(of: database.settingsRecord) == 500)
+    }
+
+    @Test func repeatedlyLosingTheSettingsRaceLeavesSyncHealthy() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .unlimited, updatedAt: 900)
+        let database = FakeCloudKitDatabase()
+        database.seedSettingsRecord(settingsRecord(rawLimit: 100, updatedAt: 200))
+        database.forcedConditionalSaveConflicts = 5
+        let store = FakeSyncableStore()
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(store.syncStatus.isHealthy)
+        // Bounded: it gives up for this pass instead of spinning.
+        #expect(database.conditionalSaves.count == 2)
+    }
+
+    /// Finding 3: the two halves of a push are independent.
+    @Test func settingsStillPublishWhenTheClipPushFails() async throws {
+        let settingsStore = FakeSyncedSettingsStore(historyLimit: .deep, updatedAt: 500)
+        let database = FakeCloudKitDatabase()
+        database.failedSaveCallIndices = [0]
+        let store = FakeSyncableStore()
+        store.items = [makeTextItem(text: "cannot-land", modifiedAt: 100)]
+        let service = makeService(
+            database: database,
+            store: store,
+            settingsStore: settingsStore
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected the failing clip batch to surface as a sync failure")
+            return
+        }
+        // The clip failure is reported, but the limit still reached CloudKit.
+        #expect(database.conditionalSaves.count == 1)
+        #expect(remoteLimit(of: database.settingsRecord) == 500)
+    }
+
     // MARK: - Helpers
 
-    private func makeService(database: any CloudKitDatabase, store: SyncableStore) -> CloudKitSyncService {
+    private func makeService(
+        database: any CloudKitDatabase,
+        store: SyncableStore,
+        settingsStore: (any SyncedSettingsStore)? = nil
+    ) -> CloudKitSyncService {
         CloudKitSyncService(
             containerIdentifier: "test.\(UUID().uuidString)",
             store: store,
             database: database,
+            settingsStore: settingsStore,
             defaults: isolatedDefaults()
+        )
+    }
+
+    private func settingsRecord(rawLimit: Int, updatedAt: TimeInterval) -> CKRecord {
+        let record = CKRecord(
+            recordType: SyncedSettingsCloudMapping.recordType,
+            recordID: SyncedSettingsCloudMapping.recordID(in: zoneID)
+        )
+        record[SyncedSettingsCloudMapping.Key.historyLimit] = rawLimit
+        record[SyncedSettingsCloudMapping.Key.updatedAt] =
+            Date(timeIntervalSinceReferenceDate: updatedAt)
+        return record
+    }
+
+    private func remoteLimit(of record: CKRecord?) -> Int? {
+        record?[SyncedSettingsCloudMapping.Key.historyLimit] as? Int
+    }
+
+    private func stamp(_ secondsSinceReferenceDate: TimeInterval) -> Date {
+        Date(timeIntervalSinceReferenceDate: secondsSinceReferenceDate)
+    }
+
+    private func settings(
+        _ historyLimit: HistoryLimit,
+        _ secondsSinceReferenceDate: TimeInterval
+    ) -> SyncedSettings {
+        SyncedSettings(
+            historyLimit: historyLimit,
+            updatedAt: stamp(secondsSinceReferenceDate)
         )
     }
 
@@ -2294,6 +2766,13 @@ struct CloudKitSyncServiceTests {
 
 private enum TestError: Error { case boom }
 
+private extension SyncStatus {
+    var isHealthy: Bool {
+        if case .healthy = self { return true }
+        return false
+    }
+}
+
 @MainActor
 private final class AsyncTestGate {
     private var continuation: CheckedContinuation<Void, Never>?
@@ -2333,15 +2812,25 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
     var fetchRecordsError: (any Error)?
     var onFetchZoneChanges: (() async -> Void)?
     var onSaveRecords: (([CKRecord]) async -> Void)?
+    /// Forces the next N conditional saves to report a conflict even when the change tag would
+    /// have matched, standing in for a third device writing between the fetch and the save.
+    var forcedConditionalSaveConflicts = 0
+    /// Runs inside a conditional save, so a test can move the server's copy in the window
+    /// between this device's fetch and its write.
+    var onConditionalSave: ((CKRecord) -> Void)?
 
     private(set) var ensuredZone = false
     private(set) var ensuredSubscription = false
     private(set) var savedBatches: [[CKRecord]] = []
     private(set) var presenceBatchSizes: [Int] = []
     private(set) var fetchedRecordNameBatches: [[String]] = []
+    private(set) var conditionalSaves: [CKRecord] = []
     private(set) var fetchCount = 0
     private var saveCallIndex = 0
     private var pageIndex = 0
+    /// Server-side change counter per record, and the version each handed-out copy was read at.
+    private var serverRecordVersions: [String: Int] = [:]
+    private var fetchedRecordVersions: [ObjectIdentifier: Int] = [:]
 
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws {
         if let ensureZoneError { throw ensureZoneError }
@@ -2392,7 +2881,7 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
             if permanentlyMissingFetchRecordNames.contains(recordName) {
                 fetched.permanentlyMissingRecordNames.insert(recordName)
             } else if let record = fetchableRecords[recordName] {
-                fetched.records.append(record)
+                fetched.records.append(checkedOutCopy(of: record, named: recordName))
             }
         }
         return fetched
@@ -2413,6 +2902,80 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
             }
         )
         return CloudKitRecordSaveResult(failedRecordNames: failuresForCall)
+    }
+
+    /// Models `.ifServerRecordUnchanged` with a change-tag surrogate: `fetchRecords` hands out a
+    /// *copy* stamped with the server version it was read at, and a save is accepted only while
+    /// that version is still current. Handing out the live object instead would let a caller's
+    /// in-place edit mutate "the server" even when its save is rejected.
+    func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome {
+        conditionalSaves.append(record)
+        if let saveError { throw saveError }
+        onConditionalSave?(record)
+        if forcedConditionalSaveConflicts > 0 {
+            forcedConditionalSaveConflicts -= 1
+            return .conflict
+        }
+        let recordName = record.recordID.recordName
+        let presentedVersion = fetchedRecordVersions[ObjectIdentifier(record)]
+        if fetchableRecords[recordName] != nil,
+           presentedVersion != serverRecordVersions[recordName, default: 0] {
+            // The server holds a copy this caller never read — a freshly minted record, or one
+            // read before someone else wrote.
+            return .conflict
+        }
+        storeServerRecord(record, named: recordName)
+        return .saved
+    }
+
+    /// The zone's singleton settings record as the server holds it.
+    var settingsRecord: CKRecord? {
+        fetchableRecords[SyncedSettingsCloudMapping.recordName]
+    }
+
+    /// Publishes a record as if another device had written it, which invalidates any copy this
+    /// device already read.
+    func seedSettingsRecord(_ record: CKRecord) {
+        storeServerRecord(record, named: SyncedSettingsCloudMapping.recordName)
+    }
+
+    private func storeServerRecord(_ record: CKRecord, named recordName: String) {
+        fetchableRecords[recordName] = (record.copy() as? CKRecord) ?? record
+        serverRecordVersions[recordName, default: 0] += 1
+        existingRecordNames.insert(recordName)
+    }
+
+    /// Hands the caller its own copy, tagged with the version it was read at.
+    private func checkedOutCopy(of record: CKRecord, named recordName: String) -> CKRecord {
+        guard let copy = record.copy() as? CKRecord else { return record }
+        fetchedRecordVersions[ObjectIdentifier(copy)] = serverRecordVersions[recordName, default: 0]
+        return copy
+    }
+
+    var settingsFetchCount: Int {
+        fetchedRecordNameBatches.filter {
+            $0 == [SyncedSettingsCloudMapping.recordName]
+        }.count
+    }
+}
+
+/// In-memory `SyncedSettingsStore` recording every value the service adopts. `updatedAt: nil`
+/// models a device where the user has never chosen a limit.
+@MainActor
+private final class FakeSyncedSettingsStore: SyncedSettingsStore {
+    var syncedSettings: SyncedSettings?
+    private(set) var applied: [SyncedSettings] = []
+
+    init(historyLimit: HistoryLimit, updatedAt: TimeInterval?) {
+        self.syncedSettings = SyncedSettings(
+            historyLimit: historyLimit,
+            updatedAt: updatedAt.map { Date(timeIntervalSinceReferenceDate: $0) } ?? .distantPast
+        )
+    }
+
+    func applySyncedSettings(_ settings: SyncedSettings) {
+        applied.append(settings)
+        syncedSettings = settings
     }
 }
 

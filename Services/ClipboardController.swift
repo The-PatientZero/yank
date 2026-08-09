@@ -27,6 +27,8 @@ final class ClipboardController {
     private var enrichmentService: ClipEnrichmentService?
     private var delayedQuickPickerOpen: DispatchWorkItem?
     private var cloudSync: CloudKitSyncService?
+    /// Owned here because the sync service holds it weakly, the same way it holds the store.
+    private let settingsSyncBridge: SettingsSyncBridge
     private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
     private var cloudRemoteChangeTask: (id: UUID, task: Task<Void, Never>)?
     private var observerTokens: [NSObjectProtocol] = []
@@ -36,6 +38,7 @@ final class ClipboardController {
 
     init(dependencies: ClipboardDependencies) {
         self.dependencies = dependencies
+        self.settingsSyncBridge = SettingsSyncBridge(settings: dependencies.settings)
     }
 
     // `isolated deinit` runs cleanup on the main actor (the runtime schedules a hop if the last
@@ -250,7 +253,11 @@ final class ClipboardController {
             return
         }
         guard cloudSync == nil else { return }
-        let sync = CloudKitSyncService(containerIdentifier: Self.cloudContainerID, store: store)
+        let sync = CloudKitSyncService(
+            containerIdentifier: Self.cloudContainerID,
+            store: store,
+            settingsStore: settingsSyncBridge
+        )
         cloudSync = sync
         NSApp.registerForRemoteNotifications()
         let taskID = UUID()

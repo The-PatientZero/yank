@@ -11,6 +11,7 @@ import Testing
         #expect(SettingsKeys.viewMode == "clipViewMode")
         #expect(SettingsKeys.density == "clipDensity")
         #expect(SettingsKeys.historyLimit == "historyLimit")
+        #expect(SettingsKeys.historyLimitUpdatedAt == "historyLimitUpdatedAt")
         #expect(SettingsKeys.retentionDays == "retentionDays")
     }
 }

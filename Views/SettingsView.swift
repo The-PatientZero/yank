@@ -49,12 +49,11 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
             Button("Reduce & Delete", role: .destructive) {
                 if let tier = pendingTier {
-                    manager.historyLimit = tier
-                    saveHistoryLimit()
+                    manager.setHistoryLimit(tier)
                 }
             }
         } message: {
-            Text("This will permanently delete your oldest unbookmarked items to fit the new size. This action cannot be undone.")
+            Text(SyncCopy.historyLimitReduction(syncEnabled: manager.syncEnabled))
         }
         .background(KeyRecorder(isRecording: $isRecording, onRecord: { keyCode, modifiers in
             manager.setHotkey(keyCode: keyCode, modifiers: modifiers)
@@ -230,11 +229,5 @@ struct SettingsView: View {
             control()
         }
         .padding(.vertical, Space.xs)
-    }
-
-    /// Persist a history-limit change; `save()` re-injects the capture snapshot so the store
-    /// trims to the new size (via `.yankCaptureSettingsChanged`).
-    func saveHistoryLimit() {
-        manager.save()
     }
 }

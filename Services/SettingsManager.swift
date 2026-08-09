@@ -89,7 +89,17 @@ final class SettingsManager {
     var hotkeyKeyCode: UInt16
 
     var launchAtLogin: Bool = false
-    var historyLimit: HistoryLimit = SettingsDefaults.historyLimit
+
+    /// Value plus stamp in one place, so the limit can never move without its stamp. The
+    /// choose-versus-adopt rule lives in `SyncedHistoryLimit` and is shared with iOS.
+    private var syncedHistoryLimit = SyncedHistoryLimit(historyLimit: SettingsDefaults.historyLimit)
+
+    var historyLimit: HistoryLimit { syncedHistoryLimit.historyLimit }
+    /// When the history limit was last chosen. `distantPast` means "never explicitly chosen on
+    /// this device", which lets any device that has made a real choice win the first sync
+    /// without silently resizing anyone's history on upgrade.
+    var historyLimitUpdatedAt: Date { syncedHistoryLimit.updatedAt }
+    var syncedSettings: SyncedSettings { syncedHistoryLimit.current }
 
     /// Apps whose copies are never captured. Bundle identifiers.
     var excludedBundleIDs: Set<String> = []
@@ -169,7 +179,11 @@ final class SettingsManager {
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         
         let rawLimit = defaults.integer(forKey: SettingsKeys.historyLimit)
-        self.historyLimit = HistoryLimit(rawValue: rawLimit) ?? SettingsDefaults.historyLimit
+        self.syncedHistoryLimit = SyncedHistoryLimit(
+            historyLimit: HistoryLimit(rawValue: rawLimit) ?? SettingsDefaults.historyLimit,
+            updatedAt: defaults.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
+                ?? .distantPast
+        )
 
         if defaults.object(forKey: excludedBundleIDsKey) == nil {
             self.excludedBundleIDs = Set(suggestedExclusions.map(\.bundleID))
@@ -209,6 +223,7 @@ final class SettingsManager {
         defaults.set(hotkeyModifiers.toArray(), forKey: hotkeyModifiersKey)
         defaults.set(Int(hotkeyKeyCode), forKey: hotkeyKeyCodeKey)
         defaults.set(historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
+        defaults.set(historyLimitUpdatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         defaults.set(Array(excludedBundleIDs).sorted(), forKey: excludedBundleIDsKey)
         defaults.set(minCaptureLength, forKey: minCaptureLengthKey)
         defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
@@ -251,6 +266,21 @@ final class SettingsManager {
         aiTaggingEnabled = value
         save()
         NotificationCenter.default.post(name: .yankAITaggingChanged, object: nil)
+    }
+
+    /// A user-driven history-limit change. Announced so the sync service reconciles it.
+    func setHistoryLimit(_ value: HistoryLimit) {
+        guard syncedHistoryLimit.choose(value) else { return }
+        save()
+        NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
+    }
+
+    /// A history-limit change adopted from another device. Stays silent on
+    /// `.yankSyncedSettingsChanged` so the value is not echoed back where it came from.
+    /// `save()` still posts `.yankCaptureSettingsChanged`, which is what re-applies retention.
+    func adoptHistoryLimit(_ settings: SyncedSettings) {
+        syncedHistoryLimit.adopt(settings)
+        save()
     }
 
     func setSyncEnabled(_ value: Bool) {

@@ -32,12 +32,13 @@ struct IOSCloudSyncLifecycleTests {
                     }
                 )
             },
-            makeService: { database, store in
+            makeService: { database, store, settingsStore in
                 serviceCreationCount += 1
                 return CloudKitSyncService(
                     containerIdentifier: "test.\(UUID().uuidString)",
                     store: store,
                     database: database,
+                    settingsStore: settingsStore,
                     defaults: defaults
                 )
             },
@@ -99,12 +100,13 @@ struct IOSCloudSyncLifecycleTests {
                     }
                 )
             },
-            makeService: { database, store in
+            makeService: { database, store, settingsStore in
                 serviceCreationCount += 1
                 return CloudKitSyncService(
                     containerIdentifier: "test.lifecycle",
                     store: store,
                     database: database,
+                    settingsStore: settingsStore,
                     defaults: defaults
                 )
             },
@@ -184,12 +186,13 @@ struct IOSCloudSyncLifecycleTests {
                     accountStatus: { accountStatus }
                 )
             },
-            makeService: { database, store in
+            makeService: { database, store, settingsStore in
                 serviceCreationCount += 1
                 return CloudKitSyncService(
                     containerIdentifier: "test.transient",
                     store: store,
                     database: database,
+                    settingsStore: settingsStore,
                     defaults: defaults
                 )
             },
@@ -505,5 +508,9 @@ private final class LifecycleCloudKitDatabase: CloudKitDatabase {
 
     func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
         CloudKitRecordSaveResult()
+    }
+
+    func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome {
+        .saved
     }
 }

@@ -276,7 +276,7 @@ final class IOSCloudSyncController {
     private let settings: IOSSettings
     @ObservationIgnored private let makeContainer: @MainActor () -> ContainerHandle?
     @ObservationIgnored private let makeService:
-        @MainActor (any CloudKitDatabase, ClipStore) -> CloudKitSyncService
+        @MainActor (any CloudKitDatabase, ClipStore, any SyncedSettingsStore) -> CloudKitSyncService
     @ObservationIgnored private let registerForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let unregisterForRemoteNotifications: @MainActor () -> Void
 
@@ -284,6 +284,9 @@ final class IOSCloudSyncController {
     @ObservationIgnored private var sync: CloudKitSyncService?
     @ObservationIgnored private var operation: (id: UUID, task: Task<Bool, Never>)?
     @ObservationIgnored private var lifecycleGeneration: UInt64 = 0
+    /// Owned here because the sync service holds it weakly, the same way it holds the store.
+    /// The service observes settings choices itself; this root only supplies the port.
+    @ObservationIgnored private let settingsBridge: IOSSyncedSettingsBridge
 
     private(set) var iCloudSignedOut = false
 
@@ -291,13 +294,16 @@ final class IOSCloudSyncController {
         store: ClipStore,
         settings: IOSSettings,
         makeContainer: @escaping @MainActor () -> ContainerHandle? = IOSCloudSyncController.makeLiveContainer,
-        makeService: @escaping @MainActor (any CloudKitDatabase, ClipStore) -> CloudKitSyncService = {
-            database,
-            store in
+        makeService: @escaping @MainActor (
+            any CloudKitDatabase,
+            ClipStore,
+            any SyncedSettingsStore
+        ) -> CloudKitSyncService = { database, store, settingsStore in
             CloudKitSyncService(
                 containerIdentifier: IOSCloudSyncController.containerID,
                 store: store,
-                database: database
+                database: database,
+                settingsStore: settingsStore
             )
         },
         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
@@ -313,6 +319,7 @@ final class IOSCloudSyncController {
         self.makeService = makeService
         self.registerForRemoteNotifications = registerForRemoteNotifications
         self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
+        self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 
     func refreshForeground() async {
@@ -433,7 +440,7 @@ final class IOSCloudSyncController {
     ) async -> Bool {
         guard isActive(generation) else { return false }
         if sync != nil, !force { return true }
-        let service = sync ?? makeService(container.database, store)
+        let service = sync ?? makeService(container.database, store, settingsBridge)
         guard isActive(generation) else { return false }
         sync = service
         let result = await service.start()

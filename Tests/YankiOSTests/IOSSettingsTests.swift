@@ -131,7 +131,7 @@ struct IOSSettingsTests {
         settings.themeID = "mint"
         settings.viewMode = .grid
         settings.density = .snug
-        settings.historyLimit = .essential
+        settings.setHistoryLimit(.deep)
         settings.retentionDays = 30
         settings.spotlightIndexing = true
 
@@ -139,9 +139,38 @@ struct IOSSettingsTests {
         #expect(reloaded.themeID == "mint")
         #expect(reloaded.viewMode == .grid)
         #expect(reloaded.density == .snug)
-        #expect(reloaded.historyLimit == .essential)
+        #expect(reloaded.historyLimit == .deep)
         #expect(reloaded.retentionDays == 30)
         #expect(reloaded.spotlightIndexing)
+    }
+
+    @Test("A user-chosen history limit is stamped; an adopted one keeps the remote stamp")
+    func historyLimitStampDistinguishesChosenFromAdopted() throws {
+        let suiteName = "IOSSettingsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = IOSSettings(defaults: defaults)
+        // Never chosen on this device, so any device that has made a real choice outranks it.
+        #expect(settings.historyLimitUpdatedAt == .distantPast)
+
+        let beforeChoice = Date()
+        settings.setHistoryLimit(.deep)
+        #expect(settings.historyLimitUpdatedAt >= beforeChoice)
+
+        let remoteStamp = Date(timeIntervalSinceReferenceDate: 5_000)
+        settings.adoptHistoryLimit(
+            SyncedSettings(historyLimit: .unlimited, updatedAt: remoteStamp)
+        )
+        #expect(settings.historyLimit == .unlimited)
+        // Verbatim, not re-stamped: otherwise this device would look like the newest writer and
+        // bounce the value back at the device it came from.
+        #expect(settings.historyLimitUpdatedAt == remoteStamp)
+
+        let reloaded = IOSSettings(defaults: defaults)
+        #expect(reloaded.historyLimit == .unlimited)
+        #expect(reloaded.historyLimitUpdatedAt == remoteStamp)
     }
 
     @Test("Capture methods persist independently and completing all three closes setup")

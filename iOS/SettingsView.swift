@@ -220,7 +220,10 @@ struct SettingsView: View {
 
     private var historySection: some View {
         Section {
-            Picker("Keep", selection: $settings.historyLimit) {
+            Picker("Keep", selection: Binding(
+                get: { settings.historyLimit },
+                set: { settings.setHistoryLimit($0) }
+            )) {
                 ForEach(HistoryLimit.allCases, id: \.self) { tier in Text(tier.label).tag(tier) }
             }
             Picker("Auto-delete", selection: $settings.retentionDays) {
@@ -245,7 +248,7 @@ struct SettingsView: View {
         } header: {
             Text("History")
         } footer: {
-            Text("Up to \(settings.historyLimit.subtitle) on this device. \(SyncCopy.perDeviceRetention) Pinned, bookmarked, and tagged clips are always kept.")
+            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.perDeviceRetention) Pinned, bookmarked, and tagged clips are always kept.")
         }
         .onChange(of: settings.historyLimit) { _, _ in store.enforceRetentionAndLimit() }
         .onChange(of: settings.retentionDays) { _, _ in store.enforceRetentionAndLimit() }

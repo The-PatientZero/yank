@@ -7,7 +7,7 @@ extension SettingsView {
             adaptiveGrid(minimum: 112) {
                 ForEach(HistoryLimit.allCases, id: \.self) { tier in tierButton(tier) }
             }
-            Text("How many clips Yank keeps. Pinned and bookmarked clips are always safe.")
+            Text("How many clips Yank keeps. \(SyncCopy.historyLimitScope(syncEnabled: manager.syncEnabled)) Pinned and bookmarked clips are always safe.")
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
 
@@ -51,8 +51,7 @@ extension SettingsView {
                 pendingTier = tier
                 showingTrimAlert = true
             } else {
-                manager.historyLimit = tier
-                saveHistoryLimit()
+                manager.setHistoryLimit(tier)
             }
         }) {
             // Tier carries its own filled-radio glyph as the non-colour cue, so it opts
