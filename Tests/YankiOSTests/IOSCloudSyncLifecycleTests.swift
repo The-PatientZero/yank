@@ -144,6 +144,118 @@ struct IOSCloudSyncLifecycleTests {
         #expect(registrationCount == 3)
     }
 
+    @Test("Only a missing or restricted account is a hard sync teardown")
+    func accountDecisionSeparatesTransientStatesFromHardOnes() {
+        #expect(IOSCloudSyncController.accountDecision(for: .available) == .proceed)
+        #expect(IOSCloudSyncController.accountDecision(for: .noAccount)
+                == .hardUnavailable(reason: .notAuthenticated))
+        #expect(IOSCloudSyncController.accountDecision(for: .restricted)
+                == .hardUnavailable(reason: .notAuthenticated))
+
+        for status in [CKAccountStatus.temporarilyUnavailable, .couldNotDetermine] {
+            guard case .transient(let message) =
+                    IOSCloudSyncController.accountDecision(for: status) else {
+                Issue.record("Expected \(status) to be treated as transient")
+                return
+            }
+            #expect(!message.isEmpty)
+        }
+    }
+
+    @Test("Transient account states keep the service and its push registration")
+    func transientAccountStatesKeepTheServiceRegistered() async throws {
+        let defaults = try #require(
+            UserDefaults(suiteName: "IOSCloudSyncLifecycleTests.\(UUID().uuidString)")
+        )
+        defaults.set(true, forKey: SettingsKeys.syncEnabled)
+        let settings = IOSSettings(defaults: defaults)
+        let store = ClipStore(context: nil)
+        let database = LifecycleCloudKitDatabase()
+        var accountStatus = CKAccountStatus.available
+        var serviceCreationCount = 0
+        var registrationCount = 0
+        var unregistrationCount = 0
+        let controller = IOSCloudSyncController(
+            store: store,
+            settings: settings,
+            makeContainer: {
+                IOSCloudSyncController.ContainerHandle(
+                    database: database,
+                    accountStatus: { accountStatus }
+                )
+            },
+            makeService: { database, store in
+                serviceCreationCount += 1
+                return CloudKitSyncService(
+                    containerIdentifier: "test.transient",
+                    store: store,
+                    database: database,
+                    defaults: defaults
+                )
+            },
+            registerForRemoteNotifications: { registrationCount += 1 },
+            unregisterForRemoteNotifications: { unregistrationCount += 1 }
+        )
+
+        await controller.start()
+        #expect(serviceCreationCount == 1)
+        #expect(registrationCount == 1)
+
+        for transient in [CKAccountStatus.temporarilyUnavailable, .couldNotDetermine] {
+            accountStatus = transient
+            await controller.refreshForeground()
+            #expect(unregistrationCount == 0)
+            #expect(!controller.iCloudSignedOut)
+            guard case .failed = store.syncStatus else {
+                Issue.record("Expected \(transient) to surface a sync failure message")
+                return
+            }
+        }
+
+        accountStatus = .available
+        await controller.refreshForeground()
+        #expect(serviceCreationCount == 1)
+        #expect(registrationCount == 2)
+        #expect(unregistrationCount == 0)
+        #expect(!controller.iCloudSignedOut)
+    }
+
+    @Test("A push that arrives before the handler is wired refreshes once on wiring")
+    func remoteChangeArrivingBeforeWiringRefreshesOnceOnWiring() async {
+        let delegate = YankAppDelegate(syncEnabledProvider: { true })
+        var results: [UIBackgroundFetchResult] = []
+        var handlerCallCount = 0
+
+        delegate.application(
+            UIApplication.shared,
+            didReceiveRemoteNotification: [:],
+            fetchCompletionHandler: { results.append($0) }
+        )
+        while results.isEmpty {
+            await Task.yield()
+        }
+        #expect(results == [.noData])
+
+        delegate.remoteChangeHandler = {
+            handlerCallCount += 1
+            return true
+        }
+        while handlerCallCount == 0 {
+            await Task.yield()
+        }
+
+        // The latch is one-shot: re-wiring must not replay the same missed notification.
+        delegate.remoteChangeHandler = {
+            handlerCallCount += 1
+            return true
+        }
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        #expect(handlerCallCount == 1)
+        #expect(results == [.noData])
+    }
+
     @Test("Disabling a remote notification completes once and preserves re-enable delivery")
     func disableRemoteNotificationCompletesExactlyOnceAndReenables() async {
         let handlerGate = LifecycleTestGate()
@@ -382,6 +494,13 @@ private final class LifecycleCloudKitDatabase: CloudKitDatabase {
         in zoneID: CKRecordZone.ID
     ) async throws -> CloudKitRecordPresence {
         CloudKitRecordPresence(missingRecordNames: Set(recordNames))
+    }
+
+    func fetchRecords(
+        for recordNames: [String],
+        in zoneID: CKRecordZone.ID
+    ) async throws -> CloudKitFetchedRecords {
+        CloudKitFetchedRecords()
     }
 
     func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {

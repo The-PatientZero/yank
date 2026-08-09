@@ -235,6 +235,19 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
     }
 }
 
+/// What one CloudKit account probe means for the sync lifecycle.
+///
+/// iOS reports `.temporarilyUnavailable` and `.couldNotDetermine` for recoverable conditions
+/// (account under maintenance, a probe before the device finished unlocking, a network hiccup),
+/// so those must not unregister remote notifications or claim the user signed out — the app would
+/// lose live push delivery until the next relaunch. Only a genuinely absent or restricted account
+/// tears the service down.
+enum IOSCloudAccountDecision: Equatable {
+    case proceed
+    case hardUnavailable(reason: SyncStatus.Reason)
+    case transient(message: String)
+}
+
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
 /// A SwiftUI `App` is a value, so keeping the task here gives sync-disable a stable cancellation
 /// boundary and lets tests resume cancellation-ignoring account lookups deterministically.
@@ -369,26 +382,23 @@ final class IOSCloudSyncController {
         do {
             let status = try await container.accountStatus()
             guard isActive(generation) else { return false }
-            switch status {
-            case .available:
+            switch Self.accountDecision(for: status) {
+            case .proceed:
                 iCloudSignedOut = false
                 registerForRemoteNotifications()
-            case .noAccount, .restricted, .temporarilyUnavailable:
+            case .hardUnavailable(let reason):
                 iCloudSignedOut = true
                 tearDownService(
-                    status: .unavailable(.notAuthenticated),
+                    status: .unavailable(reason),
                     generation: generation
                 )
                 return false
-            case .couldNotDetermine:
+            case .transient(let message):
+                // Keep the service and its push registration: the account is expected back, and
+                // the next foreground refresh or silent push resumes sync without a relaunch.
                 iCloudSignedOut = false
-                tearDownService(
-                    status: .failed("Could not determine iCloud account status"),
-                    generation: generation
-                )
+                store.markSyncFailed(message)
                 return false
-            @unknown default:
-                iCloudSignedOut = false
             }
         } catch {
             guard isActive(generation) else { return false }
@@ -447,6 +457,23 @@ final class IOSCloudSyncController {
 
     private func isActive(_ generation: UInt64) -> Bool {
         lifecycleGeneration == generation && settings.syncEnabled && !Task.isCancelled
+    }
+
+    nonisolated static func accountDecision(
+        for status: CKAccountStatus
+    ) -> IOSCloudAccountDecision {
+        switch status {
+        case .available:
+            .proceed
+        case .noAccount, .restricted:
+            .hardUnavailable(reason: .notAuthenticated)
+        case .temporarilyUnavailable:
+            .transient(message: "iCloud is temporarily unavailable. Sync will retry.")
+        case .couldNotDetermine:
+            .transient(message: "Could not determine iCloud account status")
+        @unknown default:
+            .proceed
+        }
     }
 
     private func tearDownService(
