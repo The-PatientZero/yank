@@ -7,7 +7,7 @@ extension SettingsView {
             adaptiveGrid(minimum: 112) {
                 ForEach(HistoryLimit.allCases, id: \.self) { tier in tierButton(tier) }
             }
-            Text("How many clips Yank keeps. Pinned and bookmarked clips are always safe.")
+            Text("How many clips Yank keeps. \(SyncCopy.historyLimitScope(syncEnabled: manager.syncEnabled)) Pinned and bookmarked clips are always safe.")
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
 
@@ -46,15 +46,7 @@ extension SettingsView {
 
     func tierButton(_ tier: HistoryLimit) -> some View {
         let selected = manager.historyLimit == tier
-        return Button(action: {
-            if tier.rawValue < manager.historyLimit.rawValue {
-                pendingTier = tier
-                showingTrimAlert = true
-            } else {
-                manager.historyLimit = tier
-                saveHistoryLimit()
-            }
-        }) {
+        return Button(action: { selectHistoryLimit(tier) }) {
             // Tier carries its own filled-radio glyph as the non-colour cue, so it opts
             // out of the shared corner checkmark to avoid two redundant checkmarks.
             SelectionChip(isSelected: selected, showsCheckmarkCue: false) {
@@ -79,6 +71,24 @@ extension SettingsView {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    /// Same shared rule the iOS picker uses, so both platforms warn on exactly the cases that
+    /// would actually delete something.
+    func selectHistoryLimit(_ tier: HistoryLimit) {
+        switch HistoryLimitChange.requested(
+            tier,
+            current: manager.historyLimit,
+            items: store?.items
+        ) {
+        case .unchanged:
+            break
+        case .apply(let tier):
+            manager.setHistoryLimit(tier)
+        case .confirm(let tier):
+            pendingTier = tier
+            showingTrimAlert = true
+        }
+    }
+
     var retentionAccessibilityValue: String {
         manager.retentionDays == 0 ? "Never" : "\(manager.retentionDays) days"
     }
@@ -91,7 +101,11 @@ extension SettingsView {
         if selected {
             return "Current history limit. Pinned and bookmarked clips are always safe."
         }
-        if tier.rawValue < manager.historyLimit.rawValue {
+        if case .confirm = HistoryLimitChange.requested(
+            tier,
+            current: manager.historyLimit,
+            items: store?.items
+        ) {
             return "Asks before deleting older unprotected clips to reduce the limit."
         }
         return "Sets the history limit. Pinned and bookmarked clips are always safe."

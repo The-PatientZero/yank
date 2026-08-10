@@ -235,6 +235,19 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
     }
 }
 
+/// What one CloudKit account probe means for the sync lifecycle.
+///
+/// iOS reports `.temporarilyUnavailable` and `.couldNotDetermine` for recoverable conditions
+/// (account under maintenance, a probe before the device finished unlocking, a network hiccup),
+/// so those must not unregister remote notifications or claim the user signed out — the app would
+/// lose live push delivery until the next relaunch. Only a genuinely absent or restricted account
+/// tears the service down.
+enum IOSCloudAccountDecision: Equatable {
+    case proceed
+    case hardUnavailable(reason: SyncStatus.Reason)
+    case transient(message: String)
+}
+
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
 /// A SwiftUI `App` is a value, so keeping the task here gives sync-disable a stable cancellation
 /// boundary and lets tests resume cancellation-ignoring account lookups deterministically.
@@ -263,7 +276,7 @@ final class IOSCloudSyncController {
     private let settings: IOSSettings
     @ObservationIgnored private let makeContainer: @MainActor () -> ContainerHandle?
     @ObservationIgnored private let makeService:
-        @MainActor (any CloudKitDatabase, ClipStore) -> CloudKitSyncService
+        @MainActor (any CloudKitDatabase, ClipStore, any SyncedSettingsStore) -> CloudKitSyncService
     @ObservationIgnored private let registerForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let unregisterForRemoteNotifications: @MainActor () -> Void
 
@@ -271,6 +284,9 @@ final class IOSCloudSyncController {
     @ObservationIgnored private var sync: CloudKitSyncService?
     @ObservationIgnored private var operation: (id: UUID, task: Task<Bool, Never>)?
     @ObservationIgnored private var lifecycleGeneration: UInt64 = 0
+    /// Owned here because the sync service holds it weakly, the same way it holds the store.
+    /// The service observes settings choices itself; this root only supplies the port.
+    @ObservationIgnored private let settingsBridge: IOSSyncedSettingsBridge
 
     private(set) var iCloudSignedOut = false
 
@@ -278,13 +294,16 @@ final class IOSCloudSyncController {
         store: ClipStore,
         settings: IOSSettings,
         makeContainer: @escaping @MainActor () -> ContainerHandle? = IOSCloudSyncController.makeLiveContainer,
-        makeService: @escaping @MainActor (any CloudKitDatabase, ClipStore) -> CloudKitSyncService = {
-            database,
-            store in
+        makeService: @escaping @MainActor (
+            any CloudKitDatabase,
+            ClipStore,
+            any SyncedSettingsStore
+        ) -> CloudKitSyncService = { database, store, settingsStore in
             CloudKitSyncService(
                 containerIdentifier: IOSCloudSyncController.containerID,
                 store: store,
-                database: database
+                database: database,
+                settingsStore: settingsStore
             )
         },
         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
@@ -300,6 +319,7 @@ final class IOSCloudSyncController {
         self.makeService = makeService
         self.registerForRemoteNotifications = registerForRemoteNotifications
         self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
+        self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 
     func refreshForeground() async {
@@ -369,26 +389,23 @@ final class IOSCloudSyncController {
         do {
             let status = try await container.accountStatus()
             guard isActive(generation) else { return false }
-            switch status {
-            case .available:
+            switch Self.accountDecision(for: status) {
+            case .proceed:
                 iCloudSignedOut = false
                 registerForRemoteNotifications()
-            case .noAccount, .restricted, .temporarilyUnavailable:
+            case .hardUnavailable(let reason):
                 iCloudSignedOut = true
                 tearDownService(
-                    status: .unavailable(.notAuthenticated),
+                    status: .unavailable(reason),
                     generation: generation
                 )
                 return false
-            case .couldNotDetermine:
+            case .transient(let message):
+                // Keep the service and its push registration: the account is expected back, and
+                // the next foreground refresh or silent push resumes sync without a relaunch.
                 iCloudSignedOut = false
-                tearDownService(
-                    status: .failed("Could not determine iCloud account status"),
-                    generation: generation
-                )
+                store.markSyncFailed(message)
                 return false
-            @unknown default:
-                iCloudSignedOut = false
             }
         } catch {
             guard isActive(generation) else { return false }
@@ -423,7 +440,7 @@ final class IOSCloudSyncController {
     ) async -> Bool {
         guard isActive(generation) else { return false }
         if sync != nil, !force { return true }
-        let service = sync ?? makeService(container.database, store)
+        let service = sync ?? makeService(container.database, store, settingsBridge)
         guard isActive(generation) else { return false }
         sync = service
         let result = await service.start()
@@ -447,6 +464,23 @@ final class IOSCloudSyncController {
 
     private func isActive(_ generation: UInt64) -> Bool {
         lifecycleGeneration == generation && settings.syncEnabled && !Task.isCancelled
+    }
+
+    nonisolated static func accountDecision(
+        for status: CKAccountStatus
+    ) -> IOSCloudAccountDecision {
+        switch status {
+        case .available:
+            .proceed
+        case .noAccount, .restricted:
+            .hardUnavailable(reason: .notAuthenticated)
+        case .temporarilyUnavailable:
+            .transient(message: "iCloud is temporarily unavailable. Sync will retry.")
+        case .couldNotDetermine:
+            .transient(message: "Could not determine iCloud account status")
+        @unknown default:
+            .proceed
+        }
     }
 
     private func tearDownService(

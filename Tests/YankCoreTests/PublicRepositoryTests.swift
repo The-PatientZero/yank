@@ -157,13 +157,13 @@ struct PublicRepositoryTests {
         }
     }
 
-    @Test("Version 1.0.4 is shared by every application bundle")
+    @Test("Version 1.1.0 is shared by every application bundle")
     func releaseVersionIsSharedByEveryApplicationBundle() throws {
         let project = try String(
             contentsOf: repositoryRoot.appendingPathComponent("project.yml"),
             encoding: .utf8
         )
-        #expect(project.contains(#"MARKETING_VERSION: "1.0.4""#))
+        #expect(project.contains(#"MARKETING_VERSION: "1.1.0""#))
         #expect(project.contains(#"CURRENT_PROJECT_VERSION: "1""#))
 
         for relativePath in [

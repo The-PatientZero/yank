@@ -330,10 +330,16 @@ final class SerialCaptureQueue<Value: Sendable> {
 }
 
 enum PreparedClipboardCapture: Sendable {
-    case fileText(String, sourceApp: String?, observedAt: Date)
+    case fileText(
+        String,
+        fingerprint: ClipboardContentFingerprint,
+        sourceApp: String?,
+        observedAt: Date
+    )
     case text(
         TextCapturePlan,
         originalText: String,
+        fingerprint: ClipboardContentFingerprint,
         richArchive: PasteboardArchive?,
         sourceApp: String?,
         generation: Int,
@@ -341,6 +347,7 @@ enum PreparedClipboardCapture: Sendable {
     )
     case image(
         Data,
+        fingerprint: ClipboardContentFingerprint,
         richArchive: PasteboardArchive?,
         sourceApp: String?,
         observedAt: Date

@@ -10,6 +10,9 @@ enum SettingsKeys {
     static let viewMode = "clipViewMode"
     static let density = "clipDensity"
     static let historyLimit = "historyLimit"
+    /// When the user last chose `historyLimit`. Stored beside the value it stamps so the two
+    /// can never disagree, and read by the CloudKit sync bridge to settle cross-device races.
+    static let historyLimitUpdatedAt = "historyLimitUpdatedAt"
     static let retentionDays = "retentionDays"
     static let syncEnabled = "syncEnabled"
     /// Whether captured clips are pushed into system-wide Core Spotlight. Off by default:
