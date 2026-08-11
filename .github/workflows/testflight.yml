@@ -2,6 +2,13 @@ name: TestFlight
 
 on:
   workflow_dispatch:
+    inputs:
+      promote_external:
+        description: >-
+          Also assign the build to the external tester group and submit it to
+          Beta App Review. Leave unchecked for an internal-only promotion.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,6 +68,7 @@ jobs:
       TESTFLIGHT_APP_ID: ${{ vars.TESTFLIGHT_APP_ID }}
       TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
       TESTFLIGHT_EXTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_EXTERNAL_GROUP_ID }}
+      PROMOTE_EXTERNAL: ${{ inputs.promote_external }}
     steps:
       - name: Initialize release paths
         run: |
@@ -96,9 +104,13 @@ jobs:
           case "$TESTFLIGHT_INTERNAL_GROUP_ID" in
             *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_INTERNAL_GROUP_ID is invalid." >&2; exit 1 ;;
           esac
-          case "$TESTFLIGHT_EXTERNAL_GROUP_ID" in
-            *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_EXTERNAL_GROUP_ID is invalid." >&2; exit 1 ;;
-          esac
+          # Only an external promotion needs the external group, so an internal-only
+          # dispatch must not fail on a repository that has never configured one.
+          if [ "$PROMOTE_EXTERNAL" = "true" ]; then
+            case "$TESTFLIGHT_EXTERNAL_GROUP_ID" in
+              *[!A-Za-z0-9-]*|"") echo "TESTFLIGHT_EXTERNAL_GROUP_ID is invalid." >&2; exit 1 ;;
+            esac
+          fi
 
       - name: Install pinned XcodeGen before loading signing secrets
         run: scripts/install_xcodegen.sh
@@ -266,6 +278,7 @@ jobs:
             "$BUILD_ID"
 
       - name: Assign exact build to external testers
+        if: ${{ inputs.promote_external }}
         run: |
           scripts/app_store_connect.sh \
             assign-build \
@@ -277,6 +290,7 @@ jobs:
             "$BUILD_ID"
 
       - name: Submit exact build to Beta App Review
+        if: ${{ inputs.promote_external }}
         run: |
           BETA_REVIEW_STATE="$(
             scripts/app_store_connect.sh \
@@ -291,6 +305,8 @@ jobs:
 
       - name: Record non-secret promotion evidence
         run: |
+          # The summary is release evidence, so it must name the rungs this run
+          # actually climbed rather than a fixed promotion shape.
           {
             echo "## TestFlight promotion"
             echo ""
@@ -301,8 +317,18 @@ jobs:
             echo "- Exported IPA validation: passed"
             echo "- Apple processing: valid"
             echo "- Internal group assignment: verified"
-            echo "- External group assignment: verified"
-            echo "- Beta App Review: \`$BETA_REVIEW_STATE\`"
+            if [ "$PROMOTE_EXTERNAL" = "true" ]; then
+              echo "- External group assignment: verified"
+              echo "- Beta App Review: \`$BETA_REVIEW_STATE\`"
+              echo ""
+              echo "This run promoted to internal and external testers."
+            else
+              echo "- External group assignment: not requested"
+              echo "- Beta App Review: not requested"
+              echo ""
+              echo "This run promoted to internal testers only."
+              echo "External promotion requires a dispatch with \`promote_external\` enabled."
+            fi
             echo ""
             echo "Physical-device QA and App Store submission remain separate gates."
           } >> "$GITHUB_STEP_SUMMARY"

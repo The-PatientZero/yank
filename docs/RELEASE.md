@@ -52,14 +52,28 @@ Local releases still work without CI: put `APP_NAME`, `TEAM_ID`, `SIGN_IDENTITY`
 `--notes-file`, refresh `releases.json`, and run `./scripts/update_homebrew_cask.sh <version>`
 by hand.
 
-## Internal TestFlight promotion
+## TestFlight promotion
 
 The `TestFlight` workflow is a manual, `main`-only release path. It reruns the
 package, generated-project, macOS, and iOS simulator gates before its protected
 job can read Apple credentials. It then selects the next build number from live
-App Store Connect data, archives and validates all three iOS bundles, uploads an
-internal-only build, waits for Apple processing, assigns the exact build to the
-configured internal group, and verifies that relationship.
+App Store Connect data, archives and validates all three iOS bundles, uploads the
+build, waits for Apple processing, assigns the exact build to the configured
+internal group, and verifies that relationship.
+
+Promotion is a three-rung ladder, and each rung is a deliberate act:
+
+| Rung | How it runs |
+|---|---|
+| Internal testers | Every dispatch. No input needed. |
+| External testers + Beta App Review | Only when the dispatch sets `promote_external`. |
+| App Store release | Never from this workflow. Separate, manual. |
+
+A default dispatch stops at internal. `promote_external` additionally assigns the
+same processed build to `TESTFLIGHT_EXTERNAL_GROUP_ID` and submits it to Beta App
+Review; the run fails if that review does not reach `WAITING_FOR_REVIEW`,
+`IN_REVIEW`, or `APPROVED`. The job summary states which rungs the run climbed —
+read it rather than assuming a fixed promotion shape.
 
 Configure a GitHub environment named `testflight`, restrict it to `main`, and
 add a required reviewer when the repository plan supports that protection.
@@ -77,6 +91,7 @@ Add these non-secret environment variables:
 |---|---|
 | `TESTFLIGHT_APP_ID` | Opaque App Store Connect app resource ID, not the bundle ID |
 | `TESTFLIGHT_INTERNAL_GROUP_ID` | Opaque ID of the intended internal beta group |
+| `TESTFLIGHT_EXTERNAL_GROUP_ID` | Opaque ID of the external beta group. Only needed if you ever dispatch with `promote_external`; an internal-only run does not read or validate it |
 
 The workflow reuses the repository-level `APPLE_TEAM_ID` secret already used by
 the macOS release workflow; do not duplicate that identifier into the
@@ -91,20 +106,24 @@ To promote:
 1. Confirm `main` contains the intended release-candidate commit and that
    `MARKETING_VERSION` in `project.yml` is correct.
 2. In GitHub, open Actions → TestFlight → Run workflow, keep the branch set to
-   `main`, and approve the protected environment job when prompted.
+   `main`, leave `promote_external` unchecked, and approve the protected
+   environment job when prompted.
 3. Treat the workflow as successful only when its summary reports archive
    validation, Apple processing, and internal-group assignment as verified.
 4. Run the physical-device smoke matrix from `docs/iOS_DEVICE_QA.md` against
    that exact TestFlight version/build and record it with
    `docs/IOS_RELEASE_EVIDENCE_TEMPLATE.md`.
+5. Only after that device evidence passes, dispatch again with
+   `promote_external` checked if the build should reach external testers. Beta
+   App Review is Apple's gate and can reject; it is not a formality.
 
 An Xcode upload receipt is not processing proof, and processing is not internal
-distribution proof. Simulator CI also cannot validate App Group access on
-physical devices, keyboard insertion, CloudKit push delivery, iCloud account
-state, file protection, or accessibility on the signed build. External
-TestFlight, Beta App Review, and App Store submission remain manual, separately
-authorized gates. The app is free and open source on both platforms — no
-purchase, StoreKit IAP, or storefront setup.
+distribution proof. Internal assignment is likewise not external distribution
+proof. Simulator CI also cannot validate App Group access on physical devices,
+keyboard insertion, CloudKit push delivery, iCloud account state, file
+protection, or accessibility on the signed build. App Store submission remains a
+manual, separately authorized gate outside this workflow. The app is free and
+open source on both platforms — no purchase, StoreKit IAP, or storefront setup.
 
 If a run fails before upload, fix the cause and dispatch again; the serialized
 workflow will select a fresh live build number. If upload succeeds, first locate
