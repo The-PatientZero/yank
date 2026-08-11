@@ -12,7 +12,11 @@ enum ClipQuery {
     static func filter(_ items: [ClipboardItem], search: String, activeTag: String?) -> [ClipboardItem] {
         var base = items
         if let activeTag {
-            base = base.filter { $0.tags.contains(activeTag) }
+            // Case-insensitive on both sides: tags written by builds before the shared
+            // normalization rule can carry uppercase and must stay reachable.
+            base = base.filter { item in
+                item.tags.contains { $0.caseInsensitiveCompare(activeTag) == .orderedSame }
+            }
         }
         let query = search.trimmingCharacters(in: .whitespaces)
         if query.hasPrefix("@"), query.count > 1 {
@@ -20,11 +24,13 @@ enum ClipQuery {
             base = base.filter { $0.sourceApp?.localizedCaseInsensitiveContains(app) ?? false }
         } else if query.hasPrefix("#"), query.count > 1 {
             let tag = String(query.dropFirst()).lowercased()
-            base = base.filter { item in item.tags.contains { $0.hasPrefix(tag) } }
+            base = base.filter { item in item.tags.contains { $0.lowercased().hasPrefix(tag) } }
         } else if !query.isEmpty, !query.hasPrefix("@"), !query.hasPrefix("#") {
             // A lone "@"/"#" is an in-progress sigil — show everything, don't match the char.
             base = base.filter { $0.matches(query) }
         }
-        return base.sorted { $0.isPinned && !$1.isPinned }
+        // Partition rather than sort: `sorted(by:)` is not documented as stable, and the
+        // contract above is that everything inside a group keeps its input order.
+        return base.filter(\.isPinned) + base.filter { !$0.isPinned }
     }
 }
