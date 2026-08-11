@@ -28,7 +28,7 @@ extension PasteController {
     }
 
     nonisolated static func getTempDirectory() -> URL? {
-        cleanupStaleTempDirectories()
+        sweepStaleTempDirectoriesOncePerLaunch()
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("YankPaste_\(UUID().uuidString)", isDirectory: true)
         do {
@@ -42,6 +42,15 @@ extension PasteController {
             Log.paste.error("Failed to create paste temp directory: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// Expiry is a 24-hour policy, so one sweep per launch is enough. Doing it on every
+    /// temp-directory creation re-enumerated the whole system temp directory — unbounded in
+    /// the number of unrelated entries — once per image copy or paste.
+    private nonisolated static let staleTempSweep: Void = cleanupStaleTempDirectories()
+
+    nonisolated static func sweepStaleTempDirectoriesOncePerLaunch() {
+        _ = staleTempSweep
     }
 
     nonisolated static func cleanupStaleTempDirectories() {
