@@ -46,9 +46,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # This deliberately steps outside the immutable-tag guarantee above: recovery needs
+          # today's build script, not the tag's. Record exactly which blob was substituted so
+          # the resulting signed artifact's provenance stays auditable.
+          RECOVERY_BLOB="$(
+            gh api "repos/$GITHUB_REPOSITORY/contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH" \
+              --jq .sha
+          )"
+          case "$RECOVERY_BLOB" in
+            *[!0-9a-f]*|"") echo "Recovery script blob SHA is invalid." >&2; exit 1 ;;
+          esac
           gh api "repos/$GITHUB_REPOSITORY/contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH" \
             --jq .content | base64 --decode > "$RUNNER_TEMP/build_dmg.sh"
           install -m 755 "$RUNNER_TEMP/build_dmg.sh" scripts/build_dmg.sh
+          {
+            echo "## Release tooling substitution"
+            echo ""
+            echo "- Tag under build: \`$RELEASE_TAG\`"
+            echo "- \`scripts/build_dmg.sh\` replaced from: \`$DEFAULT_BRANCH\`"
+            echo "- Substituted blob: \`$RECOVERY_BLOB\`"
+            echo ""
+            echo "This artifact was built with recovery tooling, not the tag's own script."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check the tag matches MARKETING_VERSION
         run: |

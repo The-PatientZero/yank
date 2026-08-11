@@ -271,6 +271,25 @@ struct PublicRepositoryTests {
         #expect(workflow.contains(#"if: github.event_name == 'workflow_dispatch'"#))
         #expect(workflow.contains("contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH"))
         #expect(!workflow.contains("GITHUB_REF_NAME"))
+
+        // Recovery deliberately builds a published tag with the default branch's script. That
+        // is a provenance break, so the run has to say which blob it substituted.
+        #expect(workflow.contains(#"RECOVERY_BLOB="$("#))
+        #expect(workflow.contains("Substituted blob: \\`$RECOVERY_BLOB\\`"))
+        #expect(workflow.contains("$GITHUB_STEP_SUMMARY"))
+    }
+
+    @Test("The macOS app declares a real application category")
+    func macOSAppDeclaresApplicationCategory() throws {
+        let data = try Data(contentsOf: repositoryRoot.appendingPathComponent("Info.plist"))
+        let plist = try #require(
+            try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                as? [String: Any]
+        )
+
+        let category = try #require(plist["LSApplicationCategoryType"] as? String)
+        #expect(category.hasPrefix("public.app-category."))
+        #expect(category.count > "public.app-category.".count)
     }
 
     @Test("TestFlight workflow preserves the release security boundary")
