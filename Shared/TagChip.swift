@@ -33,11 +33,10 @@ struct TagChip: View {
         return .yankDynamic(light: pair.light, dark: pair.dark)
     }
 
+    /// The shared tag rule — see `TagNormalization`. A typed tag and an AI-suggested tag must
+    /// normalize identically, or the enricher cannot tell it is proposing a duplicate.
     static func normalize(_ input: String) -> String {
-        let lower = input.lowercased()
-        let dashed = lower.replacingOccurrences(of: "\\s+", with: "-", options: .regularExpression)
-        let trimmed = dashed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        return String(trimmed.prefix(32))
+        TagNormalization.normalize(input)
     }
 
     var body: some View {
