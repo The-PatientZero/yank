@@ -139,7 +139,8 @@ extension SettingsView {
                     set: { newValue in
                         manager.hapticFeedbackEnabled = newValue
                         manager.save()
-                        if newValue { Haptics.fire(.pin) }   // let the user feel it the moment they enable it
+                        // Let the user feel it the moment they enable it — the toggle is the consent.
+                        if newValue { Haptics.fire(.pin, isEnabled: true) }
                     }))
             Divider().overlay(Color.yankHairline)
             soundEffectsSection

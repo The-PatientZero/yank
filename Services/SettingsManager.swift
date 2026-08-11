@@ -163,6 +163,14 @@ final class SettingsManager {
         )
     }
 
+    var feedbackSettings: FeedbackSettings {
+        FeedbackSettings(
+            soundEffectsEnabled: soundEffectsEnabled,
+            hapticFeedbackEnabled: hapticFeedbackEnabled,
+            soundEffectChoice: soundEffectChoice
+        )
+    }
+
     private init() {
         let defaultMods = HotkeyModifiers(shift: true, command: true, option: false, control: false)
         let defaultKeyCode: UInt16 = 9  // V key
