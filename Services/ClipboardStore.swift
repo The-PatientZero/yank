@@ -6,12 +6,6 @@ import Observation
 @MainActor
 @Observable
 final class ClipboardStore {
-    struct FilterCache {
-        let query: String
-        let tag: String?
-        let result: [ClipboardItem]
-    }
-
     enum PersistenceError: LocalizedError {
         case writesDisabled
 
@@ -22,7 +16,7 @@ final class ClipboardStore {
 
     var items: [ClipboardItem] = [] {
         didSet {
-            filterCache = nil
+            filterCache.invalidate()
             cachedTags = ClipboardMutations.allTags(items)
             changeToken &+= 1
         }
@@ -61,7 +55,7 @@ final class ClipboardStore {
     @ObservationIgnored var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
 
     var pendingDeletion: PendingDeletion? {
-        didSet { filterCache = nil }
+        didSet { filterCache.invalidate() }
     }
 
     /// Bumped on every `items` mutation so views can observe "something changed" with an
@@ -70,7 +64,7 @@ final class ClipboardStore {
 
     /// Memoised filtered/sorted view of `items`; invalidated whenever `items` changes
     /// (see `filteredItems`). Keeps the window's per-render recomputation O(1) on a hit.
-    @ObservationIgnored var filterCache: FilterCache?
+    @ObservationIgnored var filterCache = ClipFilterCache()
 
     /// Per-id memo of file sizes. Clipboard blobs are immutable for a stable item id.
     @ObservationIgnored var sizeCache: [UUID: Int] = [:]

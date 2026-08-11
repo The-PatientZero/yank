@@ -50,12 +50,12 @@ extension ClipboardStore {
     /// so the window's many per-render reads (header count, stream, sectioning, and the
     /// selection summaries derived from it) share one filter + sort instead of recomputing.
     func filteredItems(search: String, activeTag: String?) -> [ClipboardItem] {
-        if let cache = filterCache, cache.query == search, cache.tag == activeTag {
-            return cache.result
+        if let cached = filterCache.result(query: search, tag: activeTag) {
+            return cached
         }
         let visible = PendingDeletePolicy.visibleItems(items, pending: pendingDeletion)
         let result = ClipQuery.filter(visible, search: search, activeTag: activeTag)
-        filterCache = FilterCache(query: search, tag: activeTag, result: result)
+        filterCache.store(result, query: search, tag: activeTag)
         return result
     }
 

@@ -42,7 +42,7 @@ final class ClipStore: SyncableStore {
 
     private(set) var items: [ClipboardItem] = [] {
         didSet {
-            filterCache = nil
+            filterCache.invalidate()
             tagCache = nil
             contentRevision &+= 1
         }
@@ -68,14 +68,14 @@ final class ClipStore: SyncableStore {
     @ObservationIgnored private var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
 
     private(set) var pendingDeletion: PendingDeletion? {
-        didSet { filterCache = nil }
+        didSet { filterCache.invalidate() }
     }
 
     /// Memoised filtered/sorted view of `items`; invalidated whenever `items` changes.
     /// Internal (not private) so the app-only `filteredItems` in `ClipStore+Mutations`
     /// can read/write it — `ClipQuery` lives in the app, not the lean extensions, which
     /// also compile this file.
-    @ObservationIgnored var filterCache: (query: String, tag: String?, result: [ClipboardItem])?
+    @ObservationIgnored var filterCache = ClipFilterCache()
     @ObservationIgnored var tagCache: [String]?
 
     @ObservationIgnored private var historyWritesDisabled = false
@@ -113,7 +113,8 @@ final class ClipStore: SyncableStore {
 
     private var historyURL: URL? { appGroupContext?.historyURL }
     private var tombstonesURL: URL? { appGroupContext?.tombstonesURL }
-    private var blobsURL: URL? { appGroupContext?.blobsURL }
+    /// All blob filesystem work lives here; the store keeps history, persistence, and sync.
+    private let blobStore: IOSClipBlobStore
 
     /// Settings the user set in-app (App-Group backed). `0` means unlimited / off.
     private var prefs: UserDefaults? { appGroupContext?.defaults }
@@ -122,6 +123,7 @@ final class ClipStore: SyncableStore {
 
     init(context: AppGroupContext? = AppGroupContext.live()) {
         self.appGroupContext = context
+        self.blobStore = IOSClipBlobStore(directory: context?.blobsURL)
         guard let context else {
             storageUnavailable = true
             historyWritesDisabled = true
@@ -335,22 +337,7 @@ final class ClipStore: SyncableStore {
     }
 
     private func saveTextBlob(_ text: String, filename: String? = nil) async -> String? {
-        let filename = filename ?? UUID().uuidString + "." + SyncBlobKind.text.allowedExtension
-        guard let blobsURL,
-              let url = SyncBlobPolicy.containedURL(
-                directory: blobsURL,
-                filename: filename,
-                kind: .text
-              ) else {
-            return nil
-        }
-        do {
-            try await SyncBlobStorage.write(Data(text.utf8), to: url, maxBytes: SyncBlobKind.text.maximumBytes)
-            return filename
-        } catch {
-            clipStoreLog.error("Failed to save iOS text blob: \(error.localizedDescription)")
-            return nil
-        }
+        await blobStore.saveText(text, filename: filename)
     }
 
     @discardableResult
@@ -366,22 +353,7 @@ final class ClipStore: SyncableStore {
     }
 
     private func saveImageBlob(_ data: Data, filename: String? = nil) async -> String? {
-        let filename = filename ?? UUID().uuidString + "." + SyncBlobKind.image.allowedExtension
-        guard let blobsURL,
-              let url = SyncBlobPolicy.containedURL(
-                directory: blobsURL,
-                filename: filename,
-                kind: .image
-              ) else {
-            return nil
-        }
-        do {
-            try await SyncBlobStorage.write(data, to: url)
-            return filename
-        } catch {
-            clipStoreLog.error("Failed to save iOS image blob: \(error.localizedDescription)")
-            return nil
-        }
+        await blobStore.saveImage(data, filename: filename)
     }
 
     /// Import file-per-capture extension handoffs into canonical history. Each entry is
@@ -689,14 +661,7 @@ final class ClipStore: SyncableStore {
     }
 
     func blobURL(for item: ClipboardItem) -> URL? {
-        guard let blobsURL else { return nil }
-        if let filename = item.imageFilename {
-            return SyncBlobPolicy.containedURL(directory: blobsURL, filename: filename, kind: .image)
-        }
-        if let filename = item.textFilename {
-            return SyncBlobPolicy.containedURL(directory: blobsURL, filename: filename, kind: .text)
-        }
-        return nil
+        blobStore.url(for: item)
     }
 
     func pasteboardOriginMarkerForWrite(
@@ -718,40 +683,20 @@ final class ClipStore: SyncableStore {
     }
 
     func blobURL(for reference: SyncBlobReference) -> URL? {
-        guard let blobsURL else { return nil }
-        return reference.containedURL(in: blobsURL)
+        blobStore.url(for: reference)
     }
 
     func writeBlob(_ data: Data, reference: SyncBlobReference) async throws {
-        guard let blobsURL else { throw PersistenceError.appGroupUnavailable }
-        guard let url = reference.containedURL(in: blobsURL) else {
-            throw SyncBlobStorage.Error.unsafeFilename
-        }
-        try await SyncBlobStorage.write(data, to: url, maxBytes: reference.maximumBytes)
+        guard blobStore.isAvailable else { throw PersistenceError.appGroupUnavailable }
+        try await blobStore.write(data, reference: reference)
     }
 
     func deleteBlob(_ reference: SyncBlobReference) {
-        guard let blobsURL else { return }
-        guard let url = reference.containedURL(in: blobsURL) else { return }
-        try? FileManager.default.removeItem(at: url)
+        blobStore.delete(reference)
     }
 
     private func deleteBlobReferences(_ references: [ClipboardBlobReference]) {
-        guard let blobsURL else { return }
-        for reference in references {
-            switch reference.kind {
-            case .image, .text:
-                let kind: SyncBlobKind = reference.kind == .image ? .image : .text
-                guard let url = SyncBlobPolicy.containedURL(
-                    directory: blobsURL,
-                    filename: reference.filename,
-                    kind: kind
-                ) else { continue }
-                try? FileManager.default.removeItem(at: url)
-            case .rich:
-                break
-            }
-        }
+        blobStore.delete(references)
     }
 
     @discardableResult

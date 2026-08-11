@@ -87,12 +87,12 @@ extension ClipStore {
     /// instead of a fresh filter + sort. Lives here (app-only) because `ClipQuery` isn't
     /// linked into the lean keyboard/share extensions.
     func filteredItems(search: String, activeTag: String?) -> [ClipboardItem] {
-        if let cache = filterCache, cache.query == search, cache.tag == activeTag {
-            return cache.result
+        if let cached = filterCache.result(query: search, tag: activeTag) {
+            return cached
         }
         let visible = PendingDeletePolicy.visibleItems(items, pending: pendingDeletion)
         let result = ClipQuery.filter(visible, search: search, activeTag: activeTag)
-        filterCache = (search, activeTag, result)
+        filterCache.store(result, query: search, tag: activeTag)
         return result
     }
 
