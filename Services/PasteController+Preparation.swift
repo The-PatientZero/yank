@@ -260,7 +260,12 @@ extension PasteController {
                 discardTempFiles(in: prepared.fallback)
                 return
             }
-            guard writePreparedContents(prepared, to: pasteboard) != nil else { return }
+            guard writePreparedContents(prepared, to: pasteboard) != nil else {
+                Log.paste.error(
+                    "Copy produced no pasteboard content for clip \(item.id, privacy: .public)"
+                )
+                return
+            }
             store.moveToTop(item)
         }
     }
@@ -275,7 +280,12 @@ extension PasteController {
                     discardTempFiles(in: prepared.fallback)
                     return
                 }
-                guard writePreparedContents(prepared, to: pasteboard) != nil else { return }
+                guard writePreparedContents(prepared, to: pasteboard) != nil else {
+                    Log.paste.error(
+                        "Copy produced no pasteboard content for clip \(item.id, privacy: .public)"
+                    )
+                    return
+                }
                 store.moveToTop(items)
                 return
             }
@@ -284,7 +294,12 @@ extension PasteController {
                 removeTempFiles(for: prepared.imageURLs)
                 return
             }
-            guard writePreparedMultipleContents(prepared, to: pasteboard) != nil else { return }
+            guard writePreparedMultipleContents(prepared, to: pasteboard) != nil else {
+                Log.paste.error(
+                    "Copy produced no pasteboard content for \(items.count, privacy: .public) clips"
+                )
+                return
+            }
             store.moveToTop(items)
         }
     }

@@ -80,7 +80,14 @@ enum PasteController {
                 prepared,
                 to: pasteboard,
                 temporaryFileCleanupDelay: pasteFileCleanupDelay
-            ) else { return }
+            ) else {
+                // Nothing was written, so the click produced no visible effect. Say why
+                // instead of returning silently.
+                Log.paste.error(
+                    "Paste produced no pasteboard content for clip \(item.id, privacy: .public)"
+                )
+                return
+            }
             store.moveToTop(item)
 
             if let axPermission, !axPermission.isTrusted {
