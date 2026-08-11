@@ -115,8 +115,9 @@ struct HotkeyRegistry {
         CarbonHotkeyTap.shared.isBound()
     }
 
-    /// Translates the app's modifier flags into the bit mask Carbon expects.
-    static func carbonModifierMask(for modifiers: HotkeyModifiers) -> UInt32 {
+    /// Translates the app's modifier flags into the bit mask Carbon expects. Pure bit work
+    /// with no actor state, so it does not need the main actor.
+    nonisolated static func carbonModifierMask(for modifiers: HotkeyModifiers) -> UInt32 {
         var mask: UInt32 = 0
         if modifiers.shift { mask |= UInt32(shiftKey) }
         if modifiers.command { mask |= UInt32(cmdKey) }

@@ -27,7 +27,10 @@ struct FoundationModelQueryParser: QueryParser {
         return SmartQuery(keywords: phrase)
     }
 
-    private static func type(from kind: String) -> ClipboardItemType? {
+    /// Maps the model's free-text `kind` onto the domain type. Internal rather than private
+    /// because it is the one part of this parser that is our decision, not the model's, and
+    /// an unrecognised kind must fall back to "no type filter" rather than guessing.
+    static func type(from kind: String) -> ClipboardItemType? {
         switch kind.lowercased() {
         case "image", "images", "picture", "screenshot": return .image
         case "text": return .text
