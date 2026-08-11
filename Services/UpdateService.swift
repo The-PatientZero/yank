@@ -84,7 +84,11 @@ final class UpdateService {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await BoundedResponse.load(
+            request,
+            what: "Release manifest",
+            maximumBytes: UpdateSecurityPolicy.maximumReleaseFeedBytes
+        )
         try UpdateSecurityPolicy.validateReleaseFeedResponse(response, expectedURL: url)
         let status = (response as? HTTPURLResponse)?.statusCode
 

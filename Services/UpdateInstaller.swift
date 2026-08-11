@@ -67,7 +67,13 @@ enum UpdateInstaller {
     static func fetchExpectedSHA256(from url: URL) async throws(UpdateError) -> String {
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await URLSession.shared.data(from: url)
+            (data, response) = try await BoundedResponse.load(
+                URLRequest(url: url),
+                what: "Checksum",
+                maximumBytes: UpdateSecurityPolicy.maximumChecksumBytes
+            )
+        } catch let error as UpdateError {
+            throw error
         } catch {
             throw .underlying(operation: "Fetching checksum", message: error.localizedDescription)
         }
