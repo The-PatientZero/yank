@@ -98,4 +98,52 @@ import Foundation
         #expect(merged[0].aiTags == ["new"])
         #expect(merged[0].aiEnrichedAt == itemLoserFreshAI.aiEnrichedAt)
     }
+
+    private func richItem(_ n: Int, mod: Double, richFilename: String?) -> ClipboardItem {
+        ClipboardItem(
+            id: clipID(n), type: .text, timestamp: Date(timeIntervalSinceReferenceDate: 1000),
+            textContent: "item-\(n)", richFilename: richFilename,
+            modifiedAt: Date(timeIntervalSinceReferenceDate: mod)
+        )
+    }
+
+    @Test func richFilenameSurvivesLossToNewerRemoteWithoutOne() {
+        // richFilename references a local RTF blob that sync never transports. A newer remote
+        // edit that never had one must not erase the local device's reference and orphan its blob.
+        let localWithRich = richItem(9, mod: 1000, richFilename: "local.rtf")
+        let newerRemoteWithout = richItem(9, mod: 2000, richFilename: nil)
+        let merged = ClipboardMerge.reconcile([localWithRich], [newerRemoteWithout])
+        #expect(merged.count == 1)
+        #expect(merged[0].modifiedAt == newerRemoteWithout.modifiedAt)
+        #expect(merged[0].richFilename == "local.rtf")
+    }
+
+    @Test func richFilenameSurvivesRegardlessOfArgumentOrder() {
+        let localWithRich = richItem(10, mod: 1000, richFilename: "local.rtf")
+        let newerRemoteWithout = richItem(10, mod: 2000, richFilename: nil)
+        let merged = ClipboardMerge.reconcile([newerRemoteWithout], [localWithRich])
+        #expect(merged.count == 1)
+        #expect(merged[0].richFilename == "local.rtf")
+    }
+
+    @Test func richFilenameKeepsWinnersOwnOverLosers() {
+        let winnerWithRich = richItem(11, mod: 2000, richFilename: "winner.rtf")
+        let loserWithRich = richItem(11, mod: 1000, richFilename: "loser.rtf")
+        let merged = ClipboardMerge.reconcile([winnerWithRich], [loserWithRich])
+        #expect(merged.count == 1)
+        #expect(merged[0].richFilename == "winner.rtf")
+    }
+
+    @Test func newerLiveEditResurrectsStaleTombstone() {
+        // Last-writer-wins has no clock-independent way to tell "edited before the delete was
+        // known" from "recreated after": a live copy with a newer modifiedAt always beats an
+        // older tombstone. This is the intended tradeoff — history-deduplication relies on the
+        // same clock to revive a clip when the same text is copied again.
+        let staleTomb = item(12, ts: 1000, mod: 1000, deleted: 1000)
+        let newerLive = item(12, ts: 1000, mod: 2000)
+        let merged = ClipboardMerge.reconcile([staleTomb], [newerLive])
+        #expect(merged.count == 1)
+        #expect(!merged[0].isDeleted)
+        #expect(merged[0].modifiedAt == newerLive.modifiedAt)
+    }
 }

@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// The history window header: the wordmark, the view-mode picker, the result count,
-/// the Settings button, and the search field (with its active-tag chip and clear button).
+/// The history window header: wordmark, view-mode picker, result count, Settings button, and search field.
 struct HistorySearchHeader: View {
     @Binding var searchText: String
     @Binding var activeTagFilter: String?

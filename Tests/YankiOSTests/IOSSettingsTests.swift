@@ -132,7 +132,7 @@ struct IOSSettingsTests {
         settings.viewMode = .grid
         settings.density = .snug
         settings.setHistoryLimit(.deep)
-        settings.retentionDays = 30
+        settings.setRetentionDays(30)
         settings.spotlightIndexing = true
 
         let reloaded = IOSSettings(defaults: defaults)

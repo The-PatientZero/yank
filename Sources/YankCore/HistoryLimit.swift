@@ -1,11 +1,8 @@
 import Foundation
 
-/// How many clips to keep. Protected (pinned / bookmarked / tagged) clips are always
-/// kept regardless of the cap. Shared by both platforms' stores and settings.
-///
-/// Lives in the core (rather than next to the SwiftUI layout tokens it used to share a
-/// file with) because the CloudKit sync module has to validate a remote raw value against
-/// it, and that module can only see `YankCore`.
+/// How many clips to keep. Protected (pinned/bookmarked/tagged) clips are always kept regardless
+/// of the cap. Lives in the core rather than with SwiftUI layout tokens because the CloudKit sync
+/// module validates a remote raw value against it and can only see `YankCore`.
 public enum HistoryLimit: Int, CaseIterable, Codable, Sendable {
     case essential  = 100
     case deep       = 500

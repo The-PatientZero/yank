@@ -5,6 +5,7 @@ enum UpdateError: LocalizedError {
     case untrustedHost(String)
     case unsupportedReleaseFeed(String)
     case invalidHTTPStatus(Int)
+    case responseTooLarge(what: String, limitBytes: Int)
     case releaseManifestDecodeFailed(status: Int?, byteCount: Int)
     case missingChecksum
     case checksumMismatch(expected: String, actual: String)
@@ -27,6 +28,8 @@ enum UpdateError: LocalizedError {
             return "Update feed must be a public HTTPS manifest, not a private or authenticated API: \(url)"
         case let .invalidHTTPStatus(status):
             return "Update download failed with HTTP \(status)"
+        case let .responseTooLarge(what, limitBytes):
+            return "\(what) exceeded its \(limitBytes)-byte limit"
         case let .releaseManifestDecodeFailed(status, byteCount):
             let response = status.map { "HTTP \($0)" } ?? "non-HTTP response"
             return "Could not read release manifest (\(response), \(byteCount) bytes)"
@@ -51,6 +54,12 @@ enum UpdateError: LocalizedError {
 }
 
 enum UpdateSecurityPolicy {
+    /// Manifest and checksum bodies are read fully into memory, so they carry explicit ceilings —
+    /// generously above their real sizes (a feed is tens of KB, a checksum one line) — so a
+    /// compromised host cannot force unbounded buffering. The app payload streams to disk instead.
+    static let maximumReleaseFeedBytes = 4 * 1_024 * 1_024
+    static let maximumChecksumBytes = 4 * 1_024
+
     static func validateReleaseFeedURL(_ url: URL) throws {
         guard url.scheme == "https" else { throw UpdateError.invalidURL(url.absoluteString) }
         guard !isGitHubReleasesAPI(url) else {

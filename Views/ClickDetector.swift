@@ -15,9 +15,8 @@ struct ClickDetector: NSViewRepresentable {
             mouseDownPoint = convert(event.locationInWindow, from: nil)
             mouseDownModifiers = event.modifierFlags
             mouseDownClickCount = event.clickCount
-            // Continue the event through the responder chain rather than terminating it
-            // here, so the cell's SwiftUI drag-out still sees the press-and-drag sequence
-            // instead of having it swallowed at this overlay.
+            // Continue through the responder chain (don't swallow it here) so the cell's
+            // SwiftUI drag-out still sees the full press-and-drag sequence.
             super.mouseDown(with: event)
         }
 

@@ -7,10 +7,9 @@ import os
 /// the app so entries land together in the unified log.
 let clipStoreLog = Logger(subsystem: "com.thepatientzero.yank", category: "store")
 
-/// iOS-side clipboard store. Captures the current clipboard while the host app
-/// is active and accepts explicit extension handoffs; background clipboard
-/// monitoring is not available on iOS. Persists into the shared App Group so
-/// the keyboard and share extensions read the same data.
+/// iOS clipboard store. Captures the clipboard while the host app is foreground or via explicit
+/// extension handoff — no background clipboard monitoring on iOS. Persists to the shared App
+/// Group so the keyboard and share extensions read the same data.
 @MainActor
 @Observable
 final class ClipStore: SyncableStore {
@@ -42,7 +41,7 @@ final class ClipStore: SyncableStore {
 
     private(set) var items: [ClipboardItem] = [] {
         didSet {
-            filterCache = nil
+            filterCache.invalidate()
             tagCache = nil
             contentRevision &+= 1
         }
@@ -55,27 +54,25 @@ final class ClipStore: SyncableStore {
 
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
 
-    /// True when the blobs container could not be created or its at-rest data-protection
-    /// class could not be set — so synced image/text blobs may be missing or weaker than
-    /// `completeUntilFirstUserAuthentication` at rest. Surfaced for the UI; never silently
-    /// swallowed.
+    /// True when the blobs container or its at-rest protection class failed to set up — synced
+    /// image/text blobs may be missing or weaker than `completeUntilFirstUserAuthentication`.
+    /// Surfaced to the UI; never silently swallowed.
     private(set) var storageUnavailable = false
 
     @ObservationIgnored private var tombstones: [UUID: Date] = [:]
     /// Blobs removed by reconciliation stay available until the replacement history and
-    /// tombstones have both flushed. The set survives a failed in-process retry so a later
-    /// successful snapshot can finish the cleanup without risking data loss.
+    /// tombstones have both flushed. Survives a failed in-process retry so a later successful
+    /// snapshot can finish cleanup without data loss.
     @ObservationIgnored private var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
 
     private(set) var pendingDeletion: PendingDeletion? {
-        didSet { filterCache = nil }
+        didSet { filterCache.invalidate() }
     }
 
-    /// Memoised filtered/sorted view of `items`; invalidated whenever `items` changes.
-    /// Internal (not private) so the app-only `filteredItems` in `ClipStore+Mutations`
-    /// can read/write it — `ClipQuery` lives in the app, not the lean extensions, which
-    /// also compile this file.
-    @ObservationIgnored var filterCache: (query: String, tag: String?, result: [ClipboardItem])?
+    /// Memoised filtered/sorted view of `items`, invalidated when `items` changes. Internal
+    /// (not private) so `ClipStore+Mutations`'s app-only `filteredItems` can access it —
+    /// `ClipQuery` isn't compiled into the lean extensions that also build this file.
+    @ObservationIgnored var filterCache = ClipFilterCache()
     @ObservationIgnored var tagCache: [String]?
 
     @ObservationIgnored private var historyWritesDisabled = false
@@ -84,10 +81,9 @@ final class ClipStore: SyncableStore {
     @ObservationIgnored private var pendingForegroundTextCapture: PendingForegroundTextCapture?
     @ObservationIgnored private var latestHistoryWriteReceipt: HistorySnapshotWriteReceipt?
 
-    /// Shared snapshot → encode → write pipeline (same type the Mac store uses). The iOS
-    /// store captures one item at a time (no bursts) and is also compiled into the lean
-    /// keyboard/share extensions, so it writes immediately (debounce `.zero`) rather than
-    /// risk losing a write when an extension is torn down.
+    /// Shared snapshot → encode → write pipeline (same type as the macOS store). Writes
+    /// immediately (debounce `.zero`) rather than batching, because this file also compiles
+    /// into the lean keyboard/share extensions, which risk teardown before a debounced write lands.
     @ObservationIgnored private lazy var historyWriter: HistorySnapshotWriter? = {
         guard let appGroupContext else { return nil }
         return HistorySnapshotWriter(
@@ -104,16 +100,16 @@ final class ClipStore: SyncableStore {
         .completeFileProtectionUntilFirstUserAuthentication
     ]
 
-    // Same text-size policy the Mac watcher uses: inline ≤ 50 KB, file-back up to the blob
-    // ceiling, truncate above it. Keeps a single huge clip from bloating the in-memory
-    // history (critical for the memory-constrained keyboard extension) and the synced
-    // `textContent` field.
+    // Matches the macOS watcher's text-size policy: inline ≤ 50 KB, file-back up to the blob
+    // ceiling, truncate above it — keeps one huge clip from bloating in-memory history (critical
+    // for the memory-constrained keyboard extension) and the synced `textContent` field.
     nonisolated private static let inlineTextLimit = 50_000
     nonisolated private static let previewLength = 500
 
     private var historyURL: URL? { appGroupContext?.historyURL }
     private var tombstonesURL: URL? { appGroupContext?.tombstonesURL }
-    private var blobsURL: URL? { appGroupContext?.blobsURL }
+    /// All blob filesystem work lives here; the store keeps history, persistence, and sync.
+    private let blobStore: IOSClipBlobStore
 
     /// Settings the user set in-app (App-Group backed). `0` means unlimited / off.
     private var prefs: UserDefaults? { appGroupContext?.defaults }
@@ -122,6 +118,7 @@ final class ClipStore: SyncableStore {
 
     init(context: AppGroupContext? = AppGroupContext.live()) {
         self.appGroupContext = context
+        self.blobStore = IOSClipBlobStore(directory: context?.blobsURL)
         guard let context else {
             storageUnavailable = true
             historyWritesDisabled = true
@@ -135,10 +132,9 @@ final class ClipStore: SyncableStore {
             storageUnavailable = true
             clipStoreLog.error("Failed to create iOS blobs directory: \(error.localizedDescription)")
         }
-        // Make the at-rest data-protection class explicit — it's the iOS default for App-Group
-        // containers, but stating it keeps blobs encrypted-at-rest after first unlock while
-        // still readable in the background for sync and the extensions. A failure here
-        // silently weakens at-rest encryption, so surface it rather than dropping it.
+        // Data-protection class is the iOS default for App-Group containers, but setting it
+        // explicitly keeps blobs encrypted at rest after first unlock while staying readable in
+        // the background for sync/extensions. A failure here silently weakens encryption, so it's surfaced.
         do {
             try fileManager.setAttributes(
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
@@ -151,13 +147,13 @@ final class ClipStore: SyncableStore {
         protectExistingHistoryFiles()
         load()
         if !historyWritesDisabled {
+            sweepOrphanBlobs()
             publishKeyboardProjection()
         }
     }
 
-    /// Capture text from the foreground clipboard, share extension, or App Intent. Large text
-    /// is file-backed and oversized text is truncated — the same size policy the Mac uses — so
-    /// a huge clip can't bloat the in-memory history or the synced `textContent` field.
+    /// Capture text from the foreground clipboard, share extension, or App Intent; large text is
+    /// file-backed and oversized text truncated per the size policy at `inlineTextLimit`.
     func capture(text: String, sourceApp: String? = nil) async {
         _ = await captureText(
             text,
@@ -335,22 +331,7 @@ final class ClipStore: SyncableStore {
     }
 
     private func saveTextBlob(_ text: String, filename: String? = nil) async -> String? {
-        let filename = filename ?? UUID().uuidString + "." + SyncBlobKind.text.allowedExtension
-        guard let blobsURL,
-              let url = SyncBlobPolicy.containedURL(
-                directory: blobsURL,
-                filename: filename,
-                kind: .text
-              ) else {
-            return nil
-        }
-        do {
-            try await SyncBlobStorage.write(Data(text.utf8), to: url, maxBytes: SyncBlobKind.text.maximumBytes)
-            return filename
-        } catch {
-            clipStoreLog.error("Failed to save iOS text blob: \(error.localizedDescription)")
-            return nil
-        }
+        await blobStore.saveText(text, filename: filename)
     }
 
     @discardableResult
@@ -366,22 +347,7 @@ final class ClipStore: SyncableStore {
     }
 
     private func saveImageBlob(_ data: Data, filename: String? = nil) async -> String? {
-        let filename = filename ?? UUID().uuidString + "." + SyncBlobKind.image.allowedExtension
-        guard let blobsURL,
-              let url = SyncBlobPolicy.containedURL(
-                directory: blobsURL,
-                filename: filename,
-                kind: .image
-              ) else {
-            return nil
-        }
-        do {
-            try await SyncBlobStorage.write(data, to: url)
-            return filename
-        } catch {
-            clipStoreLog.error("Failed to save iOS image blob: \(error.localizedDescription)")
-            return nil
-        }
+        await blobStore.saveImage(data, filename: filename)
     }
 
     /// Import file-per-capture extension handoffs into canonical history. Each entry is
@@ -607,10 +573,9 @@ final class ClipStore: SyncableStore {
         removeItems(ids: Set(items.map(\.id)))
     }
 
-    /// Apply the configured age-retention then history limit (call from the app on
-    /// launch and after a settings change). Expired unprotected clips are tombstoned so
-    /// the deletion propagates; the limit only trims local storage (capped clips stay in
-    /// the cloud). No-ops when both are off.
+    /// Applies the configured age-retention then history limit (call on launch and after a
+    /// settings change). Expired unprotected clips are tombstoned so deletion propagates via
+    /// sync; the limit only trims local storage — capped clips stay in the cloud.
     func enforceRetentionAndLimit() {
         let result = ClipboardRetention.enforce(
             items: items,
@@ -689,14 +654,7 @@ final class ClipStore: SyncableStore {
     }
 
     func blobURL(for item: ClipboardItem) -> URL? {
-        guard let blobsURL else { return nil }
-        if let filename = item.imageFilename {
-            return SyncBlobPolicy.containedURL(directory: blobsURL, filename: filename, kind: .image)
-        }
-        if let filename = item.textFilename {
-            return SyncBlobPolicy.containedURL(directory: blobsURL, filename: filename, kind: .text)
-        }
-        return nil
+        blobStore.url(for: item)
     }
 
     func pasteboardOriginMarkerForWrite(
@@ -718,40 +676,20 @@ final class ClipStore: SyncableStore {
     }
 
     func blobURL(for reference: SyncBlobReference) -> URL? {
-        guard let blobsURL else { return nil }
-        return reference.containedURL(in: blobsURL)
+        blobStore.url(for: reference)
     }
 
     func writeBlob(_ data: Data, reference: SyncBlobReference) async throws {
-        guard let blobsURL else { throw PersistenceError.appGroupUnavailable }
-        guard let url = reference.containedURL(in: blobsURL) else {
-            throw SyncBlobStorage.Error.unsafeFilename
-        }
-        try await SyncBlobStorage.write(data, to: url, maxBytes: reference.maximumBytes)
+        guard blobStore.isAvailable else { throw PersistenceError.appGroupUnavailable }
+        try await blobStore.write(data, reference: reference)
     }
 
     func deleteBlob(_ reference: SyncBlobReference) {
-        guard let blobsURL else { return }
-        guard let url = reference.containedURL(in: blobsURL) else { return }
-        try? FileManager.default.removeItem(at: url)
+        blobStore.delete(reference)
     }
 
     private func deleteBlobReferences(_ references: [ClipboardBlobReference]) {
-        guard let blobsURL else { return }
-        for reference in references {
-            switch reference.kind {
-            case .image, .text:
-                let kind: SyncBlobKind = reference.kind == .image ? .image : .text
-                guard let url = SyncBlobPolicy.containedURL(
-                    directory: blobsURL,
-                    filename: reference.filename,
-                    kind: kind
-                ) else { continue }
-                try? FileManager.default.removeItem(at: url)
-            case .rich:
-                break
-            }
-        }
+        blobStore.delete(references)
     }
 
     @discardableResult
@@ -804,6 +742,17 @@ final class ClipStore: SyncableStore {
             storageUnavailable = true
             historyWritesDisabled = true
             clipStoreLog.error("Failed to load iOS history snapshot: \(error.localizedDescription)")
+        }
+    }
+
+    /// Once per launch, after the snapshot loads and before sync or capture can add anything.
+    /// Only called on a successful load — an empty `items` from a failed one would make every
+    /// existing blob look orphaned.
+    private func sweepOrphanBlobs() {
+        let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) }.map(\.filename))
+        let removedCount = blobStore.sweepOrphans(referenced: referenced)
+        if removedCount > 0 {
+            clipStoreLog.info("Removed \(removedCount) orphaned iOS blob file(s) at launch.")
         }
     }
 

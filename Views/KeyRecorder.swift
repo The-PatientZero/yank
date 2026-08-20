@@ -74,9 +74,8 @@ final class KeyRecorderView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// Drives the focus-driven capture without the old `orderFrontRegardless` /
-    /// `NSApp.activate` dance: the host window already owns first-responder, so we just
-    /// claim it. Announces the start of recording for VoiceOver.
+    /// Host window already owns first-responder, so this just claims it. Announces
+    /// the start of recording for VoiceOver.
     func setRecording(_ recording: Bool) {
         guard recording != isRecording else { return }
         isRecording = recording

@@ -1,14 +1,8 @@
 import SwiftUI
 
-/// A content-aware clip tile for the Grid / Masonry / Gallery modes. Renders by
-/// kind — a swatch, a thumbnail, a link card, a code block — so it's recognisable
-/// without reading. Masonry passes `fixedHeight == nil` so tiles size to content.
-///
-/// Deliberately parallels iOS `ClipTileView`: the previews read identically but stay
-/// separate because the font model (fixed `TypeScale` here, Dynamic-Type `.yank` there)
-/// and the image type (`NSImage` vs `UIImage`) differ. The genuinely shared pieces —
-/// `ClipKind`, the status badge, the layout tokens — already live in the shared layer;
-/// folding the rest into one view would leak one platform's conventions into the other.
+/// Renders a clip by kind (swatch/thumbnail/link/code) for Grid/Masonry/Gallery. Kept
+/// separate from iOS `ClipTileView` on purpose — the font model (fixed vs Dynamic-Type)
+/// and image type (`NSImage`/`UIImage`) differ; shared pieces live in `ClipKind` and the layout tokens.
 struct ClipTile: View {
     let item: ClipboardItem
     let store: ClipboardStore
@@ -25,11 +19,9 @@ struct ClipTile: View {
     private var kind: ClipKind { item.kind }
     private var isGallery: Bool { mode == .gallery }
     private var metrics: ClipTileMetrics { mode.tileMetrics(density: density) }
-    // Naming inverts vs the iOS twin (`ClipTileView.emphasisRole`) on purpose: here the
-    // *primary* (keyboard-focused) clip is `.focused` and the multi-select members are
-    // `.selected`; on iOS `isSelected` is the focused clip (`.focused`) and `isHighlighted`
-    // is the pointer/peek state. Same two emphasis roles, opposite boolean vocabulary —
-    // keep them in sync if either changes.
+    // Naming inverts vs iOS `ClipTileView.emphasisRole`: here `.focused` is keyboard-primary
+    // and `.selected` is multi-select; iOS uses the opposite vocabulary (`isSelected`/
+    // `isHighlighted`). Same two roles — keep in sync if either changes.
     private var emphasisRole: ClipTileEmphasisRole {
         if isPrimarySelection { return .focused }
         if isMultiSelected { return .selected }
@@ -191,8 +183,7 @@ struct ClipTile: View {
     }
 }
 
-/// Renders an item's image thumbnail — downsampled straight off disk and cached, off
-/// the main thread, preserving aspect (see `ThumbnailCache`).
+/// Renders an item's thumbnail: downsampled off disk, cached, and decoded off the main thread (see `ThumbnailCache`).
 struct ClipThumbnail: View {
     let item: ClipboardItem
     let store: ClipboardStore

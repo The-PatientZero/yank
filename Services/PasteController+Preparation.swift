@@ -28,7 +28,7 @@ extension PasteController {
     }
 
     nonisolated static func getTempDirectory() -> URL? {
-        cleanupStaleTempDirectories()
+        sweepStaleTempDirectoriesOncePerLaunch()
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("YankPaste_\(UUID().uuidString)", isDirectory: true)
         do {
@@ -42,6 +42,15 @@ extension PasteController {
             Log.paste.error("Failed to create paste temp directory: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// Expiry is a 24-hour policy, so one sweep per launch is enough. Doing it on every
+    /// temp-directory creation re-enumerated the whole system temp directory — unbounded in
+    /// the number of unrelated entries — once per image copy or paste.
+    private nonisolated static let staleTempSweep: Void = cleanupStaleTempDirectories()
+
+    nonisolated static func sweepStaleTempDirectoriesOncePerLaunch() {
+        _ = staleTempSweep
     }
 
     nonisolated static func cleanupStaleTempDirectories() {
@@ -198,7 +207,7 @@ extension PasteController {
         }
     }
 
-    /// Write prepared clip content to a pasteboard. Rich clips (#11) replay every archived
+    /// Write prepared clip content to a pasteboard. Rich clips replay every archived
     /// representation verbatim; otherwise the primary text/image is written.
     @discardableResult
     static func writePreparedContents(
@@ -260,7 +269,12 @@ extension PasteController {
                 discardTempFiles(in: prepared.fallback)
                 return
             }
-            guard writePreparedContents(prepared, to: pasteboard) != nil else { return }
+            guard writePreparedContents(prepared, to: pasteboard) != nil else {
+                Log.paste.error(
+                    "Copy produced no pasteboard content for clip \(item.id, privacy: .public)"
+                )
+                return
+            }
             store.moveToTop(item)
         }
     }
@@ -275,7 +289,12 @@ extension PasteController {
                     discardTempFiles(in: prepared.fallback)
                     return
                 }
-                guard writePreparedContents(prepared, to: pasteboard) != nil else { return }
+                guard writePreparedContents(prepared, to: pasteboard) != nil else {
+                    Log.paste.error(
+                        "Copy produced no pasteboard content for clip \(item.id, privacy: .public)"
+                    )
+                    return
+                }
                 store.moveToTop(items)
                 return
             }
@@ -284,7 +303,12 @@ extension PasteController {
                 removeTempFiles(for: prepared.imageURLs)
                 return
             }
-            guard writePreparedMultipleContents(prepared, to: pasteboard) != nil else { return }
+            guard writePreparedMultipleContents(prepared, to: pasteboard) != nil else {
+                Log.paste.error(
+                    "Copy produced no pasteboard content for \(items.count, privacy: .public) clips"
+                )
+                return
+            }
             store.moveToTop(items)
         }
     }

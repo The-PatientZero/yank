@@ -1,6 +1,5 @@
 import SwiftUI
 
-// Privacy card section — capture exclusions, Spotlight indexing, and on-device AI tagging.
 extension SettingsView {
     var privacySection: some View {
         VStack(alignment: .leading, spacing: Space.lg) {

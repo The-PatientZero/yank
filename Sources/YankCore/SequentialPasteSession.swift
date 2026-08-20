@@ -1,10 +1,8 @@
 import Foundation
 
-/// Process-local FIFO state for a text paste sequence.
-///
-/// Occurrences are deliberately independent from persisted clipboard items: two copy events with
-/// identical text remain two entries. The caller owns pasteboard observation and paste dispatch,
-/// then resolves each returned request with the detectable outcome.
+/// Process-local FIFO state for a text paste sequence. Occurrences are deliberately independent
+/// from persisted clipboard items — two copy events with identical text remain two entries. The
+/// caller owns pasteboard observation and paste dispatch, then resolves each request's outcome.
 struct SequentialPasteSession: Equatable, Sendable {
     static let maximumItemCount = 50
     static let maximumUTF8Bytes = 16 * 1024 * 1024

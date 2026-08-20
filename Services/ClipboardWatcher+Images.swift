@@ -55,9 +55,8 @@ extension ClipboardWatcher {
         }
     }
 
-    /// Normalise arbitrary raster bytes to PNG using a single `CGImageSource` for both the
-    /// pixel-budget check and the re-encode: no TIFF/bitmap round-trip, one
-    /// decode, no uncompressed-bitmap allocation. Off the main actor.
+    /// Normalizes raster bytes to PNG via one `CGImageSource` shared by the pixel-budget check
+    /// and the re-encode, avoiding a second decode/allocation. Off the main actor.
     nonisolated static func normalizedPNGData(
         from data: Data,
         maxInputBytes: Int,
@@ -117,9 +116,9 @@ extension ClipboardWatcher {
         return .image(pngData, richArchive: richArchive)
     }
 
-    /// True when the first image in `source` is within the pixel budget. Lenient when the
-    /// dimensions can't be read (no properties / zero size) — defers the reject to the
-    /// decode step, preserving the previous fail-open behaviour for odd encodings.
+    /// True when the first image in `source` is within the pixel budget. Lenient (returns
+    /// true) when dimensions can't be read, deferring the reject to the decode step so odd
+    /// encodings fail open rather than being rejected here.
     private nonisolated static func pixelCountIsWithinBudget(
         _ source: CGImageSource,
         maxRasterPixels: Int64

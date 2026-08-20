@@ -53,4 +53,34 @@ import Foundation
         #expect(ClipQuery.filter(items, search: "#", activeTag: nil).count == 4)
         #expect(ClipQuery.filter(items, search: "@", activeTag: nil).count == 4)
     }
+
+    /// Tags written before the shared normalization rule can carry uppercase. They are inside
+    /// the compatibility boundary, so both the sigil search and the chip must still find them.
+    @Test func storedTagCaseDoesNotHideAClip() {
+        let legacy = [
+            item(1, text: "design note", tags: ["Design-System"]),
+            item(2, text: "other", tags: ["misc"])
+        ]
+
+        #expect(ClipQuery.filter(legacy, search: "#design", activeTag: nil).map(\.id) == [clipID(1)])
+        #expect(ClipQuery.filter(legacy, search: "#DESIGN", activeTag: nil).map(\.id) == [clipID(1)])
+        #expect(ClipQuery.filter(legacy, search: "", activeTag: "design-system").map(\.id) == [clipID(1)])
+        #expect(ClipQuery.filter(legacy, search: "", activeTag: "Design-System").map(\.id) == [clipID(1)])
+    }
+
+    /// The documented ordering contract: pinned first, and input order preserved inside each
+    /// group. Asserted with more than one item per group so a non-stable sort would show.
+    @Test func inputOrderIsPreservedWithinPinnedAndUnpinnedGroups() {
+        let ordered = [
+            item(1, text: "a"),
+            item(2, text: "b", pinned: true),
+            item(3, text: "c"),
+            item(4, text: "d", pinned: true),
+            item(5, text: "e")
+        ]
+
+        let result = ClipQuery.filter(ordered, search: "", activeTag: nil)
+
+        #expect(result.map(\.id) == [clipID(2), clipID(4), clipID(1), clipID(3), clipID(5)])
+    }
 }

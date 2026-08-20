@@ -67,7 +67,11 @@ struct IOSSyncedSettingsBridgeTests {
 
         #expect(settings.historyLimit == .deep)
         #expect(settings.historyLimitUpdatedAt == remote.updatedAt)
-        #expect(bridge.syncedSettings == remote)
+        // A remote record with no retention opinion (an older build's) keeps the local window,
+        // so the adopted value matches the remote everywhere except that preserved field.
+        #expect(bridge.syncedSettings?.historyLimit == remote.historyLimit)
+        #expect(bridge.syncedSettings?.updatedAt == remote.updatedAt)
+        #expect(bridge.syncedSettings?.retentionDays == settings.retentionDays)
     }
 
     @Test("Without the App Group there is no durable opinion to weigh")

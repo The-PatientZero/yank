@@ -1,9 +1,8 @@
 import Foundation
 
-/// Pure, in-place edits on a clip list — shared by the macOS `ClipboardStore` and the
-/// iOS `ClipStore` so pin / bookmark / tag / OCR edits behave identically and stamp
-/// `modifiedAt` for last-writer-wins sync. Each store calls these, then persists and
-/// lets the transport push. Pure (no I/O), so it's unit-tested directly.
+/// Pure, in-place edits on a clip list — shared by the macOS `ClipboardStore` and iOS `ClipStore`
+/// so pin/bookmark/tag/OCR edits behave identically and stamp `modifiedAt` for last-writer-wins
+/// sync. No I/O; callers persist and push after calling these.
 enum ClipboardMutations {
     static func togglePin(_ items: inout [ClipboardItem], id: UUID, now: Date = Date()) {
         update(&items, id: id, now: now) { $0.isPinned.toggle() }
@@ -50,10 +49,9 @@ enum ClipboardMutations {
         return true
     }
 
-    /// Float an ordered selection to the front in one mutation. The final order preserves
-    /// the caller's selection order, then appends every other clip in its existing order.
-    /// Returns false when the order is already identical, so stores can skip needless
-    /// persistence, notifications, and sync churn.
+    /// Floats an ordered selection to the front in one mutation: the caller's order first, then
+    /// every other clip in its existing order. Returns false when the order is already identical,
+    /// so stores can skip needless persistence, notifications, and sync churn.
     @discardableResult
     static func moveToTop(_ idsInOrder: [UUID], in items: inout [ClipboardItem], now: Date = Date()) -> Bool {
         guard !idsInOrder.isEmpty else { return false }
@@ -143,11 +141,9 @@ enum ClipboardMutations {
         Array(Set(items.flatMap { $0.tags })).sorted()
     }
 
-    /// Outcome of a pure batch removal: the new item list, the tombstone marks to record
-    /// (id → delete time), and the blob references the caller can now delete from disk
-    /// (those no longer referenced by any kept clip). The store resolves the references
-    /// to URLs in its own directory layout and removes the files — keeping all I/O local
-    /// while the membership/tombstone/blob-liveness decisions stay pure and tested.
+    /// Outcome of a pure batch removal: the new item list, tombstone marks (id → delete time), and
+    /// blob references now orphaned. The caller resolves references to URLs and deletes the files,
+    /// keeping I/O local while membership/tombstone/blob-liveness decisions stay pure and tested.
     struct RemovalResult: Equatable, Sendable {
         var items: [ClipboardItem]
         var tombstones: [UUID: Date]

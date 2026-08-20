@@ -195,10 +195,9 @@ enum ClipboardCaptureBlobPersistence {
     }
 }
 
-/// Owns the on-disk blob layout for `ClipboardStore`: the storage directory tree
-/// (texts / images / rich), its private-file/data-protection attributes, and the
-/// read/write/delete of blob files within it. The store delegates every filesystem
-/// concern here and keeps only in-memory history, persistence, and sync coordination.
+/// Owns the on-disk blob layout for `ClipboardStore`: directory tree (texts / images / rich),
+/// private-file/data-protection attributes, and blob read/write/delete. `ClipboardStore` keeps
+/// only in-memory history, persistence, and sync coordination — filesystem concerns live here.
 @MainActor
 final class ClipBlobStore {
     private let fileManager = FileManager.default
@@ -237,15 +236,11 @@ final class ClipBlobStore {
         storageDirectory.appendingPathComponent("rich", isDirectory: true)
     }
 
-    /// Create the storage tree, apply private attributes, secure any pre-existing files, and
-    /// exclude the subtree from backups. Returns `true` when every directory was created;
-    /// `false` (with a logged error per failure) means history cannot be persisted this
-    /// session, so the caller surfaces it via `storageUnavailable`.
+    /// Creates the storage tree, applies private attributes, secures pre-existing files, and
+    /// excludes the subtree from backups. Returns `false` (each failure already logged) when
+    /// history can't be persisted this session — the caller surfaces that via `storageUnavailable`.
     @discardableResult
     func ensureDirectoriesExist() -> Bool {
-        // Failing to create the storage tree means history cannot be persisted this
-        // session — captures would be silently lost on quit. Surface it explicitly via
-        // `storageUnavailable` and log with context instead of swallowing.
         let directories = [storageDirectory, imagesDirectory, textsDirectory, richDirectory]
         var succeeded = true
         for directory in directories {
@@ -340,7 +335,6 @@ final class ClipBlobStore {
         }
     }
 
-    /// Persist a full pasteboard archive (binary plist) and return its filename (#11).
     func saveRichArchive(_ archive: PasteboardArchive) -> String? {
         let filename = UUID().uuidString + ".plist"
         let url = richDirectory.appendingPathComponent(filename)
@@ -426,6 +420,28 @@ final class ClipBlobStore {
             guard let url = blobURL(for: reference) else { continue }
             try? fileManager.removeItem(at: url)
         }
+    }
+
+    /// Every blob file actually present across the owned directories, or `nil` if any
+    /// directory listing failed (permissions, odd volume) — callers should skip a sweep
+    /// entirely rather than delete from a partial listing.
+    func allBlobReferences() -> Set<ClipboardBlobReference>? {
+        var result: Set<ClipboardBlobReference> = []
+        for kind in [SyncBlobKind.image, .text, .rich] {
+            guard let filenames = try? fileManager.contentsOfDirectory(atPath: directory(for: kind).path) else {
+                return nil
+            }
+            let referenceKind: ClipboardBlobReference.Kind
+            switch kind {
+            case .image: referenceKind = .image
+            case .text: referenceKind = .text
+            case .rich: referenceKind = .rich
+            }
+            for filename in filenames {
+                result.insert(ClipboardBlobReference(kind: referenceKind, filename: filename))
+            }
+        }
+        return result
     }
 
     func deleteSyncedBlob(_ reference: SyncBlobReference) {

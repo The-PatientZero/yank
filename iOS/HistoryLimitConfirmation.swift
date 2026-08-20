@@ -1,11 +1,8 @@
 import Foundation
 
-/// Holds the tier waiting on the user's answer while the reduction dialog is up.
-///
-/// Extracted from `SettingsView` for the *cancel* path: nothing is written until `confirm()`
-/// hands the tier back, so a cancelled reduction cannot move the value, its stamp, or announce
-/// anything to sync. That is not observable from a view test, and with the limit now syncing
-/// fleet-wide it is the branch most worth pinning.
+/// Holds the tier awaiting confirmation while the reduction dialog is up. Extracted from
+/// `SettingsView` so the cancel path is unit-testable: nothing is written until `confirm()`
+/// returns the tier, so a cancelled reduction can't move the value, its stamp, or sync it.
 @MainActor
 @Observable
 final class HistoryLimitConfirmation {

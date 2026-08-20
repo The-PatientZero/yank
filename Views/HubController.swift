@@ -63,10 +63,9 @@ final class HubController {
         refreshMenu()
     }
 
-    /// A quick spring-like scale bounce on the brand glyph to confirm a capture — the always-visible
-    /// counterpart to the haptic/sound cue. Scales around the button's visual centre via an explicit
-    /// transform (no `anchorPoint` mutation, so the icon never drifts) and is skipped entirely under
-    /// Reduce Motion.
+    /// Spring-like scale bounce on the brand glyph confirming a capture (visual counterpart to the
+    /// haptic/sound cue); skipped under Reduce Motion. Transforms explicitly rather than mutating
+    /// `anchorPoint`, so the icon never drifts.
     private func pulseGlyph() {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               let layer = statusItem.button?.layer, layer.bounds.width > 0 else { return }
@@ -101,14 +100,12 @@ final class HubController {
 
         button.action = #selector(handleClick)
         button.target = self
-        // Left-click drives the primary action, right-click opens the command panel.
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    /// The Yank mark in full colour. The glyph is a self-contained tile — light ground + the
-    /// amber brand arrow — so it reads on both light and dark menu bars without the system's
-    /// monochrome template tint (which flattened it to a solid white blob). This honours the
-    /// asset's own `template-rendering-intent: original`.
+    /// Yank mark in full colour — light ground + amber arrow reads on both light and dark menu
+    /// bars. `isTemplate = false` deliberately opts out of the system's monochrome template tint
+    /// (which flattened it to a white blob), honouring the asset's `original` rendering intent.
     private static let brandGlyph: NSImage = {
         let image = NSImage(named: "BrandGlyph") ?? NSImage()
         image.isTemplate = false

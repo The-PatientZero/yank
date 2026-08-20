@@ -5,12 +5,12 @@ import os
 import YankCore
 #endif
 
-private let syncLog = Logger(subsystem: "com.thepatientzero.yank", category: "sync")
+let syncLog = Logger(subsystem: "com.thepatientzero.yank", category: "sync")
 
 // `SyncableStore` lives in `Sources/YankCore/SyncableStore.swift` (no CloudKit import) so
 // the iOS extensions can use the store without linking CloudKit.
 
-private enum CloudKitSyncError: LocalizedError {
+enum CloudKitSyncError: LocalizedError {
     case missingBlobAsset(String)
     case partialRecordFailures(Int)
     case partialRecordSaves(Int)
@@ -18,6 +18,7 @@ private enum CloudKitSyncError: LocalizedError {
     case backfillDidNotConverge(Int)
     case pushReceiptEncodingFailed
     case pullQuarantineEncodingFailed
+    case pullQuarantineOverflow
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +36,8 @@ private enum CloudKitSyncError: LocalizedError {
             "CloudKit push acknowledgements could not be saved. Sync will safely replay."
         case .pullQuarantineEncodingFailed:
             "Skipped CloudKit records could not be recorded. Sync will safely replay."
+        case .pullQuarantineOverflow:
+            "Too many skipped CloudKit records are awaiting recovery. Sync will retry."
         }
     }
 }
@@ -49,374 +52,6 @@ public struct CloudKitBackfillResult: Equatable, Sendable {
 
     public var converged: Bool {
         remainingMissingRecordCount == 0
-    }
-}
-
-/// Pure `ClipboardItem ⇄ CKRecord` mapping for scalar fields. Blobs attach as `CKAsset`.
-/// No network — round-trips offline, so it is unit-tested directly.
-enum ClipboardCloudMapping {
-    static let recordType = "ClipboardItem"
-
-    enum Key {
-        static let type = "type"
-        static let timestamp = "timestamp"
-        static let sourceApp = "sourceApp"
-        static let textContent = "textContent"
-        static let textFilename = "textFilename"
-        static let imageFilename = "imageFilename"
-        static let isPinned = "isPinned"
-        static let isBookmarked = "isBookmarked"
-        static let tags = "tags"
-        static let ocrText = "ocrText"
-        static let isTruncated = "isTruncated"
-        static let originalSizeBytes = "originalSizeBytes"
-        static let modifiedAt = "modifiedAt"
-        static let deletedAt = "deletedAt"
-        static let deviceOrigin = "deviceOrigin"
-        static let blob = "blob"
-        static let hasRichContent = "hasRichContent"
-        static let searchIndex = "searchIndex"
-        static let aiTags = "aiTags"
-        static let aiTitle = "aiTitle"
-        static let aiEnrichedAt = "aiEnrichedAt"
-    }
-
-    static func record(from item: ClipboardItem, in zoneID: CKRecordZone.ID, blobURL: URL? = nil) -> CKRecord? {
-        guard let filenames = validatedBlobFilenames(
-            type: item.type,
-            textFilename: item.textFilename,
-            imageFilename: item.imageFilename
-        ), blobURL == nil || filenames.textFilename != nil || filenames.imageFilename != nil else {
-            return nil
-        }
-
-        let recordID = CKRecord.ID(recordName: item.id.uuidString, zoneID: zoneID)
-        let record = CKRecord(recordType: recordType, recordID: recordID)
-        record[Key.type] = item.type.rawValue
-        record[Key.timestamp] = item.timestamp
-        record[Key.sourceApp] = item.sourceApp
-        record[Key.textContent] = item.textContent
-        record[Key.textFilename] = filenames.textFilename
-        record[Key.imageFilename] = filenames.imageFilename
-        record[Key.isPinned] = item.isPinned ? 1 : 0
-        record[Key.isBookmarked] = item.isBookmarked ? 1 : 0
-        record[Key.tags] = item.tags
-        record[Key.ocrText] = item.ocrText
-        record[Key.isTruncated] = item.isTruncated ? 1 : 0
-        record[Key.originalSizeBytes] = item.originalSizeBytes
-        record[Key.searchIndex] = item.searchIndex
-        record[Key.aiTags] = item.aiTags
-        record[Key.aiTitle] = item.aiTitle
-        record[Key.aiEnrichedAt] = item.aiEnrichedAt
-        record[Key.modifiedAt] = item.modifiedAt
-        record[Key.deletedAt] = item.deletedAt
-        record[Key.deviceOrigin] = item.deviceOrigin
-        record[Key.hasRichContent] = item.hasRichContent ? 1 : 0
-        if let blobURL {
-            record[Key.blob] = CKAsset(fileURL: blobURL)
-        }
-        return record
-    }
-
-    static func item(from record: CKRecord) -> ClipboardItem? {
-        guard let id = UUID(uuidString: record.recordID.recordName),
-              let typeRaw = record[Key.type] as? String,
-              let type = ClipboardItemType(rawValue: typeRaw),
-              let timestamp = record[Key.timestamp] as? Date,
-              let modifiedAt = record[Key.modifiedAt] as? Date else { return nil }
-        let rawTextFilename = record[Key.textFilename] as? String
-        let rawImageFilename = record[Key.imageFilename] as? String
-        guard let filenames = validatedBlobFilenames(
-            type: type,
-            textFilename: rawTextFilename,
-            imageFilename: rawImageFilename
-        ) else {
-            return nil
-        }
-        let bool: (String) -> Bool = { ((record[$0] as? Int) ?? 0) != 0 }
-        return ClipboardItem(
-            id: id,
-            type: type,
-            timestamp: timestamp,
-            sourceApp: record[Key.sourceApp] as? String,
-            textContent: record[Key.textContent] as? String,
-            textFilename: filenames.textFilename,
-            imageFilename: filenames.imageFilename,
-            hasRichContent: bool(Key.hasRichContent),
-            isPinned: bool(Key.isPinned),
-            isBookmarked: bool(Key.isBookmarked),
-            tags: record[Key.tags] as? [String] ?? [],
-            ocrText: record[Key.ocrText] as? String,
-            isTruncated: bool(Key.isTruncated),
-            originalSizeBytes: record[Key.originalSizeBytes] as? Int,
-            searchIndex: record[Key.searchIndex] as? String,
-            aiTags: record[Key.aiTags] as? [String] ?? [],
-            aiTitle: record[Key.aiTitle] as? String,
-            aiEnrichedAt: record[Key.aiEnrichedAt] as? Date,
-            modifiedAt: modifiedAt,
-            deletedAt: record[Key.deletedAt] as? Date,
-            deviceOrigin: record[Key.deviceOrigin] as? String ?? ""
-        )
-    }
-
-    private static func validatedBlobFilenames(
-        type: ClipboardItemType,
-        textFilename: String?,
-        imageFilename: String?
-    ) -> (textFilename: String?, imageFilename: String?)? {
-        guard textFilename == nil || imageFilename == nil else { return nil }
-
-        if let textFilename {
-            guard type == .text,
-                  let reference = SyncBlobReference(filename: textFilename, kind: .text) else { return nil }
-            return (reference.filename, nil)
-        }
-
-        if let imageFilename {
-            guard type == .image,
-                  let reference = SyncBlobReference(filename: imageFilename, kind: .image) else { return nil }
-            return (nil, reference.filename)
-        }
-
-        return (nil, nil)
-    }
-}
-
-/// Outcome of `CloudKitSyncService.start()`: sync came up, or it failed with a
-/// user-presentable message.
-public enum CloudKitSyncStartResult: Equatable, Sendable {
-    case started
-    case failed(message: String)
-}
-
-/// Plain-data view of one page of zone changes, so the sync engine can be exercised with a
-/// fake — `CKDatabase.RecordZoneChanges` is not constructible outside CloudKit. It holds
-/// non-`Sendable` `CKRecord`s but never crosses an actor boundary: the `CloudKitDatabase`
-/// seam below is `@MainActor`, so records stay on the sync service's actor exactly as they
-/// did when the service called `CKDatabase` directly.
-struct CloudKitZoneChanges {
-    var changedRecords: [CKRecord]
-    var deletedRecordNames: [String]
-    /// Records the server acknowledged but could not hand over. The error is carried so the pull
-    /// can tell a permanently gone record (skip it) from a transient failure (hold the token).
-    var failedRecords: [CloudKitRecordFailure] = []
-    var changeToken: CKServerChangeToken?
-    var moreComing: Bool
-}
-
-struct CloudKitRecordFailure {
-    let recordName: String
-    let error: any Error
-}
-
-/// Result of re-fetching specific records by ID. Records CloudKit no longer has are reported
-/// separately from transient failures, which are simply absent and retried by a later pull.
-struct CloudKitFetchedRecords {
-    var records: [CKRecord] = []
-    var permanentlyMissingRecordNames: Set<String> = []
-}
-
-struct CloudKitRecordSaveResult {
-    var failedRecordNames: [String] = []
-}
-
-/// Outcome of a conditional (`.ifServerRecordUnchanged`) save. `conflict` means the server's
-/// copy moved on since the record being saved was fetched — the caller has to re-read it and
-/// decide who wins rather than blindly overwriting.
-enum CloudKitConditionalSaveOutcome: Equatable {
-    case saved
-    case conflict
-}
-
-struct CloudKitRecordPresence {
-    var presentRecordNames: Set<String> = []
-    var missingRecordNames: Set<String> = []
-}
-
-/// The CloudKit operations `CloudKitSyncService` depends on, abstracted behind a seam (DIP)
-/// so the orchestration — ensure zone/subscription → paginated pull → `ClipboardMerge` →
-/// apply → receipt-driven push — is unit-tested against an in-memory fake instead of a live
-/// network. The live conformance is
-/// `CKDatabase`; tests substitute a fake. Declared `@MainActor` so `CKRecord` value types
-/// stay on the service's actor (matching the prior direct-`CKDatabase` calls) — no
-/// `Sendable` laundering of CloudKit types is required.
-@MainActor
-protocol CloudKitDatabase {
-    func ensureZone(_ zoneID: CKRecordZone.ID) async throws
-    func ensureSubscription(id subscriptionID: String) async throws
-    func fetchZoneChanges(
-        _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
-    ) async throws -> CloudKitZoneChanges
-    func fetchRecordPresence(
-        for recordNames: [String],
-        in zoneID: CKRecordZone.ID
-    ) async throws -> CloudKitRecordPresence
-    func fetchRecords(
-        for recordNames: [String],
-        in zoneID: CKRecordZone.ID
-    ) async throws -> CloudKitFetchedRecords
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult
-    /// Save one record only while the server's copy still matches the change tag it carries.
-    /// Separate from `saveRecords` because the clip path deliberately uses `.changedKeys`
-    /// last-writer-wins, while the singleton settings record must never clobber a newer remote.
-    func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome
-}
-
-/// Live CloudKit conformance. The idempotent "subscription already exists" handling and the
-/// `RecordZoneChanges` → `CloudKitZoneChanges` flattening live here so the orchestration in
-/// `CloudKitSyncService` stays transport-agnostic and testable.
-@MainActor
-extension CKDatabase: CloudKitDatabase {
-    func ensureZone(_ zoneID: CKRecordZone.ID) async throws {
-        _ = try await save(CKRecordZone(zoneID: zoneID))
-    }
-
-    func ensureSubscription(id subscriptionID: String) async throws {
-        let subscription = CKDatabaseSubscription(subscriptionID: subscriptionID)
-        let info = CKSubscription.NotificationInfo()
-        info.shouldSendContentAvailable = true
-        subscription.notificationInfo = info
-        do {
-            _ = try await save(subscription)
-        } catch let error as CKError where error.code == .serverRejectedRequest {
-            // Subscription already exists — idempotent.
-        }
-    }
-
-    func fetchZoneChanges(
-        _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
-    ) async throws -> CloudKitZoneChanges {
-        let changes = try await recordZoneChanges(inZoneWith: zoneID, since: token)
-        var changedRecords: [CKRecord] = []
-        var failedRecords: [CloudKitRecordFailure] = []
-        changedRecords.reserveCapacity(changes.modificationResultsByID.count)
-        failedRecords.reserveCapacity(changes.modificationResultsByID.count)
-        for (recordID, result) in changes.modificationResultsByID {
-            switch result {
-            case .success(let modification):
-                changedRecords.append(modification.record)
-            case .failure(let error):
-                failedRecords.append(
-                    CloudKitRecordFailure(recordName: recordID.recordName, error: error)
-                )
-            }
-        }
-        return CloudKitZoneChanges(
-            changedRecords: changedRecords,
-            deletedRecordNames: changes.deletions.map { $0.recordID.recordName },
-            failedRecords: failedRecords.sorted { $0.recordName < $1.recordName },
-            changeToken: changes.changeToken,
-            moreComing: changes.moreComing
-        )
-    }
-
-    func fetchRecords(
-        for recordNames: [String],
-        in zoneID: CKRecordZone.ID
-    ) async throws -> CloudKitFetchedRecords {
-        let recordIDs = recordNames.map { CKRecord.ID(recordName: $0, zoneID: zoneID) }
-        let results = try await records(for: recordIDs)
-        var fetched = CloudKitFetchedRecords()
-        fetched.records.reserveCapacity(results.count)
-        for (recordID, result) in results {
-            switch result {
-            case .success(let record):
-                fetched.records.append(record)
-            case .failure(let error) where Self.isUnknownItemError(error):
-                fetched.permanentlyMissingRecordNames.insert(recordID.recordName)
-            case .failure:
-                // Transient: the record stays quarantined and a later pull re-attempts it.
-                continue
-            }
-        }
-        return fetched
-    }
-
-    func fetchRecordPresence(
-        for recordNames: [String],
-        in zoneID: CKRecordZone.ID
-    ) async throws -> CloudKitRecordPresence {
-        let recordIDs = recordNames.map { CKRecord.ID(recordName: $0, zoneID: zoneID) }
-        let results = try await records(for: recordIDs, desiredKeys: [])
-        var presence = CloudKitRecordPresence()
-        var failedCount = 0
-
-        for (recordID, result) in results {
-            switch result {
-            case .success:
-                presence.presentRecordNames.insert(recordID.recordName)
-            case .failure(let error) where Self.isUnknownItemError(error):
-                presence.missingRecordNames.insert(recordID.recordName)
-            case .failure:
-                failedCount += 1
-            }
-        }
-        let requestedRecordNames = Set(recordNames)
-        let returnedRecordNames = presence.presentRecordNames.union(presence.missingRecordNames)
-        failedCount += requestedRecordNames.subtracting(returnedRecordNames).count
-        guard failedCount == 0 else {
-            throw CloudKitSyncError.partialRecordFailures(failedCount)
-        }
-        return presence
-    }
-
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
-        let results = try await modifyRecords(saving: records, deleting: [], savePolicy: .changedKeys)
-        var failedRecordNames = Set(results.saveResults.compactMap { recordID, result in
-            if case .failure = result { return recordID.recordName }
-            return nil
-        })
-        let requestedRecordNames = Set(records.map(\.recordID.recordName))
-        let returnedRecordNames = Set(results.saveResults.keys.map(\.recordName))
-        failedRecordNames.formUnion(requestedRecordNames.subtracting(returnedRecordNames))
-        return CloudKitRecordSaveResult(failedRecordNames: failedRecordNames.sorted())
-    }
-
-    func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome {
-        do {
-            let results = try await modifyRecords(
-                saving: [record],
-                deleting: [],
-                savePolicy: .ifServerRecordUnchanged
-            )
-            guard let result = results.saveResults[record.recordID] else {
-                throw CloudKitSyncError.partialRecordSaves(1)
-            }
-            switch result {
-            case .success:
-                return .saved
-            case .failure(let error):
-                guard Self.isServerRecordChangedError(error) else { throw error }
-                return .conflict
-            }
-        } catch let error where Self.isServerRecordChangedError(error) {
-            // A single-record modify can surface the conflict as a thrown partial failure
-            // instead of a per-record result, depending on how the operation is rejected.
-            return .conflict
-        }
-    }
-
-    private static func isUnknownItemError(_ error: any Error) -> Bool {
-        if let cloudKitError = error as? CKError {
-            return cloudKitError.code == .unknownItem
-        }
-        let nsError = error as NSError
-        return nsError.domain == CKError.errorDomain
-            && nsError.code == CKError.Code.unknownItem.rawValue
-    }
-
-    private static func isServerRecordChangedError(_ error: any Error) -> Bool {
-        guard let cloudKitError = error as? CKError else {
-            let nsError = error as NSError
-            return nsError.domain == CKError.errorDomain
-                && nsError.code == CKError.Code.serverRecordChanged.rawValue
-        }
-        if cloudKitError.code == .serverRecordChanged { return true }
-        guard cloudKitError.code == .partialFailure,
-              let itemErrors = cloudKitError.partialErrorsByItemID else { return false }
-        return itemErrors.values.contains { isServerRecordChangedError($0) }
     }
 }
 
@@ -438,9 +73,8 @@ public final class CloudKitSyncService {
     private let beforeReceiptPersistence: (() throws -> Void)?
     private let afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)?
     private weak var store: SyncableStore?
-    /// Weak for the same reason as `store`: the composition root owns the settings bridge and
-    /// outlives the service, and a strong edge here would keep the app's settings graph alive
-    /// past `stop()`.
+    /// Weak like `store`: the composition root owns the settings bridge and outlives the
+    /// service, so a strong edge here would keep the app's settings graph alive past `stop()`.
     private weak var settingsStore: (any SyncedSettingsStore)?
     private var changeToken: CKServerChangeToken?
     private var pushReceipts: [UUID: Date]?
@@ -476,6 +110,20 @@ public final class CloudKitSyncService {
         )
     }
 
+    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch)
+    /// for a container. They describe the previous iCloud account's zone, and keeping them would
+    /// suppress re-uploading the library into a new one. Call before constructing a fresh service.
+    public static func resetPersistedState(
+        containerIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.removeObject(forKey: "cloudkit.changeToken.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.lastPushedModifiedAt.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.pushReceipts.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.pullQuarantine.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
+    }
+
     /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
     init(
         containerIdentifier: String,
@@ -485,6 +133,7 @@ public final class CloudKitSyncService {
         defaults: UserDefaults = .standard,
         pushDebounceNanoseconds: UInt64 = 750_000_000,
         pushRetryDelaysNanoseconds: [UInt64] = CloudKitSyncService.defaultPushRetryDelaysNanoseconds,
+        resolutionEpoch: String = CloudKitSyncService.defaultResolutionEpoch,
         beforeReceiptPersistence: (() throws -> Void)? = nil,
         afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)? = nil
     ) {
@@ -503,7 +152,13 @@ public final class CloudKitSyncService {
             afterReceiptInvalidationBeforeTokenPersistence
         self.changeToken = Self.loadToken(from: defaults, key: tokenKey)
         self.pushReceipts = Self.loadPushReceipts(from: defaults, key: pushReceiptsKey)
-        self.pullQuarantine = Self.loadPullQuarantine(from: defaults, key: pullQuarantineKey)
+        self.pullQuarantine = Self.reQuarantineForEpoch(
+            Self.loadPullQuarantine(from: defaults, key: pullQuarantineKey),
+            epoch: resolutionEpoch,
+            defaults: defaults,
+            quarantineKey: pullQuarantineKey,
+            epochKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)"
+        )
     }
 
     // `isolated deinit` runs cleanup on the main actor (the runtime hops if the last release lands
@@ -570,6 +225,10 @@ public final class CloudKitSyncService {
             guard shouldReport(error, generation: generation) else {
                 return .failed(message: message)
             }
+            // Keep listening even though bring-up failed: local edits must still schedule
+            // pushes once the transport recovers.
+            try? startObservingLocalChanges(generation: generation)
+            try? startObservingSettingsChanges(generation: generation)
             syncLog.error("start failed: \(message, privacy: .public)")
             store?.markSyncFailed(message)
             return .failed(message: message)
@@ -668,7 +327,7 @@ public final class CloudKitSyncService {
                     self.settingsReconciliationPending = true
                     try self.schedulePush(generation: generation)
                 } catch {
-                    // A queued notification from a stopped generation is intentionally ignored.
+                    // Same as the local-change observer above: ignore it.
                 }
             }
         }
@@ -891,18 +550,23 @@ public final class CloudKitSyncService {
                 applySettingsFromChangeFeed(remoteSettings)
                 try requireActive(generation)
             }
-            if !accumulation.receiptInvalidationItemIDs.isEmpty {
+            let receiptChanges = Self.pullReceiptChanges(
+                remote: accumulation.remote,
+                reconciled: reconciled,
+                repairItemIDs: accumulation.receiptInvalidationItemIDs
+            )
+            if !receiptChanges.isEmpty {
                 // A push that started before this pull may still commit an older receipt
-                // snapshot. Let it finish, then make repair invalidation the last durable
-                // receipt transition before acknowledging the remote change token.
+                // snapshot. Let it finish, then make this the last durable receipt transition
+                // before acknowledging the remote change token.
                 try await awaitActivePushCompletion(generation: generation)
                 try requireActive(generation)
-                try invalidatePushReceipts(
-                    for: accumulation.receiptInvalidationItemIDs,
-                    generation: generation
-                )
+                try applyPullReceiptChanges(receiptChanges, generation: generation)
                 try afterReceiptInvalidationBeforeTokenPersistence?()
                 try requireActive(generation)
+            }
+            guard !quarantine.didOverflow else {
+                throw CloudKitSyncError.pullQuarantineOverflow
             }
             // Durable before the token: a crash here replays the page instead of losing the
             // record that was skipped.
@@ -934,6 +598,9 @@ public final class CloudKitSyncService {
     private struct QuarantineState {
         var entries: [String: CloudKitPullQuarantineEntry]
         var didChange = false
+        /// A record failed while the list was full and could not be tracked; the pull must
+        /// hold the change token, or the record would be skipped with no recovery path.
+        var didOverflow = false
 
         mutating func clear(_ recordName: String) {
             guard entries.removeValue(forKey: recordName) != nil else { return }
@@ -945,8 +612,9 @@ public final class CloudKitSyncService {
             guard existingAttemptCount != nil
                     || entries.count < CloudKitPullQuarantineCodec.maximumEntryCount else {
                 syncLog.error(
-                    "quarantine is full; skipped record \(recordName, privacy: .public) is untracked: \(reason, privacy: .public)"
+                    "quarantine is full; cannot track skipped record \(recordName, privacy: .public): \(reason, privacy: .public)"
                 )
+                didOverflow = true
                 return
             }
             let attemptCount = (existingAttemptCount ?? 0) + 1
@@ -979,10 +647,9 @@ public final class CloudKitSyncService {
     ) async throws {
         try requireActive(generation)
         let recordName = record.recordID.recordName
-        // Branch on the record type before any clip mapping: the settings record is not a clip,
-        // so it must never reach `ClipboardCloudMapping` (which would read it as unmappable) or
-        // the quarantine. This is the single choke point for remote records — the page loop and
-        // the quarantine-recovery re-fetch both come through here.
+        // Settings records must never reach `ClipboardCloudMapping` (misread as unmappable) or
+        // the quarantine — branch on record type first. Single choke point: both the page loop
+        // and the quarantine-recovery re-fetch route through here.
         if record.recordType == SyncedSettingsCloudMapping.recordType {
             if let settings = SyncedSettingsCloudMapping.settings(from: record) {
                 accumulation.remoteSettings = settings
@@ -1103,10 +770,9 @@ public final class CloudKitSyncService {
         cloudKitErrorCode(of: error) == .unknownItem
     }
 
-    /// A resolution failure is permanent when replaying the same record can only fail the same way:
-    /// the record's blob is absent from CloudKit, oversized, or unusable as a local file. Local
-    /// environment failures (a blob that cannot be written right now) stay fatal, so the token is
-    /// held and the record is retried instead of being skipped past.
+    /// Permanent when replaying can only fail the same way (blob absent, oversized, or unusable
+    /// locally). A local environment failure (e.g. cannot write right now) stays fatal, so the
+    /// token is held and the record is retried rather than skipped.
     private nonisolated static func isPermanentRecordResolutionFailure(_ error: any Error) -> Bool {
         if let syncError = error as? CloudKitSyncError, case .missingBlobAsset = syncError {
             return true
@@ -1279,8 +945,8 @@ public final class CloudKitSyncService {
         let garbageCollectedReceipts = existingReceipts.filter { currentItemIDs.contains($0.key) }
 
         try requireActive(generation)
-        let prepared = Self.preparePushRecords(itemsToPush, in: zoneID) { item in
-            item.isDeleted ? nil : existingBlobURL(for: item)
+        let prepared = Self.preparePushRecords(itemsToPush.filter { !$0.isDeleted }, in: zoneID) { item in
+            existingBlobURL(for: item)
         }
         // A clip CloudKit cannot represent (blob file gone, unusable blob metadata) is skipped
         // instead of blocking every other pending record. It keeps no receipt, so an ordinary
@@ -1288,7 +954,12 @@ public final class CloudKitSyncService {
         for skippedID in prepared.skippedItemIDs {
             syncLog.error("skipping clip with invalid sync blob metadata: \(skippedID.uuidString, privacy: .public)")
         }
-        guard !prepared.records.isEmpty else {
+        let tombstoneRecords = try await prepareTombstonePushRecords(
+            itemsToPush.filter(\.isDeleted),
+            generation: generation
+        )
+        let recordsToSave = prepared.records + tombstoneRecords
+        guard !recordsToSave.isEmpty else {
             if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
                 try persistPushReceipts(garbageCollectedReceipts, generation: generation)
             }
@@ -1299,7 +970,7 @@ public final class CloudKitSyncService {
         var committedReceipts = existingReceipts
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
-        try await savePreparedRecords(prepared.records, generation: generation) { batch in
+        try await savePreparedRecords(recordsToSave, generation: generation) { batch in
             let canonicalItemIDs = Set(store.itemsForSync().map(\.id))
             committedReceipts = committedReceipts.filter { canonicalItemIDs.contains($0.key) }
             for pushed in batch where canonicalItemIDs.contains(pushed.itemID) {
@@ -1307,6 +978,51 @@ public final class CloudKitSyncService {
             }
             try persistPushReceipts(committedReceipts, generation: generation)
         }
+    }
+
+    /// Tombstones save onto the server's fetched record: only assignments on a fetched record
+    /// mark `.changedKeys`, erasing the clip's content/asset. A record the server never had gets
+    /// a minimal tombstone directly; one merely not handed over yet stays unsent, not downgraded.
+    private func prepareTombstonePushRecords(
+        _ tombstones: [ClipboardItem],
+        generation: UInt64
+    ) async throws -> [PreparedPushRecord] {
+        guard !tombstones.isEmpty else { return [] }
+        var records: [PreparedPushRecord] = []
+        records.reserveCapacity(tombstones.count)
+        let itemsByRecordName = Dictionary(
+            tombstones.map { ($0.id.uuidString, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for batch in itemsByRecordName.keys.sorted().chunked(into: 100) {
+            let fetched = try await database.fetchRecords(for: batch, in: zoneID)
+            try requireActive(generation)
+            let serverRecords = Dictionary(
+                fetched.records.map { ($0.recordID.recordName, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for recordName in batch {
+                guard let item = itemsByRecordName[recordName] else { continue }
+                if let serverRecord = serverRecords[recordName] {
+                    ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
+                    records.append(PreparedPushRecord(
+                        itemID: item.id,
+                        record: serverRecord,
+                        modifiedAt: item.modifiedAt
+                    ))
+                } else if fetched.permanentlyMissingRecordNames.contains(recordName) {
+                    guard let record = ClipboardCloudMapping.record(from: item, in: zoneID) else {
+                        continue
+                    }
+                    records.append(PreparedPushRecord(
+                        itemID: item.id,
+                        record: record,
+                        modifiedAt: item.modifiedAt
+                    ))
+                }
+            }
+        }
+        return records
     }
 
     // MARK: - Synced settings
@@ -1326,16 +1042,25 @@ public final class CloudKitSyncService {
         local: SyncedSettings,
         remote: RemoteSettingsRecord?
     ) -> SettingsResolution {
-        if let remoteSettings = remote?.settings, remoteSettings.updatedAt > local.updatedAt {
+        let localStamp = Self.millisecondStamp(local.updatedAt)
+        if let remoteSettings = remote?.settings,
+           Self.millisecondStamp(remoteSettings.updatedAt) > localStamp {
             return .adopt(remoteSettings)
         }
-        if let remote, local.updatedAt <= remote.updatedAt {
+        if let remote, localStamp <= Self.millisecondStamp(remote.updatedAt) {
             // Older or tied — including against a value this build cannot interpret. The
             // incumbent remote stands and this device stays quiet.
             return .idle
         }
         guard local.wasChosen else { return .idle }
         return .publish
+    }
+
+    /// CloudKit does not persist sub-millisecond `Date` precision, so a round-tripped copy of
+    /// the local stamp must still compare as a tie — otherwise every reconcile would
+    /// republish an identical record.
+    private nonisolated static func millisecondStamp(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSinceReferenceDate * 1_000).rounded())
     }
 
     /// Reconciles the singleton settings record fetch-first: read the server's copy, decide, and
@@ -1394,13 +1119,12 @@ public final class CloudKitSyncService {
         return fetched.records.first { $0.recordType == SyncedSettingsCloudMapping.recordType }
     }
 
-    /// Live fast path for a settings record arriving in the change feed, so another device's
-    /// choice lands without waiting for the next launch. Purely an accelerator: the fetch-first
-    /// reconcile is what guarantees convergence, which is why an unreadable record here is
-    /// simply ignored rather than held onto.
+    /// Live fast path for a settings record in the change feed — lands another device's choice
+    /// without waiting for launch. Purely an accelerator; the fetch-first reconcile guarantees
+    /// convergence, so an unreadable record here is simply ignored.
     private func applySettingsFromChangeFeed(_ remote: SyncedSettings) {
         guard let settingsStore, let local = settingsStore.syncedSettings else { return }
-        guard remote.updatedAt > local.updatedAt else { return }
+        guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return }
         settingsStore.applySyncedSettings(remote)
     }
 
@@ -1500,10 +1224,9 @@ public final class CloudKitSyncService {
         try requireActive(generation)
         guard !item.isDeleted, let blob = item.syncBlobReference else { return .notRequired }
         let assetURL = (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL
-        // A blob is immutable for a given filename — editing a clip mints a new one — so if the
-        // file is already on disk there is nothing to fetch. This skips re-reading the full (up to
-        // 32 MB) CKAsset on every metadata-only edit (pin/tag), which re-surfaces the record in the
-        // change feed with its asset attached.
+        // A blob is immutable per filename (an edit mints a new one), so an on-disk file needs no
+        // fetch. This skips re-reading the full (up to 32 MB) CKAsset on every metadata-only edit
+        // (pin/tag), which re-surfaces the record in the change feed with its asset attached.
         if let localURL = store.blobURL(for: blob), FileManager.default.fileExists(atPath: localURL.path) {
             let requiresLocalRepush = assetURL == nil
             if requiresLocalRepush {
@@ -1594,20 +1317,61 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: pushWatermarkKey)
     }
 
-    private func invalidatePushReceipts(
-        for itemIDs: Set<UUID>,
+    /// How push receipts move after one pull's merge.
+    struct PullReceiptChanges: Equatable {
+        var seeded: [UUID: Date] = [:]
+        var invalidated: Set<UUID> = []
+        var isEmpty: Bool { seeded.isEmpty && invalidated.isEmpty }
+    }
+
+    /// Seeds a receipt only when the reconciled winner exactly matches the server's copy, so the
+    /// next push won't echo it back. Any other winner (newer local, or a merged same-stamp record)
+    /// loses its receipt and re-publishes; repair items always re-push and are never seeded.
+    nonisolated static func pullReceiptChanges(
+        remote: [ClipboardItem],
+        reconciled: [ClipboardItem],
+        repairItemIDs: Set<UUID>
+    ) -> PullReceiptChanges {
+        var changes = PullReceiptChanges(invalidated: repairItemIDs)
+        guard !remote.isEmpty else { return changes }
+        let winners = Dictionary(
+            reconciled.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var newestRemote: [UUID: ClipboardItem] = [:]
+        for item in remote where (newestRemote[item.id]?.modifiedAt ?? .distantPast) < item.modifiedAt {
+            newestRemote[item.id] = item
+        }
+        for (id, remoteItem) in newestRemote {
+            guard let winner = winners[id] else { continue }
+            if ClipboardCloudMapping.syncedFieldsMatch(winner, remoteItem),
+               !repairItemIDs.contains(id) {
+                changes.seeded[id] = remoteItem.modifiedAt
+            } else {
+                changes.invalidated.insert(id)
+            }
+        }
+        return changes
+    }
+
+    private func applyPullReceiptChanges(
+        _ changes: PullReceiptChanges,
         generation: UInt64
     ) throws {
         try requireActive(generation)
-        guard var receipts = pushReceipts else {
+        if pushReceipts == nil, changes.seeded.isEmpty {
             // A missing envelope already means every canonical item must be replayed.
             return
         }
-        let previousReceipts = receipts
-        for itemID in itemIDs {
-            receipts.removeValue(forKey: itemID)
+        let previousReceipts = pushReceipts
+        var receipts = previousReceipts ?? [:]
+        for (id, stamp) in changes.seeded {
+            receipts[id] = stamp
         }
-        guard receipts != previousReceipts else { return }
+        for id in changes.invalidated {
+            receipts.removeValue(forKey: id)
+        }
+        if let previousReceipts, previousReceipts == receipts { return }
         try persistPushReceipts(receipts, generation: generation)
     }
 
@@ -1654,6 +1418,35 @@ public final class CloudKitSyncService {
     ) -> [String: CloudKitPullQuarantineEntry] {
         guard let data = defaults.data(forKey: key) else { return [:] }
         return (try? CloudKitPullQuarantineCodec.decode(data)) ?? [:]
+    }
+
+    /// The app version: an upgrade grants quarantined records fresh resolution attempts,
+    /// since a record this build cannot read may be readable by the next.
+    nonisolated static var defaultResolutionEpoch: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+
+    /// Zeroes attempt counts when the epoch changed, keeping entries and reasons. The marker
+    /// only advances once the reset counts are durable, so a failed write retries next launch.
+    private static func reQuarantineForEpoch(
+        _ entries: [String: CloudKitPullQuarantineEntry],
+        epoch: String,
+        defaults: UserDefaults,
+        quarantineKey: String,
+        epochKey: String
+    ) -> [String: CloudKitPullQuarantineEntry] {
+        guard defaults.string(forKey: epochKey) != epoch else { return entries }
+        let reset = entries.mapValues {
+            CloudKitPullQuarantineEntry(reason: $0.reason, attemptCount: 0)
+        }
+        if reset.isEmpty {
+            defaults.removeObject(forKey: quarantineKey)
+        } else {
+            guard let data = try? CloudKitPullQuarantineCodec.encode(reset) else { return entries }
+            defaults.set(data, forKey: quarantineKey)
+        }
+        defaults.set(epoch, forKey: epochKey)
+        return reset
     }
 
     private func persistToken(

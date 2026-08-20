@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// What a clip *is*, inferred from its content. Drives the glyph, the type label,
-/// and the accentable preview in every view mode — so you recognise a clip at a
-/// glance instead of reading it. The content-sniffing itself lives in the pure
-/// `ContentClassifier` (YankCore); this enum just maps the result onto its cases.
+/// What a clip is, inferred from its content — drives the glyph, label, and preview
+/// across every view mode. Content-sniffing itself lives in `ContentClassifier` (YankCore).
 enum ClipKind: Equatable {
     case color(Color, raw: String)
     case link(URL)
@@ -51,10 +49,8 @@ enum ClipKind: Equatable {
         return false
     }
 
-    /// The secondary line shown under a list row: the kind's own salient string (the full
-    /// URL, the email address, the phone number) when it has one, otherwise the source app.
-    /// Pure derivation shared by the macOS `ClipboardItemRow` and the iOS `ClipRowView` so the
-    /// rule can't drift between platforms; the icon/thumbnail rendering stays local to each row.
+    /// The secondary line under a list row: the kind's salient string (URL, email, phone) when
+    /// it has one, otherwise `sourceApp`. Shared by both platforms' row views so the rule can't drift.
     func secondaryDetail(sourceApp: String?) -> String? {
         switch self {
         case let .link(url):  return url.absoluteString
@@ -66,8 +62,7 @@ enum ClipKind: Equatable {
 }
 
 extension ClipboardItem {
-    /// The inferred kind of this clip — memoised in `ClipPresentationCache`, since it's
-    /// read several times per row on every render. `computeKind()` does the real work.
+    /// Inferred kind of this clip, memoised in `ClipPresentationCache` since it's read often per render.
     var kind: ClipKind { ClipPresentationCache.presentation(for: self).kind }
 
     /// A single-line excerpt for the list and tile views — memoised alongside `kind`.
@@ -76,8 +71,7 @@ extension ClipboardItem {
     /// Max characters shown in a collapsed list/tile excerpt before eliding.
     private static let excerptLimit = 160
 
-    /// The content-sniffing behind `kind` (color / link / email / phone / code / note),
-    /// delegated to the pure `ContentClassifier`. Run once per clip id via the cache.
+    /// Content-sniffing behind `kind`, delegated to `ContentClassifier`.
     func computeKind() -> ClipKind {
         if type == .image { return .image }
         let raw = (textContent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

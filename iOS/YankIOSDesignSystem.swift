@@ -21,11 +21,9 @@ enum IOSType {
 }
 
 extension Font {
-    /// The iOS type ramp: a Dynamic-Type text style with an optional weight.
-    /// Anchoring labels to text styles instead of the fixed-point `TypeScale` the
-    /// menu-bar app draws with is what lets every label scale with the user's
-    /// preferred content size (WCAG 1.4.4). iOS views use this; macOS keeps the
-    /// fixed scale, which is idiomatic for a compact menu-bar utility.
+    /// The iOS type ramp: a Dynamic-Type text style with an optional weight. Anchoring to text
+    /// styles (not the fixed-point `TypeScale` macOS draws with) lets every label scale with the
+    /// user's preferred content size (WCAG 1.4.4); macOS keeps the fixed scale as idiomatic for a compact utility.
     static func yank(_ style: Font.TextStyle, weight: Font.Weight = .regular) -> Font {
         .system(style).weight(weight)
     }

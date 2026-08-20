@@ -4,9 +4,9 @@ import AppKit
 enum Sounds {
     private static var cachedSounds: [SoundResource: NSSound] = [:]
 
-    static func play(_ cue: HapticCue) {
-        guard SettingsManager.shared.soundEffectsEnabled else { return }
-        play(cue, choice: SettingsManager.shared.soundEffectChoice)
+    static func play(_ cue: HapticCue, isEnabled: Bool, choice: SoundEffectChoice) {
+        guard isEnabled else { return }
+        play(cue, choice: choice)
     }
 
     static func preview(_ choice: SoundEffectChoice) {

@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Single row for the List / Split modes — a content-aware icon, a two-line excerpt,
-/// and quiet metadata. Type detection + colour parsing live in `ClipKind`.
+/// Single row for the List / Split modes. Type detection and color parsing live in `ClipKind`.
 struct ClipboardItemRow: View {
     let item: ClipboardItem
     let store: ClipboardStore
@@ -21,10 +20,8 @@ struct ClipboardItemRow: View {
         if isMultiSelected && !isPrimarySelection {
             return Color.yankMultiSelect
         } else if isPrimarySelection {
-            // Same accent source the tile uses for its focused fill (the AA-safe
-            // `foreground`), so the selection hue stays identical across List ↔ Grid.
-            // A touch denser than the tile's, since the row fills over the window
-            // surface rather than a raised card.
+            // Same AA-safe accent as the tile's focused fill, denser here since the row sits
+            // directly on the window surface rather than a raised card.
             return AppTheme.active.foreground.opacity(0.16)
         } else if isHovered {
             return Color.yankHover

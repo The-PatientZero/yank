@@ -1,6 +1,5 @@
 import SwiftUI
 
-// History card section — retention tiers, auto-delete window, and the min-capture stepper.
 extension SettingsView {
     var historySection: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
@@ -16,7 +15,7 @@ extension SettingsView {
             settingRowControl("Auto-delete after", "Older unprotected clips are removed.") {
                 Picker("Auto-delete after", selection: Binding(
                     get: { manager.retentionDays },
-                    set: { manager.retentionDays = $0; manager.save() })) {
+                    set: { manager.setRetentionDays($0) })) {
                     Text("Never").tag(0)
                     Text("7 days").tag(7)
                     Text("30 days").tag(30)
@@ -47,8 +46,7 @@ extension SettingsView {
     func tierButton(_ tier: HistoryLimit) -> some View {
         let selected = manager.historyLimit == tier
         return Button(action: { selectHistoryLimit(tier) }) {
-            // Tier carries its own filled-radio glyph as the non-colour cue, so it opts
-            // out of the shared corner checkmark to avoid two redundant checkmarks.
+            // Own filled-radio cue, so it skips the shared corner checkmark (avoids showing two).
             SelectionChip(isSelected: selected, showsCheckmarkCue: false) {
                 VStack(alignment: .center, spacing: Space.xs) {
                     Image(systemName: selected ? "checkmark.circle.fill" : "circle")
@@ -71,8 +69,8 @@ extension SettingsView {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    /// Same shared rule the iOS picker uses, so both platforms warn on exactly the cases that
-    /// would actually delete something.
+    /// Mirrors the iOS picker's rule so both platforms warn on exactly the same
+    /// changes that would actually delete something.
     func selectHistoryLimit(_ tier: HistoryLimit) {
         switch HistoryLimitChange.requested(
             tier,

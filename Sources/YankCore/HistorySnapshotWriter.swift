@@ -69,16 +69,9 @@ final class HistorySnapshotWriteReceipt: @unchecked Sendable {
     }
 }
 
-/// Owns the off-main persistence of the clip history + tombstones, coalescing a burst of
-/// saves into a single trailing write. Shared by the macOS and iOS stores so the
-/// snapshot → encode → write pipeline lives in exactly one place (no per-store copy).
-///
-/// Snapshotting happens on the main actor when `scheduleSave` is called; the encode + write
-/// run on a private utility queue. With a non-zero `debounce`, rapid mutations (auto-capture,
-/// pin/tag bursts) collapse to a single encode + write of the latest snapshot instead of one
-/// O(history) rewrite per change. `flush()` forces any pending write synchronously and waits
-/// for the queue to drain — call it on app termination or scene-background so the latest
-/// state is durable before the process suspends.
+/// Owns off-main persistence of clip history + tombstones: `scheduleSave` snapshots on the main
+/// actor and debounces bursts into one write on a private queue, avoiding an O(history) rewrite
+/// per change. `flush()` forces and awaits it — call before termination so state is durable.
 @MainActor
 final class HistorySnapshotWriter {
     private struct PendingWrite: Sendable {

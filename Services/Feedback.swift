@@ -11,20 +11,38 @@ enum CaptureFeedbackPolicy {
     }
 }
 
-/// The single fire-and-forget feedback layer. A call site emits a *semantic* cue — `capture`,
-/// `paste`, `pin`, … — and this fans it out to every non-visual channel (tactile now, audible too
-/// once enabled). Each channel self-gates on its own user setting, so emitting a cue is always safe
-/// and stays silent when the user has everything off.
-///
-/// View-layer animation is deliberately *not* here: it must run where the view lives (it observes
-/// state, it can't be fired from a store or controller). Animation composes with these cues at the
-/// view, not through this facade.
+/// Fire-and-forget: a call site emits a semantic cue (`capture`, `paste`, `pin`, …), fanned out
+/// to every channel, each self-gating on its own setting so emitting is always safe. Animation
+/// stays at the view layer, not here; `Sounds`/`Haptics` stay pure functions of their arguments.
 @MainActor
 enum Feedback {
-    static func emit(_ cue: HapticCue, allowsSound: Bool = true) {
-        Haptics.fire(cue)
+    static func emit(
+        _ cue: HapticCue,
+        allowsSound: Bool = true,
+        settings: FeedbackSettings = SettingsManager.shared.feedbackSettings
+    ) {
+        Haptics.fire(cue, isEnabled: settings.hapticFeedbackEnabled)
         if allowsSound {
-            Sounds.play(cue)
+            Sounds.play(
+                cue,
+                isEnabled: settings.soundEffectsEnabled,
+                choice: settings.soundEffectChoice
+            )
         }
     }
+}
+
+/// The non-visual feedback preferences a cue needs, as a value snapshot — the same shape
+/// `CaptureSettings` uses for the capture path.
+struct FeedbackSettings: Equatable, Sendable {
+    var soundEffectsEnabled: Bool
+    var hapticFeedbackEnabled: Bool
+    var soundEffectChoice: SoundEffectChoice
+
+    /// Everything off: the default for tests and previews, where a cue must stay inert.
+    static let silent = FeedbackSettings(
+        soundEffectsEnabled: false,
+        hapticFeedbackEnabled: false,
+        soundEffectChoice: .defaultChoice
+    )
 }

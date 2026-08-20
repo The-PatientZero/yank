@@ -138,12 +138,12 @@ final class ClipDetailModel {
 
     func suggestions(for item: ClipboardItem) -> [String] {
         guard !tagInputText.isEmpty else { return [] }
-        return store.allTags.filter { $0.hasPrefix(tagInputText.lowercased()) && !item.tags.contains($0) }
+        return TagSuggestions.matching(searchText: "#" + tagInputText, in: store.allTags)
+            .filter { !item.tags.contains($0) }
     }
 
     func formattedBytes(_ bytes: Int) -> String {
-        // `ByteCountFormatStyle` is a Sendable, system-cached value type — no per-call
-        // `ByteCountFormatter` allocation. Matches the old `.file` + bytes/KB/MB config.
+        // `ByteCountFormatStyle` is a Sendable, system-cached value type — no per-call allocation.
         bytes.formatted(.byteCount(style: .file, allowedUnits: [.bytes, .kb, .mb]))
     }
 }

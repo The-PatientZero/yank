@@ -22,10 +22,8 @@ enum Space {
 
 // MARK: - Corner radius
 
-/// One radius scale, applied by role so nested shapes stay concentric:
-/// `window` for the window, `lg` for cards/panels, `md` for controls (tiles,
-/// chips, buttons), `sm` for inner accents (swatches, thumbnails), `xs` for the
-/// smallest chips (keycaps, badges). Pills use a `Capsule`, not a radius.
+/// Radius scale, applied by role for concentric nesting: `window`, `lg` (cards), `md`
+/// (controls), `sm` (inner accents), `xs` (small chips). Pills use `Capsule`, not a radius.
 enum Radius {
     static let xs: CGFloat = 4
     static let sm: CGFloat = 6
@@ -36,8 +34,7 @@ enum Radius {
 
 // MARK: - Icon sizing
 
-/// Named sizes for the small kind-icons that recur in clip surfaces, so the same
-/// dimension isn't re-typed as a literal in every row on both platforms.
+/// Named sizes for the small kind-icons that recur in clip surfaces.
 enum IconSize {
     /// The kind icon (swatch / thumbnail / glyph) in a list row.
     static let clipRow: CGFloat = 30
@@ -77,19 +74,16 @@ enum ControlTarget {
 
 // MARK: - Hairline
 
-/// The one hairline stroke width, so the ~0.5pt separators, chip borders, and tile
-/// outlines that recur on both platforms can't drift to 1pt in one place and 0.5 in
-/// another. Rendered crisp on Retina; AppKit/UIKit round it to a device pixel.
+/// The one hairline stroke width used by every ~0.5pt separator and border on both platforms.
+/// Renders crisp on Retina; AppKit/UIKit round it to a device pixel.
 enum Hairline {
     static let width: CGFloat = 0.5
 }
 
 // MARK: - Motion curves
 
-/// The two easing curves Yank animates with, as raw control-point tuples shared by the
-/// macOS `YankMotion` and the iOS `IOSMotion` (and, on macOS, the Core Animation window
-/// summon). Keeping the points here means a curve tweak lands in both motion systems at
-/// once instead of being copied — "one motion language," enforced by a single source.
+/// Raw control-point tuples for Yank's two easing curves, shared by macOS `YankMotion`,
+/// iOS `IOSMotion`, and (on macOS) the Core Animation window summon.
 enum MotionCurve {
     /// Expo-out — decisive, snaps to rest. Used for presents and the window summon.
     static let expoOut: (x1: Double, y1: Double, x2: Double, y2: Double) = (0.16, 1, 0.3, 1)

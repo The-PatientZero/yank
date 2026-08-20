@@ -1,10 +1,9 @@
 import Cocoa
 import Carbon
 
-/// Sole owner of the process-wide Carbon hot-key event tap.
-///
-/// macOS installs exactly one application event handler, so the handler ref lives here once.
-/// The app only binds one global shortcut: open clipboard history.
+/// Sole owner of the process-wide Carbon hot-key event tap: macOS allows only one application
+/// event handler, so the handler ref lives here once. The app binds a single global shortcut
+/// (open clipboard history).
 @MainActor
 private final class CarbonHotkeyTap {
     static let shared = CarbonHotkeyTap()
@@ -92,7 +91,6 @@ private final class CarbonHotkeyTap {
 }
 
 /// The clipboard history global-shortcut facade.
-/// Wraps the shared Carbon tap and translates the app's `HotkeyModifiers` into Carbon's mask.
 @MainActor
 struct HotkeyRegistry {
     /// Register the global clipboard-history shortcut, replacing any prior binding.
@@ -115,8 +113,9 @@ struct HotkeyRegistry {
         CarbonHotkeyTap.shared.isBound()
     }
 
-    /// Translates the app's modifier flags into the bit mask Carbon expects.
-    static func carbonModifierMask(for modifiers: HotkeyModifiers) -> UInt32 {
+    /// Translates the app's modifier flags into the bit mask Carbon expects. Pure bit work
+    /// with no actor state, so it does not need the main actor.
+    nonisolated static func carbonModifierMask(for modifiers: HotkeyModifiers) -> UInt32 {
         var mask: UInt32 = 0
         if modifiers.shift { mask |= UInt32(shiftKey) }
         if modifiers.command { mask |= UInt32(cmdKey) }

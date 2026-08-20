@@ -2,13 +2,8 @@ import Cocoa
 import SwiftUI
 import ApplicationServices
 
-/// Coordinator for the history window: search, selection, the clip stream, and the
-/// key monitor. The focused clip's preview/detail lives in `ClipDetailView` + `ClipDetailModel`.
-///
-/// The bulk of the view splits into same-type extensions kept in sibling files:
-/// `+Selection` (multi-select state bridging to `ClipSelectionState`), `+KeyCommands`
-/// (the `GlobalKeyMonitor` table and its handlers), `+Layouts` (list/grid/masonry/
-/// gallery/split builders and the `selectable` cell), and `+ImageExport`.
+/// Coordinator for the history window: search, selection, the clip stream, and the key
+/// monitor. Split across same-type extensions: `+Selection`, `+KeyCommands`, `+Layouts`, `+ImageExport`.
 struct HistoryContentView: View {
     var store: ClipboardStore
     var axPermission: AccessibilityPermission? = nil
@@ -49,27 +44,24 @@ struct HistoryContentView: View {
     @State var streamWidth: CGFloat = 460
     @State var searchText = ""
     @State var selectedIndex = 0
-    @State var scrollTrigger = false  // Triggers scroll on keyboard navigation
+    @State var scrollTrigger = false
 
-    // Multi-select state
     @State var selectedIDs: Set<UUID> = []
     @State var selectionAnchor: UUID?
 
-    // Tag filter state
     @State var activeTagFilter: String? = nil
     @State var showTagAutocomplete: Bool = false
 
     // Track selection by ID so it survives list insertions
     @State var selectedID: UUID?
 
-    // Quick Look overlay (Space peeks the focused clip)
+    // Space bar peeks the focused clip.
     @State var showQuickLook = false
 
     @State var searchTextDebounced = ""
     @State private var searchDebounceTask: Task<Void, Never>?
     @State var pendingDeleteCommitTask: Task<Void, Never>?
 
-    // The focused clip's preview/OCR/tag-input state + loading.
     @State var detail: ClipDetailModel
 
     /// Cards carry this namespace so they glide between layouts when the mode changes.
@@ -122,7 +114,6 @@ struct HistoryContentView: View {
         TagSuggestions.matching(searchText: searchTextDebounced, in: store.allTags)
     }
 
-    /// Get the first unpinned item, or the first pinned item if no unpinned items exist
     private var defaultSelectedItem: ClipboardItem? {
         return filteredItems.first(where: { !$0.isPinned }) ?? filteredItems.first
     }

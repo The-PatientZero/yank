@@ -1,13 +1,58 @@
 import CryptoKit
 import Foundation
 
-/// Single-quotes a string for safe interpolation into a `/bin/bash` command line, escaping
-/// any embedded single quotes. Shared by the updater's install script and the status-bar
-/// restart path, which both shell out with a bundle path that the user could in principle
-/// control. One home so the quoting rule can't drift between the two call sites.
+/// Single-quotes a string for safe `/bin/bash` interpolation, escaping embedded quotes. Shared
+/// by the installer script and status-bar restart path — both interpolate a bundle path a user
+/// could in principle control, so the quoting rule must live in one place.
 enum ShellQuoting {
     static func quoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+}
+
+/// Runs an untyped-throwing system call and folds any failure into `UpdateError`: an error
+/// that is already an `UpdateError` is rethrown unchanged, anything else is wrapped in
+/// `.underlying` with the operation label so the install path can stay fully typed-throws.
+@discardableResult
+private func mapUpdateError<T>(
+    operation: String,
+    _ body: () throws -> T
+) throws(UpdateError) -> T {
+    do {
+        return try body()
+    } catch let error as UpdateError {
+        throw error
+    } catch {
+        throw .underlying(operation: operation, message: error.localizedDescription)
+    }
+}
+
+/// The external commands the installer shells out to (extraction, codesign verification,
+/// Gatekeeper, chmod). Injected so each install gate can be tested without a signed archive or
+/// the machine's real Gatekeeper state; production always uses `.system`.
+struct UpdateProcessRunner: Sendable {
+    private let execute: @Sendable (String, String, [String]) throws -> Void
+
+    init(_ execute: @escaping @Sendable (String, String, [String]) throws -> Void) {
+        self.execute = execute
+    }
+
+    /// Launches the process, folding failures into `UpdateError` (see `mapUpdateError`).
+    func run(_ name: String, _ executable: String, _ arguments: [String]) throws(UpdateError) {
+        try mapUpdateError(operation: "Launching \(name)") {
+            try execute(name, executable, arguments)
+        }
+    }
+
+    static let system = UpdateProcessRunner { name, executable, arguments in
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw UpdateError.processFailed(name: name, status: process.terminationStatus)
+        }
     }
 }
 
@@ -19,7 +64,13 @@ enum UpdateInstaller {
     static func fetchExpectedSHA256(from url: URL) async throws(UpdateError) -> String {
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await URLSession.shared.data(from: url)
+            (data, response) = try await BoundedResponse.load(
+                URLRequest(url: url),
+                what: "Checksum",
+                maximumBytes: UpdateSecurityPolicy.maximumChecksumBytes
+            )
+        } catch let error as UpdateError {
+            throw error
         } catch {
             throw .underlying(operation: "Fetching checksum", message: error.localizedDescription)
         }
@@ -41,10 +92,14 @@ enum UpdateInstaller {
         expectedChecksum: String,
         targetAppURL: URL,
         releaseNotes: String? = nil,
-        releaseURL: String? = nil
+        releaseURL: String? = nil,
+        runner: UpdateProcessRunner = .system,
+        stagingRootOverride: URL? = nil
     ) throws(UpdateError) -> StagedUpdate {
         let fileManager = FileManager.default
-        let updatesRoot = stagingRootDirectory(fileManager: fileManager)
+        // Staging clears the whole root, so tests must be able to point it away from the
+        // real Application Support tree rather than deleting a user's pending update.
+        let updatesRoot = stagingRootOverride ?? stagingRootDirectory(fileManager: fileManager)
         try? fileManager.removeItem(at: updatesRoot)
 
         let stageDirectory = updatesRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -68,12 +123,12 @@ enum UpdateInstaller {
             throw .checksumMismatch(expected: expectedChecksum, actual: actualChecksum)
         }
 
-        try runProcess(name: "ditto", executable: "/usr/bin/ditto", arguments: ["-xk", zipURL.path, extractURL.path])
+        try runner.run("ditto", "/usr/bin/ditto", ["-xk", zipURL.path, extractURL.path])
 
         guard fileManager.fileExists(atPath: newAppURL.path) else { throw .missingBundle }
         try validateBundle(at: newAppURL, expectedVersion: expectedVersion)
-        try verifyCodeSignature(at: newAppURL)
-        try assessWithGatekeeper(newAppURL)
+        try verifyCodeSignature(at: newAppURL, runner: runner)
+        try assessWithGatekeeper(newAppURL, runner: runner)
 
         return StagedUpdate(
             version: expectedVersion,
@@ -86,7 +141,10 @@ enum UpdateInstaller {
         )
     }
 
-    static func launchStagedInstall(_ staged: StagedUpdate) throws(UpdateError) {
+    static func launchStagedInstall(
+        _ staged: StagedUpdate,
+        runner: UpdateProcessRunner = .system
+    ) throws(UpdateError) {
         let fileManager = FileManager.default
         let stagedAppURL = URL(fileURLWithPath: staged.stagedAppPath)
         let targetAppURL = URL(fileURLWithPath: staged.targetAppPath)
@@ -97,8 +155,8 @@ enum UpdateInstaller {
         try validateTargetAppURL(targetAppURL)
         guard fileManager.fileExists(atPath: stagedAppURL.path) else { throw .missingBundle }
         try validateBundle(at: stagedAppURL, expectedVersion: staged.version)
-        try verifyCodeSignature(at: stagedAppURL)
-        try assessWithGatekeeper(stagedAppURL)
+        try verifyCodeSignature(at: stagedAppURL, runner: runner)
+        try assessWithGatekeeper(stagedAppURL, runner: runner)
 
         let script = """
         #!/bin/bash
@@ -137,11 +195,11 @@ enum UpdateInstaller {
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         }
 
-        try runProcess(name: "chmod", executable: "/bin/chmod", arguments: ["755", scriptURL.path])
-        try runProcess(
-            name: "installer launcher",
-            executable: "/bin/sh",
-            arguments: ["-c", "nohup /bin/bash \(ShellQuoting.quoted(scriptURL.path)) >/dev/null 2>&1 &"]
+        try runner.run("chmod", "/bin/chmod", ["755", scriptURL.path])
+        try runner.run(
+            "installer launcher",
+            "/bin/sh",
+            ["-c", "nohup /bin/bash \(ShellQuoting.quoted(scriptURL.path)) >/dev/null 2>&1 &"]
         )
     }
 
@@ -194,54 +252,30 @@ enum UpdateInstaller {
         }
     }
 
-    private static func verifyCodeSignature(at appURL: URL) throws(UpdateError) {
+    private static func verifyCodeSignature(
+        at appURL: URL,
+        runner: UpdateProcessRunner
+    ) throws(UpdateError) {
         let requirement = [
             "anchor apple generic",
             "certificate leaf[subject.OU] = \"\(Self.expectedTeamIdentifier)\"",
             "identifier \"\(Self.expectedBundleIdentifier)\""
         ].joined(separator: " and ")
-        try runProcess(
-            name: "codesign",
-            executable: "/usr/bin/codesign",
-            arguments: ["--verify", "--deep", "--strict", "-R=\(requirement)", appURL.path]
+        try runner.run(
+            "codesign",
+            "/usr/bin/codesign",
+            ["--verify", "--deep", "--strict", "-R=\(requirement)", appURL.path]
         )
     }
 
-    private static func assessWithGatekeeper(_ appURL: URL) throws(UpdateError) {
-        try runProcess(
-            name: "spctl",
-            executable: "/usr/sbin/spctl",
-            arguments: ["-a", "-t", "execute", "-vv", appURL.path]
+    private static func assessWithGatekeeper(
+        _ appURL: URL,
+        runner: UpdateProcessRunner
+    ) throws(UpdateError) {
+        try runner.run(
+            "spctl",
+            "/usr/sbin/spctl",
+            ["-a", "-t", "execute", "-vv", appURL.path]
         )
-    }
-
-    private static func runProcess(name: String, executable: String, arguments: [String]) throws(UpdateError) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        try mapUpdateError(operation: "Launching \(name)") {
-            try process.run()
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw .processFailed(name: name, status: process.terminationStatus)
-        }
-    }
-
-    /// Runs an untyped-throwing system call and folds any failure into `UpdateError`: an error
-    /// that is already an `UpdateError` is rethrown unchanged, anything else is wrapped in
-    /// `.underlying` with the operation label so the install path can stay fully typed-throws.
-    @discardableResult
-    private static func mapUpdateError<T>(
-        operation: String,
-        _ body: () throws -> T
-    ) throws(UpdateError) -> T {
-        do {
-            return try body()
-        } catch let error as UpdateError {
-            throw error
-        } catch {
-            throw .underlying(operation: operation, message: error.localizedDescription)
-        }
     }
 }

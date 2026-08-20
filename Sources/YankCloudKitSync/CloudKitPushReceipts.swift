@@ -1,10 +1,8 @@
 import Foundation
 
-/// Durable per-record acknowledgement of the exact local version CloudKit accepted.
-///
-/// The enclosing UserDefaults key is container-scoped by `CloudKitSyncService`; this codec keeps
-/// the payload versioned and strict so corrupt state causes a safe full replay instead of silently
-/// suppressing local work.
+/// Durable per-record acknowledgement of the exact local version CloudKit accepted. The codec
+/// keeps the payload versioned and strict, so corrupt state forces a safe full replay instead
+/// of silently suppressing local work.
 enum CloudKitPushReceiptCodec {
     private struct Envelope: Codable {
         let version: Int

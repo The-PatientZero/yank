@@ -22,26 +22,34 @@ public enum ClipboardMerge {
     }
 
     private static func preferred(_ lhs: ClipboardItem, _ rhs: ClipboardItem) -> ClipboardItem {
-        var winner = winnerByWriteClock(lhs, rhs)
-        // AI enrichment is derived metadata, computed only on macOS, that rides `modifiedAt`.
-        // A metadata edit (pin/tag) from a device that never enriched would otherwise win the
-        // last-writer race and erase it. Resolve the AI fields on their own clock so the most
-        // recent enrichment survives regardless of which side won the item itself.
+        let (winnerByClock, loser) = orderedByWriteClock(lhs, rhs)
+        var winner = winnerByClock
+        // AI enrichment is derived metadata (macOS-only) that rides `modifiedAt`, so a metadata-only
+        // edit (pin/tag) from a device that never enriched would otherwise win the last-writer race
+        // and erase it. Resolve AI fields on their own clock, independent of which side wins the item.
         let enriched = freshestEnrichment(lhs, rhs)
         winner.aiTags = enriched.aiTags
         winner.aiTitle = enriched.aiTitle
         winner.aiEnrichedAt = enriched.aiEnrichedAt
+        // richFilename references a local rich archive that sync never transports, so there is
+        // no clock to compare and losing the last-writer race must not let the cleanup pass
+        // delete it: carry it across from the losing side.
+        if winner.richFilename == nil {
+            winner.richFilename = loser.richFilename
+        }
         return winner
     }
 
-    private static func winnerByWriteClock(_ lhs: ClipboardItem, _ rhs: ClipboardItem) -> ClipboardItem {
+    private static func orderedByWriteClock(
+        _ lhs: ClipboardItem, _ rhs: ClipboardItem
+    ) -> (winner: ClipboardItem, loser: ClipboardItem) {
         if lhs.modifiedAt != rhs.modifiedAt {
-            return lhs.modifiedAt > rhs.modifiedAt ? lhs : rhs
+            return lhs.modifiedAt > rhs.modifiedAt ? (lhs, rhs) : (rhs, lhs)
         }
         if lhs.isDeleted != rhs.isDeleted {
-            return lhs.isDeleted ? lhs : rhs
+            return lhs.isDeleted ? (lhs, rhs) : (rhs, lhs)
         }
-        return lhs.id.uuidString >= rhs.id.uuidString ? lhs : rhs
+        return lhs.id.uuidString >= rhs.id.uuidString ? (lhs, rhs) : (rhs, lhs)
     }
 
     /// The side whose enrichment ran most recently (an un-enriched side, `aiEnrichedAt == nil`,

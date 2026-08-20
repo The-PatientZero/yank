@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// How the clip stream is laid out. Chosen in the header or Settings, remembered
-/// across launches. Every mode renders the same content-aware clips — only the
-/// arrangement changes, so the cards can morph from one mode to the next.
+/// Clip-stream layout mode, persisted across launches — every mode renders the
+/// same cards, only the arrangement differs.
 enum ClipViewMode: String, CaseIterable, Identifiable {
     case list, grid, masonry, gallery, split
 
@@ -97,15 +96,13 @@ enum ClipDensity: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Primary clip-text size on the fixed macOS scale, drawn from the shared `TypeScale`
-    /// so the density ramp and the type system can't drift apart. (iOS sizes clip text from
-    /// `IOSType.readingBody` instead — see `ClipRowView` — so its content stays at/above the
-    /// system body and scales with Dynamic Type; this compact ramp is macOS-only.)
+    /// macOS-only fixed scale from `TypeScale`, kept in sync with the shared type system.
+    /// iOS uses `IOSType.readingBody` instead (see `ClipRowView`) so text scales with Dynamic Type.
     var bodyFont: CGFloat {
         switch self {
-        case .snug: return TypeScale.control  // 12
-        case .cozy: return TypeScale.body     // 13
-        case .airy: return TypeScale.input    // 14
+        case .snug: return TypeScale.control
+        case .cozy: return TypeScale.body
+        case .airy: return TypeScale.input
         }
     }
 

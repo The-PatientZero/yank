@@ -1,11 +1,9 @@
 import Foundation
 import SwiftUI
 
-/// A clip's derived presentation — its inferred `kind` and its display `excerpt`. Both
-/// are pure functions of the clip's immutable `type`/`textContent`, yet each is read
-/// several times per row on every SwiftUI body pass (the kind drives the icon, the
-/// preview, and the type label). Computing them is non-trivial (content sniffing +
-/// whitespace collapse), so they're memoised here.
+/// A clip's derived presentation (`kind`, `excerpt`) — pure functions of its immutable
+/// content, but expensive to recompute and read several times per row per render, so
+/// they're memoised here.
 final class ClipPresentation: @unchecked Sendable {
     let kind: ClipKind
     let excerpt: String
@@ -29,9 +27,8 @@ private final class ClipPresentationCacheStorage: @unchecked Sendable {
     }
 
     func presentation(for item: ClipboardItem) -> ClipPresentation {
-        // NSCache is thread-safe per operation, so no external lock is needed. Two threads
-        // racing the same id at worst both compute and set — harmless, since the result is a
-        // pure function of the clip's immutable content.
+        // NSCache is thread-safe per operation; concurrent misses at worst compute and set
+        // twice — harmless since presentation() is pure (see ClipPresentation above).
         let key = item.id as NSUUID
         if let hit = cache.object(forKey: key) { return hit }
         let made = ClipPresentation(kind: item.computeKind(), excerpt: item.computeExcerpt())

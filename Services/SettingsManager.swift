@@ -107,8 +107,9 @@ final class SettingsManager {
     /// Copies whose trimmed length is below this are never captured (0 = off).
     var minCaptureLength: Int = 0
 
-    /// Auto-delete unprotected items older than this many days (0 = keep forever).
-    var retentionDays: Int = 0
+    /// Auto-delete window in days (0 = keep forever). Synced: expiry mints tombstones that
+    /// propagate, so the window must be one account-wide choice.
+    var retentionDays: Int { syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays }
 
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
     var showMenuBarIcon: Bool = true
@@ -150,16 +151,23 @@ final class SettingsManager {
     /// How much breathing room each clip gets.
     var density: ClipDensity = SettingsDefaults.density
 
-    /// Snapshot of just the settings the capture path needs. The composition
-    /// root injects this into `ClipboardStore` / `ClipboardWatcher` at construction and
-    /// re-pushes it when the user changes a relevant setting, so capture logic depends on
-    /// an injected value rather than this singleton.
+    /// Snapshot of just the settings the capture path needs. Injected into `ClipboardStore` /
+    /// `ClipboardWatcher` at construction and re-pushed on relevant changes, so capture logic
+    /// depends on an injected value, not this singleton.
     var captureSettings: CaptureSettings {
         CaptureSettings(
             historyLimit: historyLimit.rawValue,
             retentionDays: retentionDays,
             minCaptureLength: minCaptureLength,
             excludedBundleIDs: excludedBundleIDs
+        )
+    }
+
+    var feedbackSettings: FeedbackSettings {
+        FeedbackSettings(
+            soundEffectsEnabled: soundEffectsEnabled,
+            hapticFeedbackEnabled: hapticFeedbackEnabled,
+            soundEffectChoice: soundEffectChoice
         )
     }
 
@@ -181,6 +189,7 @@ final class SettingsManager {
         let rawLimit = defaults.integer(forKey: SettingsKeys.historyLimit)
         self.syncedHistoryLimit = SyncedHistoryLimit(
             historyLimit: HistoryLimit(rawValue: rawLimit) ?? SettingsDefaults.historyLimit,
+            retentionDays: defaults.integer(forKey: SettingsKeys.retentionDays),
             updatedAt: defaults.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
                 ?? .distantPast
         )
@@ -192,7 +201,6 @@ final class SettingsManager {
             self.excludedBundleIDs = Set(defaults.stringArray(forKey: excludedBundleIDsKey) ?? [])
         }
         self.minCaptureLength = defaults.integer(forKey: minCaptureLengthKey)
-        self.retentionDays = defaults.integer(forKey: SettingsKeys.retentionDays)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
         self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
@@ -247,8 +255,8 @@ final class SettingsManager {
         NotificationCenter.default.post(name: .yankCaptureSettingsChanged, object: nil)
     }
 
-    // Each setter pairs a write with the exact notification its call site posts today, so the
-    // two can't drift apart. The notification mapping is preserved verbatim from `SettingsView`.
+    // Each setter pairs its write with the exact notification its call site posts, so the two
+    // can't drift apart.
 
     func setShowMenuBarIcon(_ value: Bool) {
         showMenuBarIcon = value
@@ -271,6 +279,13 @@ final class SettingsManager {
     /// A user-driven history-limit change. Announced so the sync service reconciles it.
     func setHistoryLimit(_ value: HistoryLimit) {
         guard syncedHistoryLimit.choose(value) else { return }
+        save()
+        NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
+    }
+
+    /// A user-driven retention change, announced like the history limit.
+    func setRetentionDays(_ value: Int) {
+        guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
         save()
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }

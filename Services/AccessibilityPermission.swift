@@ -13,11 +13,9 @@ final class AccessibilityPermission {
     init() {
         isTrusted = AXIsProcessTrusted()
 
-        // A menu-bar accessory does not reliably receive `applicationDidBecomeActive` when the user
-        // returns from System Settings, so polling activation isn't enough to notice a grant. The
-        // system posts this distributed notification whenever any app's Accessibility authorization
-        // changes — observe it so `isTrusted` stays live (it drives the in-app "access needed" hints).
-        // The TCC change can land a beat after the notification, so re-check on the next runloop tick.
+        // Menu-bar accessories don't reliably get `applicationDidBecomeActive` on return from System
+        // Settings, so this distributed notification is the reliable signal for an Accessibility
+        // grant. TCC can lag it by a beat — `refresh()` re-checks on the next runloop tick.
         trustObserver = DistributedNotificationCenter.default().addObserver(
             forName: Self.apiChangedNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -37,10 +35,9 @@ final class AccessibilityPermission {
         isTrusted = AXIsProcessTrusted()
     }
 
-    /// Open the Accessibility pane and poll for the grant. The distributed notification can be
-    /// missed (and the TCC change can lag the user's toggle), so this is the reliable path: it
-    /// re-checks once a second until trust flips or a short budget elapses, then stops. Bounded, so
-    /// there's no permanent timer — nothing runs unless the user is actively granting.
+    /// Opens the Accessibility pane and polls for the grant — the distributed notification can be
+    /// missed, so this is the reliable fallback. Re-checks once a second for up to 60s, then stops;
+    /// no permanent timer runs unless the user is actively granting.
     @MainActor
     func openSettingsAndAwaitGrant() {
         Self.openSettings()

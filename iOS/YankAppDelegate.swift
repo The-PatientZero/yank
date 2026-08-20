@@ -80,10 +80,9 @@ final class IOSHistoryBackgroundFlushCoordinator {
     }
 }
 
-/// iOS counterpart to the macOS `AppDelegate`: registers for remote notifications and bridges
-/// CloudKit silent pushes into the sync engine for real-time updates. Push *delivery* also needs
-/// the Push Notifications capability on the provisioning profile; without it the app still pulls
-/// on launch/foreground and on local changes — this just adds the live path.
+/// iOS counterpart to macOS `AppDelegate`: registers for remote notifications and bridges
+/// CloudKit silent pushes into the sync engine. Push delivery also needs the Push Notifications
+/// capability on the provisioning profile; without it the app still pulls on launch/foreground/local changes.
 @MainActor
 final class YankAppDelegate: NSObject, UIApplicationDelegate {
     private static let cloudContainerID = "iCloud.com.thepatientzero.yank"

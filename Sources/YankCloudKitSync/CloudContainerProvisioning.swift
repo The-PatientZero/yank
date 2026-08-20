@@ -3,10 +3,9 @@ import Foundation
 import Security
 #endif
 
-/// Reads the current process entitlements without constructing `CKContainer`.
-/// Apple platforms can abort when a binary asks for an unprovisioned iCloud
-/// container, so callers gate CloudKit wiring through this helper before
-/// constructing `CKContainer(identifier:)`.
+/// Reads process entitlements without constructing `CKContainer` — asking for an unprovisioned
+/// iCloud container can abort the process, so callers gate CloudKit wiring through this helper
+/// before constructing `CKContainer(identifier:)`.
 public enum CloudContainerProvisioning {
     private static let containerEntitlementKey = "com.apple.developer.icloud-container-identifiers"
     private static let serviceEntitlementKey = "com.apple.developer.icloud-services"

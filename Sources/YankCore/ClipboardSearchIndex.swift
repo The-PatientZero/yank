@@ -1,11 +1,8 @@
 import Foundation
 
-/// Compact keyword index for file-backed text clips.
-///
-/// Large clip bodies stay in blob files so rendering and history persistence do not carry
-/// multi-MB strings. This index stores bounded, normalized whole-word coverage from the
-/// full text at capture time, so ordinary keyword searches still find file-backed clips
-/// without reading every blob on each keystroke.
+/// Compact keyword index for file-backed text clips. Large clip bodies stay in blob files, so
+/// this stores bounded, normalized whole-word coverage captured once — letting keyword search
+/// find file-backed clips without reading every blob on each keystroke.
 enum ClipboardSearchIndex {
     private static let separator = "\u{1F}"
     private static let minimumTokenLength = 2

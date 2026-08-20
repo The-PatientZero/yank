@@ -31,8 +31,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// Blob filename for image clips.
     public let imageFilename: String?
 
-    /// Filename of the local rich pasteboard archive, replayed verbatim on paste.
-    /// Rich archives are macOS-local and not synced.
+    /// Filename of the local rich pasteboard archive, replayed verbatim on paste; not synced.
     public var richFilename: String?
 
     /// Whether this clip had rich content when captured, even if the archive is unavailable here.

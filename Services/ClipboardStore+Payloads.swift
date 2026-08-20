@@ -14,11 +14,8 @@ extension ClipboardStore {
         return NSImage(contentsOf: url)
     }
 
-    /// Copy each image clip's blob into `folder` as `image-0001.png`, `image-0002.png`, …
-    /// Moves the blob-copy `FileManager` I/O out of the SwiftUI view and into
-    /// the store, which owns the blob layout. Non-image items are skipped; an item whose
-    /// blob is missing is reported rather than silently dropped. Returns the number of
-    /// images written so the caller can report progress.
+    /// Copies each image clip's blob into `folder` as `image-NNNN.png`, skipping non-image
+    /// items. Throws `.missingBlob` for a missing blob; returns the count written.
     @discardableResult
     func exportImages(_ items: [ClipboardItem], to folder: URL) throws(ImageExportError) -> Int {
         var written = 0
@@ -42,7 +39,7 @@ extension ClipboardStore {
         blobStore.saveImage(data)
     }
 
-    /// Persist a full pasteboard archive (binary plist) and return its filename (#11).
+    /// Persists a full pasteboard archive (binary plist) and returns its filename.
     func saveRichArchive(_ archive: PasteboardArchive) -> String? {
         blobStore.saveRichArchive(archive)
     }
@@ -57,8 +54,7 @@ extension ClipboardStore {
         }
     }
 
-    /// Save large text off the main actor and return the filename. Used by clipboard
-    /// capture, where a multi-MB write should never stall the menu-bar UI.
+    /// Saves large text off the main actor so a multi-MB write never stalls the menu-bar capture UI.
     func saveTextAsync(_ text: String) async -> String? {
         await blobStore.saveTextAsync(text)
     }
@@ -115,7 +111,7 @@ extension ClipboardStore {
         return TextChunkReader.page(for: item, textURL: nil, charCount: charCount)
     }
 
-    /// Get the total size of an item (in bytes) for UI display.
+    /// Total size of an item, in bytes.
     func itemSize(for item: ClipboardItem) -> Int? {
         if let original = item.originalSizeBytes { return original }
 

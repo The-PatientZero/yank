@@ -1,7 +1,5 @@
 import SwiftUI
 
-// The scrolling stream (List / Grid / Masonry / Gallery) and the split rail + preview,
-// plus the shared `selectable` cell wrapper that wires click / drag / accessibility.
 extension HistoryContentView {
     // MARK: - Scrolling stream (List / Grid / Masonry / Gallery)
 
@@ -149,13 +147,9 @@ extension HistoryContentView {
     func selectable<Content: View>(_ item: ClipboardItem, _ index: Int, @ViewBuilder content: () -> Content) -> some View {
         content()
             .contentShape(Rectangle())
-            // A keyboard-focus ring on the primary-selected cell — the list's keyboard
-            // cursor, which is always live here (arrow keys navigate the stream throughout
-            // the history window, even while the search field types). It's the system
-            // 2pt focus colour, distinct from the accent selection *fill*, so arrow-key
-            // users get one unambiguous "you are here" that doesn't rely on hue alone
-            // (WCAG 2.4.7 / 1.4.1). It dims while the search field is actively being typed
-            // into, so the field's own caret-focus ring never has to compete with it.
+            // Keyboard-focus ring on the selected cell: the system 2pt focus colour, kept
+            // distinct from the accent fill per WCAG 2.4.7/1.4.1 (can't rely on hue alone).
+            // Dims while the search field is typed into so the two rings don't compete.
             .overlay {
                 if item.id == selectedID {
                     // Match the cell's own corner so the ring stays concentric: tiles round
@@ -163,8 +157,6 @@ extension HistoryContentView {
                     RoundedRectangle(cornerRadius: viewMode.isTiled ? Radius.md : clipRowCornerRadius)
                         .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor),
                                       lineWidth: 2)
-                        // Still clearly present while the search field types — it eases back,
-                        // it doesn't disappear, so the keyboard cursor never goes ambiguous.
                         .opacity(listHasKeyboardFocus ? 1 : 0.7)
                         .accessibilityHidden(true)
                 }
@@ -198,16 +190,13 @@ extension HistoryContentView {
             .zIndex(pulseID == item.id ? 1 : 0)
             .matchedGeometryEffect(id: item.id, in: cardNS)
             .id(item.id)
-            // Drag a clip straight into another app or Finder — the defining power-user
-            // gesture of a clipboard manager. The provider derives text / URL / image
-            // representations from the clip's kind; the preview reuses the tile so the
-            // drag image matches what's on screen.
+            // Drag representations are derived per clip kind (text/URL/image); the preview
+            // reuses the tile so the drag image matches what's on screen.
             .onDrag({ dragProvider(for: item) }, preview: { dragPreview(for: item) })
             .animation(YankMotion.quick(reduceMotion), value: listHasKeyboardFocus)
-            // The cells are driven by a mouse-tracking overlay + the global key
-            // monitor, neither of which assistive tech can see. Expose each as one
-            // button: a clean spoken label, paste as the default action, and an
-            // explicit Select for inspecting without pasting.
+            // Mouse-tracking and the global key monitor bypass VoiceOver entirely, so every
+            // pointer- or hotkey-only action gets an explicit accessibilityAction here (paste
+            // is the default; see the Copy/Pin/Bookmark/Delete actions below).
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
                 item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt)
@@ -222,14 +211,11 @@ extension HistoryContentView {
                 selectedIndex = index
                 selectSingle(item.id)
             }
-            // The drag-out is pointer-only, so give assistive tech a parallel route to the
-            // same outcome — put the clip on the pasteboard without pasting it anywhere.
+            // Drag-out is pointer-only; mirrors it without pasting for VoiceOver (see above).
             .accessibilityAction(named: "Copy") {
                 onCopyToClipboard(item)
             }
-            // Pin / bookmark / delete are otherwise hotkey-only (the global key monitor acts
-            // on the selected clip), invisible to VoiceOver. Expose them per-cell so an
-            // assistive-tech user has the same actions the pointer and keyboard do.
+            // Hotkey-only otherwise; mirrored here for VoiceOver (see above).
             .accessibilityAction(named: item.isPinned ? "Unpin" : "Pin") {
                 store.togglePin(for: item)
             }
@@ -241,10 +227,8 @@ extension HistoryContentView {
             }
     }
 
-    /// True when the search field isn't actively focused, so the stream's keyboard-cursor
-    /// ring can show at full strength. Arrow keys are routed throughout the history window
-    /// regardless, but the only place AppKit draws its own focus ring is the search field —
-    /// so the cursor ring dims (rather than competes) while the field is being typed into.
+    /// Whether the stream's keyboard-focus ring should show at full strength — see the
+    /// selection ring rationale in `selectable`.
     var listHasKeyboardFocus: Bool { !isSearchFocused }
 
     /// A subtle drag image reusing the tile, so what lifts off the stream reads as the

@@ -58,12 +58,10 @@ public enum AITagCleaner {
         return out
     }
 
-    /// lowercase → spaces to dashes → keep letters/digits/dash → trim dashes → cap length.
+    /// The shared tag rule — see `TagNormalization`. Kept as a name here because the cleaner's
+    /// own vectors read against it.
     static func normalize(_ input: String) -> String {
-        let dashed = input.lowercased().replacingOccurrences(of: "\\s+", with: "-", options: .regularExpression)
-        let filtered = dashed.filter { $0.isLetter || $0.isNumber || $0 == "-" }
-        let trimmed = filtered.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        return String(trimmed.prefix(24))
+        TagNormalization.normalize(input)
     }
 }
 

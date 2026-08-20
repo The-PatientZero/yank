@@ -38,20 +38,21 @@ struct GlobalKeyMonitor: NSViewRepresentable {
                 keyWindow: NSApp.keyWindow
             ) else { return event }
             switch event.keyCode {
+            // Returning nil consumes the key event; returning `event` forwards it.
             case 126: // Up
                 if event.modifierFlags.contains(.shift) {
                     handlers.onExtendUp()
                 } else {
                     handlers.onUp()
                 }
-                return nil // Consume event
+                return nil
             case 125: // Down
                 if event.modifierFlags.contains(.shift) {
                     handlers.onExtendDown()
                 } else {
                     handlers.onDown()
                 }
-                return nil // Consume event
+                return nil
             case 36: // Enter (⌥↵ pastes an image's text instead)
                 if event.modifierFlags.contains(.option) {
                     handlers.onPasteAsTextKey()

@@ -61,10 +61,9 @@ enum ClipboardRetention {
         )
     }
 
-    /// Whether tightening to `limit` would actually delete anything. Protected clips are never
-    /// evicted and still consume budget, so a history made mostly of pinned / bookmarked /
-    /// tagged clips can sit well above a new cap without a single clip being removed — and a
-    /// destructive warning would be a lie. Mirrors `cap` without building the result.
+    /// Whether tightening to `limit` would actually delete anything. Protected clips consume
+    /// budget but are never evicted, so a mostly-pinned/bookmarked/tagged history can sit above
+    /// a new cap with nothing removed — a destructive warning would be a lie. Mirrors `cap`, minus building the result.
     static func wouldEvict(_ items: [ClipboardItem], limit: Int) -> Bool {
         guard limit > 0 else { return false }
         // Counted in place rather than via `filter`: the settings screen asks this for every

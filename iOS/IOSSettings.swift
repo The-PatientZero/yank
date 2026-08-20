@@ -42,11 +42,9 @@ enum IOSForegroundCaptureMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// iOS user preferences, backed by the App-Group defaults so they survive relaunches.
-/// Mirrors the slice of the Mac's `SettingsManager` that applies on iOS: accent theme,
-/// layout, density, history limit, and auto-delete retention. Keys and defaults come
-/// from the shared `SettingsKeys` / `SettingsDefaults`, and `ClipStore` reads the same
-/// keys for limit/retention enforcement.
+/// iOS user preferences, backed by App-Group defaults so they survive relaunches. Mirrors the
+/// iOS-relevant slice of macOS `SettingsManager`; keys come from shared `SettingsKeys`/
+/// `SettingsDefaults`, which `ClipStore` reads directly for limit/retention enforcement.
 @MainActor
 @Observable
 final class IOSSettings {
@@ -58,6 +56,10 @@ final class IOSSettings {
     private var syncedHistoryLimit: SyncedHistoryLimit {
         didSet {
             defaults?.set(syncedHistoryLimit.historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
+            defaults?.set(
+                syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays,
+                forKey: SettingsKeys.retentionDays
+            )
             defaults?.set(syncedHistoryLimit.updatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         }
     }
@@ -68,7 +70,11 @@ final class IOSSettings {
     /// without silently resizing anyone's history on upgrade.
     var historyLimitUpdatedAt: Date { syncedHistoryLimit.updatedAt }
     var syncedSettings: SyncedSettings { syncedHistoryLimit.current }
-    var retentionDays: Int { didSet { defaults?.set(retentionDays, forKey: SettingsKeys.retentionDays) } }
+    /// Auto-delete window in days (0 = keep forever). Synced: expiry mints tombstones that
+    /// propagate, so the window must be one account-wide choice.
+    var retentionDays: Int {
+        syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays
+    }
     var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
     var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
     private(set) var foregroundCaptureMode: IOSForegroundCaptureMode
@@ -107,10 +113,11 @@ final class IOSSettings {
             historyLimit: HistoryLimit(
                 rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
             ) ?? SettingsDefaults.historyLimit,
+            retentionDays: defaults?.integer(forKey: SettingsKeys.retentionDays)
+                ?? SettingsDefaults.retentionDays,
             updatedAt: defaults?.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
                 ?? .distantPast
         )
-        self.retentionDays = defaults?.integer(forKey: SettingsKeys.retentionDays) ?? SettingsDefaults.retentionDays
         self.syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
         self.spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
         self.foregroundCaptureMode = IOSForegroundCaptureMode(
@@ -125,10 +132,9 @@ final class IOSSettings {
         seedDefaults()
     }
 
-    /// Write the resolved values back when absent, so the lean `ClipStore` and the
-    /// extensions — which read the App-Group defaults raw — enforce the same limit and
-    /// retention the UI shows, rather than falling back to "unlimited" until the user
-    /// first opens Settings. Only seeds missing keys, so it never clobbers a real choice.
+    /// Writes resolved values back when absent, so the lean `ClipStore` and extensions — which
+    /// read App-Group defaults raw — see the same limit/retention the UI shows, instead of
+    /// falling back to "unlimited" until Settings is first opened. Only seeds missing keys.
     private func seedDefaults() {
         guard let defaults else { return }
         if defaults.object(forKey: SettingsKeys.historyLimit) == nil {
@@ -166,6 +172,12 @@ final class IOSSettings {
     /// A user-driven history-limit change. Announced so the sync service reconciles it.
     func setHistoryLimit(_ value: HistoryLimit) {
         guard syncedHistoryLimit.choose(value) else { return }
+        NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
+    }
+
+    /// A user-driven retention change, announced like the history limit.
+    func setRetentionDays(_ value: Int) {
+        guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }
 

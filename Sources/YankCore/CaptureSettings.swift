@@ -1,13 +1,8 @@
 import Foundation
 
-/// The exact slice of user settings the capture critical path reads (history limit,
-/// retention window, minimum capture length, capture exclusions). Injected into
-/// `ClipboardStore` / `ClipboardWatcher` as a value instead of reaching for the
-/// `SettingsManager.shared` process-wide singleton, so the capture logic is testable
-/// in isolation.
-///
-/// The app keeps `SettingsManager` as the source of truth and feeds the stores a fresh
-/// snapshot when the user changes a setting; the stores depend only on this value.
+/// The slice of user settings the capture critical path reads, injected into
+/// `ClipboardStore`/`ClipboardWatcher` as a value instead of the `SettingsManager.shared`
+/// singleton, so capture logic is testable in isolation and only depends on this value.
 struct CaptureSettings: Equatable, Sendable {
     /// Maximum number of live clips to retain on this device. `0` disables the cap.
     var historyLimit: Int

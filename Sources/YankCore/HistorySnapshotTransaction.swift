@@ -23,11 +23,9 @@ enum HistorySnapshotTransactionError: LocalizedError {
     }
 }
 
-/// Write-ahead checkpoint for the two legacy canonical files.
-///
-/// The envelope is additive and temporary: older Yank versions continue to read the same
-/// `history.json` and `tombstones.json` files, while a newer loader can finish an interrupted
-/// replacement of that pair before decoding either canonical file.
+/// Write-ahead checkpoint for the two legacy canonical files. Additive and temporary: older
+/// Yank versions still read `history.json`/`tombstones.json` directly, while a newer loader can
+/// finish an interrupted replacement of that pair before decoding either file.
 enum HistorySnapshotTransaction {
     private struct Envelope: Codable {
         let version: Int

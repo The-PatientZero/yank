@@ -105,6 +105,7 @@ targets:
       - iOS/AppGroupContext.swift
       - iOS/ClipStore.swift
       - iOS/ClipStore+Mutations.swift
+      - iOS/IOSClipBlobStore.swift
       - iOS/IOSSettings.swift
       - iOS/IOSSyncedSettingsBridge.swift
       - iOS/HistoryLimitConfirmation.swift

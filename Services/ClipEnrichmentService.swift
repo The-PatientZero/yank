@@ -1,10 +1,8 @@
 import AppKit
 
-/// Runs on-device AI tagging after a capture: debounced, off the hot path, text-only, and
-/// gated by the opt-in setting. Writes suggestions back via the store's `setAIEnrichment`,
-/// which mirrors the proven `ocrText` write-back rail. The gating rules live in the pure,
-/// headlessly tested `ClipEnrichmentPolicy`. Excluded/concealed clips never reach the store,
-/// so the capture pipeline's privacy gate already covers what this can see.
+/// Runs on-device AI tagging after a capture: debounced, off the hot path, text-only, gated
+/// by the opt-in setting. Gating logic lives in `ClipEnrichmentPolicy`. No privacy check here —
+/// excluded/concealed clips never reach the store, so the capture pipeline's gate already covers it.
 @MainActor
 final class ClipEnrichmentService {
     private let store: ClipboardStore

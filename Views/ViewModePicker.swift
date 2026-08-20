@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// The segmented List / Grid / Masonry / Gallery / Split toggle in the history header.
-/// Persists the choice to `SettingsManager` and animates the bound `selection`.
+/// List/Grid/Masonry/Gallery/Split toggle for the history header; persists the choice to `SettingsManager`.
 struct ViewModePicker: View {
     @Binding var selection: ClipViewMode
     var reduceMotion: Bool

@@ -53,8 +53,7 @@ struct ClipDetailView: View {
         }
     }
 
-    /// No selection — an SF Symbol over one warm line, mirroring the exclusions empty
-    /// state so the app's empty surfaces speak in one voice.
+    /// Mirrors the exclusions empty state so empty surfaces read consistently.
     private var emptyState: some View {
         VStack(spacing: Space.md) {
             Image(systemName: "doc.on.clipboard")
@@ -73,8 +72,7 @@ struct ClipDetailView: View {
         .accessibilityHint("Pick a clip from the list to preview it here.")
     }
 
-    /// While the thumbnail decodes off-thread, hold the eventual frame with a redacted
-    /// placeholder rect instead of a naked spinner — no layout jump when the image lands.
+    /// Redacted placeholder rect (not a spinner) holds the frame so the image landing doesn't cause a layout jump.
     private var imagePlaceholder: some View {
         RoundedRectangle(cornerRadius: Radius.md)
             .fill(Color.yankSubtleFill)
@@ -420,12 +418,10 @@ struct ClipDetailView: View {
 
             if model.showTagInput {
                 if inputSuggestions.isEmpty && !model.tagInputText.isEmpty {
-                    // Query typed but nothing matches — say so quietly; ↵ still creates it.
                     Text("No matching tags — ↵ creates “\(TagChip.normalize(model.tagInputText))”.")
                         .font(.system(size: TypeScale.micro))
                         .foregroundColor(.yankTextTertiary)
                 } else {
-                    // The two keys that drive the input, spelled out while it's showing.
                     Text("↵ add · ⇥ complete")
                         .font(.system(size: TypeScale.micro))
                         .foregroundColor(.yankTextTertiary)

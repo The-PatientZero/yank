@@ -4,15 +4,12 @@ private enum SelectionChipStyle {
     static let cornerRadius = Radius.md
 }
 
-/// The one selection-chip surface for Settings: every selected option shares the
-/// same rounded-rectangle radius, accent fill, and selected border. Mode, Density,
-/// and (history) Tier all compose this so their outlines cannot drift again. The
-/// accent hue is never the only "chosen" signal: this draws a corner checkmark cue
-/// by default (Tier opts out because it carries its own filled-radio glyph). Meets
-/// WCAG 1.4.11: the selected border is well above 3:1 and the cue is non-colour.
+/// The one selection-chip surface for Settings (Mode, Density, Tier) so their outlines can't drift.
+/// WCAG 1.4.11: selection is never colour-only — draws a non-colour checkmark cue by default (Tier
+/// opts out; it has its own filled-radio glyph) and keeps the selected border ≥3:1 contrast.
 struct SelectionChip<Content: View>: View {
     let isSelected: Bool
-    /// Draw the corner checkmark cue (the non-colour selected signal).
+    /// Set false when the caller already shows its own non-colour selected cue (e.g. Tier's radio glyph).
     var showsCheckmarkCue: Bool = true
     @ViewBuilder var content: () -> Content
 

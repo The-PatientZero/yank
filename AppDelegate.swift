@@ -117,8 +117,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        clipboardController?.stop()
-        clipboardStore.flushPendingWrites()
+        Self.terminate(store: clipboardStore, controller: clipboardController)
+    }
+
+    /// Commits before tearing down sync so a delete pending its 10s auto-commit still mints a
+    /// tombstone and pushes, instead of silently resurrecting on next launch.
+    static func terminate(store: ClipboardStore, controller: ClipboardController?) {
+        store.commitPendingDeleteIfNeeded()
+        controller?.stop()
+        store.flushPendingWrites()
     }
 
     func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
@@ -187,7 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static let restartDelaySeconds: TimeInterval = 0.4
 
-    /// Finish a staged update if one is ready, otherwise relaunch the app.
     private func restartOrFinishUpdate() {
         if UpdateService.shared.finishStagedUpdateIfAvailable() { return }
         restart()

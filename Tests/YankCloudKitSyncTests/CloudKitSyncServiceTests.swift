@@ -408,7 +408,9 @@ struct CloudKitSyncServiceTests {
             containerID: containerID
         )
         let database = FakeCloudKitDatabase()
-        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let remoteRecord = try record(for: remote)
+        database.pages = [page(changed: [remoteRecord], moreComing: false)]
+        database.fetchableRecords[id.uuidString] = remoteRecord
         let store = FakeSyncableStore()
         store.items = [tombstone]
         let service = CloudKitSyncService(
@@ -430,6 +432,7 @@ struct CloudKitSyncServiceTests {
         #expect(pushed.recordID.recordName == id.uuidString)
         #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
         #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
+        #expect(pushed[ClipboardCloudMapping.Key.textFilename] == nil)
         #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
                 == tombstone.modifiedAt)
         #expect(defaults.data(forKey: tokenKey) == nil)
@@ -451,7 +454,9 @@ struct CloudKitSyncServiceTests {
             containerID: containerID
         )
         let database = FakeCloudKitDatabase()
-        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
+        let remoteRecord = try record(for: remote)
+        database.pages = [page(changed: [remoteRecord], moreComing: false)]
+        database.fetchableRecords[id.uuidString] = remoteRecord
         let store = FakeSyncableStore()
         store.items = [tombstone]
         let service = CloudKitSyncService(
@@ -1014,6 +1019,10 @@ struct CloudKitSyncServiceTests {
         let store = FakeSyncableStore()
         store.items = [future, edited, inserted, deleted]
         let database = FakeCloudKitDatabase()
+        // The dirty tombstone had a receipt, so its record exists server-side and the push
+        // erases it in place rather than uploading a fresh record.
+        database.fetchableRecords[deleted.id.uuidString] =
+            try record(for: makeTextItem(id: deleted.id, text: "deleted-live", modifiedAt: 100))
         let service = CloudKitSyncService(containerIdentifier: containerID, store: store,
                                           database: database, defaults: defaults)
 
@@ -1096,7 +1105,7 @@ struct CloudKitSyncServiceTests {
                 == [retained.id: retained.modifiedAt])
     }
 
-    @Test func hardRemoteDeletionProducesADirtyTombstoneReceipt() async throws {
+    @Test func hardRemoteDeletionAdoptsTheTombstoneWithoutRecreatingTheRecord() async throws {
         let local = makeTextItem(text: "delete-remotely", modifiedAt: 100)
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
@@ -1121,15 +1130,14 @@ struct CloudKitSyncServiceTests {
         let result = await service.start()
 
         #expect(result == .started)
-        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
-        let pushedVersion = try #require(
-            pushed[ClipboardCloudMapping.Key.modifiedAt] as? Date
-        )
-        #expect(pushed.recordID.recordName == local.id.uuidString)
-        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] is Date)
-        #expect(pushedVersion != local.modifiedAt)
+        let applied = try #require(store.appliedReconciled)
+        let adopted = try #require(applied.first { $0.id == local.id })
+        #expect(adopted.isDeleted)
+        // The zone already reflects the deletion; re-uploading the tombstone would recreate
+        // the record the server just removed.
+        #expect(database.savedBatches.isEmpty)
         #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[local.id]
-                == pushedVersion)
+                == adopted.modifiedAt)
     }
 
     @Test func firstBatchReceiptsSurviveASecondBatchFailure() async throws {
@@ -1378,7 +1386,7 @@ struct CloudKitSyncServiceTests {
         #expect(defaults.object(forKey: watermarkKey) == nil)
     }
 
-    @Test func migrationPullsBeforeReplayingTheReconciledCanonicalVersion() async throws {
+    @Test func migrationPullAdoptsTheCanonicalVersionWithoutReuploadingIt() async throws {
         let id = UUID()
         let local = makeTextItem(id: id, text: "local-old", modifiedAt: 100)
         let remote = makeTextItem(id: id, text: "remote-new", modifiedAt: 200)
@@ -1404,9 +1412,9 @@ struct CloudKitSyncServiceTests {
         let result = await service.start()
 
         #expect(result == .started)
-        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
-        #expect(pushed[ClipboardCloudMapping.Key.textContent] as? String == "remote-new")
-        #expect(pushed[ClipboardCloudMapping.Key.modifiedAt] as? Date == remote.modifiedAt)
+        // The adopted version is exactly what the server holds, so the migration ends with a
+        // seeded receipt instead of echoing the record back at the zone.
+        #expect(database.savedBatches.isEmpty)
         #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
                 == remote.modifiedAt)
         #expect(defaults.object(forKey: watermarkKey) == nil)
@@ -2587,6 +2595,337 @@ struct CloudKitSyncServiceTests {
     }
 
     // MARK: - Helpers
+
+    // MARK: - Receipt seeding after pull
+
+    @Test func pullSeedsReceiptsSoTheFollowUpPushDoesNotEchoAdoptedRecords() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let first = makeTextItem(text: "adopted-1", modifiedAt: 100)
+        let second = makeTextItem(text: "adopted-2", modifiedAt: 200)
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(
+            changed: [try record(for: first), try record(for: second)],
+            moreComing: false
+        )]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.isEmpty)
+        let receipts = try #require(try pushReceipts(defaults: defaults, containerID: containerID))
+        #expect(receipts[first.id] == first.modifiedAt)
+        #expect(receipts[second.id] == second.modifiedAt)
+    }
+
+    @Test func pullDropsTheReceiptWhenTheLocalWinnerOutranksTheServerCopy() async throws {
+        let id = UUID()
+        let localWinner = makeTextItem(id: id, text: "newer-local", modifiedAt: 300)
+        let staleRemote = makeTextItem(id: id, text: "stale-remote", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [id: localWinner.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: staleRemote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [localWinner]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed[ClipboardCloudMapping.Key.textContent] as? String == "newer-local")
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == localWinner.modifiedAt)
+    }
+
+    @Test func pullRepublishesASameStampMergeThatGraftedLocalEnrichment() async throws {
+        let id = UUID()
+        var enrichedLocal = makeTextItem(id: id, text: "shared", modifiedAt: 100)
+        enrichedLocal.aiTags = ["receipt"]
+        enrichedLocal.aiEnrichedAt = Date(timeIntervalSinceReferenceDate: 90)
+        let unenrichedRemote = makeTextItem(id: id, text: "shared", modifiedAt: 100)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        try setPushReceipts(
+            [id: enrichedLocal.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: unenrichedRemote)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [enrichedLocal]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed[ClipboardCloudMapping.Key.aiTags] as? [String] == ["receipt"])
+    }
+
+    @Test func expiredTokenRepullReseedsReceiptsInsteadOfReuploadingTheLibrary() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let local = makeTextItem(text: "already-in-zone", modifiedAt: 100)
+        try setPushReceipts(
+            [local.id: local.modifiedAt],
+            defaults: defaults,
+            containerID: containerID
+        )
+        let database = FakeCloudKitDatabase()
+        database.fetchErrors = [expiredChangeTokenError()]
+        database.pages = [page(changed: [try record(for: local)], moreComing: false)]
+        let store = FakeSyncableStore()
+        store.items = [local]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[local.id]
+                == local.modifiedAt)
+    }
+
+    // MARK: - Tombstone content erasure
+
+    @Test func tombstonePushErasesTheServerRecordContentInPlace() async throws {
+        let id = UUID()
+        let live = makeTextItem(id: id, text: "secret", modifiedAt: 100)
+        let tombstone = makeTombstone(id: id, modifiedAt: 200)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let database = FakeCloudKitDatabase()
+        database.fetchableRecords[id.uuidString] = try record(for: live)
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed.recordID.recordName == id.uuidString)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
+        #expect(pushed[ClipboardCloudMapping.Key.textContent] == nil)
+        #expect(pushed[ClipboardCloudMapping.Key.searchIndex] == nil)
+        #expect(pushed[ClipboardCloudMapping.Key.blob] == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[id]
+                == tombstone.modifiedAt)
+    }
+
+    @Test func tombstonePushWaitsWhenTheServerCannotHandTheRecordOverRightNow() async throws {
+        let tombstone = makeTombstone(id: UUID(), modifiedAt: 200)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let database = FakeCloudKitDatabase()
+        // Not fetchable and not permanently missing: the fake models a transient gap, so the
+        // erase must be deferred rather than downgraded to a fresh content-preserving save.
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        #expect(database.savedBatches.isEmpty)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[tombstone.id] == nil)
+    }
+
+    @Test func tombstonePushUploadsAMinimalRecordWhenTheServerNeverHadOne() async throws {
+        let tombstone = makeTombstone(id: UUID(), modifiedAt: 200)
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let database = FakeCloudKitDatabase()
+        database.permanentlyMissingFetchRecordNames = [tombstone.id.uuidString]
+        let store = FakeSyncableStore()
+        store.items = [tombstone]
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let pushed = try #require(database.savedBatches.flatMap { $0 }.first)
+        #expect(pushed[ClipboardCloudMapping.Key.deletedAt] as? Date == tombstone.deletedAt)
+        #expect(pushed[ClipboardCloudMapping.Key.textContent] == nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[tombstone.id]
+                == tombstone.modifiedAt)
+    }
+
+    // MARK: - Quarantine capacity and epochs
+
+    @Test func quarantineOverflowHoldsTheChangeTokenInsteadOfSkippingUntracked() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let tokenKey = "cloudkit.changeToken.\(containerID)"
+        let staleTokenData = Data([0x01, 0x02, 0x03])
+        defaults.set(staleTokenData, forKey: tokenKey)
+        var full: [String: CloudKitPullQuarantineEntry] = [:]
+        for index in 0..<CloudKitPullQuarantineCodec.maximumEntryCount {
+            full["stuck-\(index)"] = CloudKitPullQuarantineEntry(
+                reason: "full",
+                attemptCount: 5
+            )
+        }
+        defaults.set(
+            try CloudKitPullQuarantineCodec.encode(full),
+            forKey: pullQuarantineKey(containerID)
+        )
+        defaults.set(
+            CloudKitSyncService.defaultResolutionEpoch,
+            forKey: "cloudkit.pullQuarantine.epoch.\(containerID)"
+        )
+        let poison = makeLargeTextItem(
+            id: UUID(),
+            filename: "\(UUID().uuidString).txt",
+            modifiedAt: 100
+        )
+        let database = FakeCloudKitDatabase()
+        database.pages = [page(changed: [try record(for: poison)], moreComing: false)]
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults
+        )
+
+        let result = await service.start()
+
+        guard case .failed = result else {
+            Issue.record("Expected an untrackable skipped record to fail the pull")
+            return
+        }
+        #expect(defaults.data(forKey: tokenKey) == staleTokenData)
+    }
+
+    @Test func newResolutionEpochGrantsQuarantinedRecordsFreshAttempts() async throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        let filename = "\(UUID().uuidString).txt"
+        let stuck = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
+        let assetURL = try writeAsset("readable again")
+        defer { try? FileManager.default.removeItem(at: assetURL) }
+        defaults.set(
+            try CloudKitPullQuarantineCodec.encode([
+                stuck.id.uuidString: CloudKitPullQuarantineEntry(
+                    reason: "unreadable",
+                    attemptCount: 5
+                )
+            ]),
+            forKey: pullQuarantineKey(containerID)
+        )
+        defaults.set("1", forKey: "cloudkit.pullQuarantine.epoch.\(containerID)")
+        let database = FakeCloudKitDatabase()
+        database.fetchableRecords[stuck.id.uuidString] =
+            try record(for: stuck, blobURL: assetURL)
+        let store = FakeSyncableStore()
+        let service = CloudKitSyncService(
+            containerIdentifier: containerID,
+            store: store,
+            database: database,
+            defaults: defaults,
+            resolutionEpoch: "2"
+        )
+
+        let result = await service.start()
+
+        #expect(result == .started)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == stuck.id })
+        #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
+    }
+
+    @Test func resetPersistedStateClearsEveryCheckpointForTheContainer() throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        defaults.set(Data([0x01]), forKey: "cloudkit.changeToken.\(containerID)")
+        defaults.set(Date(), forKey: "cloudkit.lastPushedModifiedAt.\(containerID)")
+        try setPushReceipts([UUID(): Date()], defaults: defaults, containerID: containerID)
+        defaults.set(
+            try CloudKitPullQuarantineCodec.encode(
+                ["r": CloudKitPullQuarantineEntry(reason: "x", attemptCount: 1)]
+            ),
+            forKey: pullQuarantineKey(containerID)
+        )
+        defaults.set("1", forKey: "cloudkit.pullQuarantine.epoch.\(containerID)")
+        let untouchedKey = "cloudkit.changeToken.other"
+        defaults.set(Data([0x02]), forKey: untouchedKey)
+
+        CloudKitSyncService.resetPersistedState(containerIdentifier: containerID, defaults: defaults)
+
+        #expect(defaults.data(forKey: "cloudkit.changeToken.\(containerID)") == nil)
+        #expect(defaults.object(forKey: "cloudkit.lastPushedModifiedAt.\(containerID)") == nil)
+        #expect(defaults.data(forKey: pushReceiptsKey(containerID)) == nil)
+        #expect(defaults.data(forKey: pullQuarantineKey(containerID)) == nil)
+        #expect(defaults.string(forKey: "cloudkit.pullQuarantine.epoch.\(containerID)") == nil)
+        #expect(defaults.data(forKey: untouchedKey) != nil)
+    }
+
+    @Test func resolutionTreatsSubMillisecondStampDriftAsATie() {
+        let localSettings = SyncedSettings(
+            historyLimit: .deep,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 100.0004)
+        )
+        let remote = RemoteSettingsRecord(
+            settings: SyncedSettings(
+                historyLimit: .deep,
+                updatedAt: Date(timeIntervalSinceReferenceDate: 100)
+            ),
+            updatedAt: Date(timeIntervalSinceReferenceDate: 100)
+        )
+
+        let resolution = CloudKitSyncService.settingsResolution(
+            local: localSettings,
+            remote: remote
+        )
+
+        #expect(resolution == .idle)
+    }
 
     private func makeService(
         database: any CloudKitDatabase,

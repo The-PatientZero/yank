@@ -271,6 +271,25 @@ struct PublicRepositoryTests {
         #expect(workflow.contains(#"if: github.event_name == 'workflow_dispatch'"#))
         #expect(workflow.contains("contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH"))
         #expect(!workflow.contains("GITHUB_REF_NAME"))
+
+        // Recovery deliberately builds a published tag with the default branch's script. That
+        // is a provenance break, so the run has to say which blob it substituted.
+        #expect(workflow.contains(#"RECOVERY_BLOB="$("#))
+        #expect(workflow.contains("Substituted blob: \\`$RECOVERY_BLOB\\`"))
+        #expect(workflow.contains("$GITHUB_STEP_SUMMARY"))
+    }
+
+    @Test("The macOS app declares a real application category")
+    func macOSAppDeclaresApplicationCategory() throws {
+        let data = try Data(contentsOf: repositoryRoot.appendingPathComponent("Info.plist"))
+        let plist = try #require(
+            try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                as? [String: Any]
+        )
+
+        let category = try #require(plist["LSApplicationCategoryType"] as? String)
+        #expect(category.hasPrefix("public.app-category."))
+        #expect(category.count > "public.app-category.".count)
     }
 
     @Test("TestFlight workflow preserves the release security boundary")
@@ -292,6 +311,9 @@ struct PublicRepositoryTests {
         )
         let validateRange = try #require(
             promoteSection.range(of: "- name: Validate signed TestFlight package")
+        )
+        _ = try #require(
+            promoteSection.range(of: "- name: Assign exact build to internal testers")
         )
         let externalAssignmentRange = try #require(
             promoteSection.range(of: "- name: Assign exact build to external testers")
@@ -353,6 +375,25 @@ struct PublicRepositoryTests {
             promoteSection.contains(
                 #"API_PRIVATE_KEYS_DIR="$(dirname "$ASC_KEY_PATH")""#
             )
+        )
+
+        // Promotion is a ladder, not one shape: internal always, external only when the
+        // dispatch asks for it, App Store never from here. A default run must not reach
+        // external testers, so the two external rungs stay gated on the input.
+        let promoteJob = String(promoteSection)
+        #expect(workflow.contains("promote_external:"))
+        #expect(workflow.contains("default: false"))
+        #expect(
+            gatingCondition(ofStepNamed: "Assign exact build to internal testers", in: promoteJob)
+                == nil
+        )
+        #expect(
+            gatingCondition(ofStepNamed: "Assign exact build to external testers", in: promoteJob)
+                == "if: ${{ inputs.promote_external }}"
+        )
+        #expect(
+            gatingCondition(ofStepNamed: "Submit exact build to Beta App Review", in: promoteJob)
+                == "if: ${{ inputs.promote_external }}"
         )
         #expect(promoteSection.contains("verify-assignment"))
         #expect(promoteSection.contains("External group assignment: verified"))
@@ -618,6 +659,26 @@ struct PublicRepositoryTests {
 
     private func relativePath(for file: URL) -> String {
         file.path.replacingOccurrences(of: repositoryRoot.path + "/", with: "")
+    }
+
+    // MARK: - Workflow inspection
+
+    /// The `if:` line attached to a named step, or nil when that step runs unconditionally.
+    /// Callers assert the step exists separately — the surrounding test already `#require`s
+    /// each step's range, so a rename fails there rather than reading as "ungated" here.
+    private func gatingCondition(ofStepNamed name: String, in jobBody: String) -> String? {
+        let lines = jobBody.components(separatedBy: "\n")
+        guard let stepIndex = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == "- name: \(name)"
+        }) else { return nil }
+        let indentation = lines[stepIndex].prefix { $0 == " " }.count
+        for candidate in lines[(stepIndex + 1)...] {
+            let trimmed = candidate.trimmingCharacters(in: .whitespaces)
+            let candidateIndentation = candidate.prefix { $0 == " " }.count
+            if candidateIndentation <= indentation, trimmed.hasPrefix("- ") { break }
+            if trimmed.hasPrefix("if:") { return trimmed }
+        }
+        return nil
     }
 }
 

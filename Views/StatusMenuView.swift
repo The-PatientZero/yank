@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// The menu-bar command panel — a warm, designed replacement for the system
-/// `NSMenu`, shown in an `NSPopover` on right-click. An `NSPopover`-hosted SwiftUI
-/// view doesn't inherit `NSMenu`'s arrow-key navigation, so the rows opt into
-/// `@FocusState` and drive ↑↓/Return themselves.
+/// Warm replacement for the system `NSMenu`, hosted in an `NSPopover` on right-click.
+/// `NSPopover`-hosted SwiftUI doesn't inherit `NSMenu`'s arrow-key nav, so rows drive
+/// ↑↓/Return themselves via `@FocusState`.
 struct StatusMenuView: View {
     let shortcut: String
     let shortcutOpenTarget: ShortcutOpenTarget
@@ -106,8 +105,7 @@ struct StatusMenuView: View {
         .frame(width: Layout.panelWidth)
         .background(menuBackground)
         .tint(AppTheme.active.foreground)
-        // Arrow keys step the focus ring; the popover is the key window, so a focused
-        // row keeps the move commands routed through the responder chain.
+        // The popover is the key window, so onMoveCommand's responder-chain routing reaches the focused row.
         .onMoveCommand { direction in
             switch direction {
             case .up:   focused = step(from: focused, by: -1)
@@ -279,8 +277,7 @@ private struct MenuRow: View {
         if disabled {
             Color.clear
         } else if focused == row {
-            // Keyboard focus gets the fill plus a faint accent edge so it reads as
-            // "selected" even without the pointer.
+            // Keyboard focus needs its own visual cue, distinct from hover, for non-pointer users.
             AppTheme.active.selectionFill
                 .overlay(Rectangle().strokeBorder(AppTheme.active.foreground.opacity(0.5),
                                                   lineWidth: Hairline.width))

@@ -110,7 +110,6 @@ enum HistoryWindowFramePersistencePolicy {
     }
 }
 
-/// Manages the floating history window
 @MainActor
 final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private let store: ClipboardStore
@@ -138,7 +137,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
-    /// Reset search if window was closed more than 10 minutes ago (or never opened)
     private var shouldResetSearch: Bool {
         guard let lastClosed = lastClosedAt else { return true }
         return Date().timeIntervalSince(lastClosed) > searchResetInterval
@@ -268,7 +266,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         guard !isAnimatingClose else { return }
         persistUserFrameIfNeeded(for: .close)
         lastClosedAt = Date()
-        // Reduce Motion (or no backing layer / already-hidden) → close instantly.
         guard !reduceMotion, let window, window.isVisible,
               let layer = window.contentView?.layer else {
             super.close()
@@ -342,7 +339,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         
-        // Notify content view when window becomes key so it can reset state
         didBecomeKeyObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: panel,
@@ -485,10 +481,8 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         return CAMediaTimingFunction(controlPoints: p.x1, p.y1, p.x2, p.y2)
     }
 
-    /// A uniform scale built to pivot on the layer's geometric centre regardless of its
-    /// `anchorPoint`, so we never mutate `anchorPoint`/`position` (which AppKit owns and
-    /// recomputes on resize). `translate(d) · scale(s) · translate(-d)` where `d` is the
-    /// offset from the anchor to the centre.
+    /// Scales around the layer's centre without touching `anchorPoint`/`position`, which AppKit
+    /// owns and recomputes on resize: `translate(d) · scale(s) · translate(-d)`, d = anchor→centre offset.
     private static func centerScale(_ layer: CALayer, _ scale: CGFloat) -> CATransform3D {
         let bounds = layer.bounds
         let anchor = layer.anchorPoint
