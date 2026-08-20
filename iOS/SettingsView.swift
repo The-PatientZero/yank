@@ -255,7 +255,10 @@ struct SettingsView: View {
             } message: {
                 Text(SyncCopy.historyLimitReduction(syncEnabled: settings.syncEnabled))
             }
-            Picker("Auto-delete", selection: $settings.retentionDays) {
+            Picker("Auto-delete", selection: Binding(
+                get: { settings.retentionDays },
+                set: { settings.setRetentionDays($0) }
+            )) {
                 Text("Never").tag(0)
                 Text("After 7 days").tag(7)
                 Text("After 30 days").tag(30)
@@ -277,7 +280,7 @@ struct SettingsView: View {
         } header: {
             Text("History")
         } footer: {
-            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.perDeviceRetention) Pinned, bookmarked, and tagged clips are always kept.")
+            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.syncedRetention) Pinned, bookmarked, and tagged clips are always kept.")
         }
         .onChange(of: settings.historyLimit) { _, _ in store.enforceRetentionAndLimit() }
         .onChange(of: settings.retentionDays) { _, _ in store.enforceRetentionAndLimit() }

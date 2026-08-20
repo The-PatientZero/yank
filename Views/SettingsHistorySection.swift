@@ -16,7 +16,7 @@ extension SettingsView {
             settingRowControl("Auto-delete after", "Older unprotected clips are removed.") {
                 Picker("Auto-delete after", selection: Binding(
                     get: { manager.retentionDays },
-                    set: { manager.retentionDays = $0; manager.save() })) {
+                    set: { manager.setRetentionDays($0) })) {
                     Text("Never").tag(0)
                     Text("7 days").tag(7)
                     Text("30 days").tag(30)

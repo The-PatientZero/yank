@@ -5,7 +5,7 @@ enum SyncCopy {
     static let optInDescription = "Off by default. When on, clips sync through your private iCloud database."
     static let localOnlySectionDescription = "This build keeps clips on this device. iCloud sync is available in the official signed app."
     static let iCloudRequirement = "iCloud account required. Sign in to iCloud in Settings to enable sync."
-    static let perDeviceRetention = "Clips sync across all your devices. Auto-delete propagates via sync — removing a clip on one device removes it everywhere."
+    static let syncedRetention = "Clips and the auto-delete window sync across all your devices — removing a clip on one device removes it everywhere."
 
     /// The history limit itself syncs, so the scope of a change depends on whether sync is on.
     /// Saying "this device" while the choice propagates would be a lie the user only discovers

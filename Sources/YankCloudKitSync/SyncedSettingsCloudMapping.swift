@@ -16,6 +16,7 @@ enum SyncedSettingsCloudMapping {
 
     enum Key {
         static let historyLimit = "historyLimit"
+        static let retentionDays = "retentionDays"
         static let updatedAt = "updatedAt"
     }
 
@@ -33,6 +34,11 @@ enum SyncedSettingsCloudMapping {
     /// where the server's copy has to be reused to keep its change tag.
     static func apply(_ settings: SyncedSettings, to record: CKRecord) {
         record[Key.historyLimit] = settings.historyLimit.rawValue
+        // Written only when this device has an opinion, so a publish routed through an
+        // existing server record can never erase a retention value another build wrote.
+        if let retentionDays = settings.retentionDays {
+            record[Key.retentionDays] = retentionDays
+        }
         record[Key.updatedAt] = settings.updatedAt
     }
 
@@ -44,7 +50,14 @@ enum SyncedSettingsCloudMapping {
               let rawLimit = record[Key.historyLimit] as? Int,
               let historyLimit = HistoryLimit(rawValue: rawLimit),
               let updatedAt = record[Key.updatedAt] as? Date else { return nil }
-        return SyncedSettings(historyLimit: historyLimit, updatedAt: updatedAt)
+        // A missing or nonsensical retention value degrades to "no opinion" rather than
+        // rejecting the record: the limit is still usable, and adoption keeps local retention.
+        let retentionDays = (record[Key.retentionDays] as? Int).flatMap { $0 >= 0 ? $0 : nil }
+        return SyncedSettings(
+            historyLimit: historyLimit,
+            retentionDays: retentionDays,
+            updatedAt: updatedAt
+        )
     }
 
     /// What this build can read off a settings record. The stamp is read *independently* of the

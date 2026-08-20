@@ -107,8 +107,10 @@ final class SettingsManager {
     /// Copies whose trimmed length is below this are never captured (0 = off).
     var minCaptureLength: Int = 0
 
-    /// Auto-delete unprotected items older than this many days (0 = keep forever).
-    var retentionDays: Int = 0
+    /// Auto-delete unprotected items older than this many days (0 = keep forever). Lives in
+    /// the synced record so one retention policy governs every device — a per-device window
+    /// would tombstone freshly synced clips and delete them account-wide.
+    var retentionDays: Int { syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays }
 
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
     var showMenuBarIcon: Bool = true
@@ -189,6 +191,7 @@ final class SettingsManager {
         let rawLimit = defaults.integer(forKey: SettingsKeys.historyLimit)
         self.syncedHistoryLimit = SyncedHistoryLimit(
             historyLimit: HistoryLimit(rawValue: rawLimit) ?? SettingsDefaults.historyLimit,
+            retentionDays: defaults.integer(forKey: SettingsKeys.retentionDays),
             updatedAt: defaults.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
                 ?? .distantPast
         )
@@ -200,7 +203,6 @@ final class SettingsManager {
             self.excludedBundleIDs = Set(defaults.stringArray(forKey: excludedBundleIDsKey) ?? [])
         }
         self.minCaptureLength = defaults.integer(forKey: minCaptureLengthKey)
-        self.retentionDays = defaults.integer(forKey: SettingsKeys.retentionDays)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
         self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
@@ -279,6 +281,14 @@ final class SettingsManager {
     /// A user-driven history-limit change. Announced so the sync service reconciles it.
     func setHistoryLimit(_ value: HistoryLimit) {
         guard syncedHistoryLimit.choose(value) else { return }
+        save()
+        NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
+    }
+
+    /// A user-driven retention change. Same announcement path as the history limit: the
+    /// value rides the shared synced-settings record.
+    func setRetentionDays(_ value: Int) {
+        guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
         save()
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }

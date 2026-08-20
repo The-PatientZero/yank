@@ -58,6 +58,10 @@ final class IOSSettings {
     private var syncedHistoryLimit: SyncedHistoryLimit {
         didSet {
             defaults?.set(syncedHistoryLimit.historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
+            defaults?.set(
+                syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays,
+                forKey: SettingsKeys.retentionDays
+            )
             defaults?.set(syncedHistoryLimit.updatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         }
     }
@@ -68,7 +72,12 @@ final class IOSSettings {
     /// without silently resizing anyone's history on upgrade.
     var historyLimitUpdatedAt: Date { syncedHistoryLimit.updatedAt }
     var syncedSettings: SyncedSettings { syncedHistoryLimit.current }
-    var retentionDays: Int { didSet { defaults?.set(retentionDays, forKey: SettingsKeys.retentionDays) } }
+    /// Auto-delete window in days (0 = keep forever). Rides the synced record so one
+    /// retention policy governs every device — a per-device window would tombstone freshly
+    /// synced clips and delete them account-wide.
+    var retentionDays: Int {
+        syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays
+    }
     var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
     var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
     private(set) var foregroundCaptureMode: IOSForegroundCaptureMode
@@ -107,10 +116,11 @@ final class IOSSettings {
             historyLimit: HistoryLimit(
                 rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
             ) ?? SettingsDefaults.historyLimit,
+            retentionDays: defaults?.integer(forKey: SettingsKeys.retentionDays)
+                ?? SettingsDefaults.retentionDays,
             updatedAt: defaults?.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
                 ?? .distantPast
         )
-        self.retentionDays = defaults?.integer(forKey: SettingsKeys.retentionDays) ?? SettingsDefaults.retentionDays
         self.syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
         self.spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
         self.foregroundCaptureMode = IOSForegroundCaptureMode(
@@ -166,6 +176,13 @@ final class IOSSettings {
     /// A user-driven history-limit change. Announced so the sync service reconciles it.
     func setHistoryLimit(_ value: HistoryLimit) {
         guard syncedHistoryLimit.choose(value) else { return }
+        NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
+    }
+
+    /// A user-driven retention change. Same announcement path as the history limit: the
+    /// value rides the shared synced-settings record.
+    func setRetentionDays(_ value: Int) {
+        guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }
 

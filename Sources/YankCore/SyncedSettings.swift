@@ -5,13 +5,18 @@ import Foundation
 /// newer side wins, and a tie leaves whatever the reading device already has in place.
 public struct SyncedSettings: Equatable, Sendable {
     public let historyLimit: HistoryLimit
+    /// Auto-delete window in days (0 = keep forever). Optional because records written by
+    /// builds that predate the field carry no opinion: `nil` means "unknown", and adoption
+    /// must keep the local value rather than resetting anyone's retention on upgrade.
+    public let retentionDays: Int?
     /// When the local user last *chose* this value — not when it was last written to disk.
     /// A value adopted from another device carries that device's stamp verbatim, so the
     /// decision is stable no matter which device evaluates it.
     public let updatedAt: Date
 
-    public init(historyLimit: HistoryLimit, updatedAt: Date) {
+    public init(historyLimit: HistoryLimit, retentionDays: Int? = nil, updatedAt: Date) {
         self.historyLimit = historyLimit
+        self.retentionDays = retentionDays
         self.updatedAt = updatedAt
     }
 
@@ -22,12 +27,18 @@ public struct SyncedSettings: Equatable, Sendable {
 }
 
 /// Owns the choose-versus-adopt stamp rule in one place, so the macOS and iOS settings types
-/// cannot drift apart on the thing that decides cross-device conflicts.
+/// cannot drift apart on the thing that decides cross-device conflicts. Despite the name it
+/// carries every synced preference (the name survives for source compatibility); the record
+/// moves as one unit under a single stamp, so choosing either value publishes both.
 public struct SyncedHistoryLimit: Equatable, Sendable {
     public private(set) var current: SyncedSettings
 
-    public init(historyLimit: HistoryLimit, updatedAt: Date = .distantPast) {
-        self.current = SyncedSettings(historyLimit: historyLimit, updatedAt: updatedAt)
+    public init(historyLimit: HistoryLimit, retentionDays: Int? = nil, updatedAt: Date = .distantPast) {
+        self.current = SyncedSettings(
+            historyLimit: historyLimit,
+            retentionDays: retentionDays,
+            updatedAt: updatedAt
+        )
     }
 
     public var historyLimit: HistoryLimit { current.historyLimit }
@@ -38,15 +49,36 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
     @discardableResult
     public mutating func choose(_ historyLimit: HistoryLimit, at now: Date = Date()) -> Bool {
         guard historyLimit != current.historyLimit else { return false }
-        current = SyncedSettings(historyLimit: historyLimit, updatedAt: now)
+        current = SyncedSettings(
+            historyLimit: historyLimit,
+            retentionDays: current.retentionDays,
+            updatedAt: now
+        )
+        return true
+    }
+
+    /// A local retention choice, same stamp rule as `choose`.
+    @discardableResult
+    public mutating func chooseRetentionDays(_ days: Int, at now: Date = Date()) -> Bool {
+        guard days != current.retentionDays else { return false }
+        current = SyncedSettings(
+            historyLimit: current.historyLimit,
+            retentionDays: days,
+            updatedAt: now
+        )
         return true
     }
 
     /// A value adopted from another device. The remote stamp is kept verbatim — re-stamping
     /// would make this device look like the newest writer and bounce the value straight back
-    /// at the device it came from.
+    /// at the device it came from. A remote record with no retention opinion (an older
+    /// build's) leaves the local retention in place.
     public mutating func adopt(_ remote: SyncedSettings) {
-        current = remote
+        current = SyncedSettings(
+            historyLimit: remote.historyLimit,
+            retentionDays: remote.retentionDays ?? current.retentionDays,
+            updatedAt: remote.updatedAt
+        )
     }
 }
 
