@@ -29,6 +29,10 @@ final class ClipboardController {
     private var cloudSync: CloudKitSyncService?
     /// Owned here because the sync service holds it weakly, the same way it holds the store.
     private let settingsSyncBridge: SettingsSyncBridge
+    /// Resolves the current iCloud account's identity ahead of constructing a sync service, so
+    /// a persisted checkpoint from a previous account can be detected and reset. Seam for tests.
+    private let accountIdentityProvider: () async throws -> String
+    private var cloudSyncConfigureTask: (id: UUID, task: Task<Void, Never>)?
     private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
     /// Bounded backoff for a failed `start()` (offline at login, CloudKit throttle). Once
     /// exhausted, recovery falls to the wake/periodic pulls below.
@@ -49,12 +53,19 @@ final class ClipboardController {
     /// Backstop re-pull while sync is up, covering a silent push dropped during sleep or
     /// throttled delivery — silent pushes are best-effort, never guaranteed.
     private static let periodicRemotePullInterval: Duration = .seconds(3600)
+    private static let accountIdentityDefaultsKey = "cloudkit.accountIdentity.\(cloudContainerID)"
 
     private var store: ClipboardStore { dependencies.store }
 
-    init(dependencies: ClipboardDependencies) {
+    init(
+        dependencies: ClipboardDependencies,
+        accountIdentityProvider: @escaping () async throws -> String = {
+            try await CKContainer(identifier: ClipboardController.cloudContainerID).userRecordID().recordName
+        }
+    ) {
         self.dependencies = dependencies
         self.settingsSyncBridge = SettingsSyncBridge(settings: dependencies.settings)
+        self.accountIdentityProvider = accountIdentityProvider
     }
 
     // `isolated deinit` runs cleanup on the main actor (the runtime schedules a hop if the last
@@ -259,16 +270,34 @@ final class ClipboardController {
             tearDownCloudSync(reason: .notProvisioned)
             return
         }
-        guard cloudSync == nil else { return }
-        let sync = CloudKitSyncService(
-            containerIdentifier: Self.cloudContainerID,
-            store: store,
-            settingsStore: settingsSyncBridge
-        )
-        cloudSync = sync
-        NSApp.registerForRemoteNotifications()
-        startCloudSync(sync)
-        startCatchUpTriggers()
+        guard cloudSync == nil, cloudSyncConfigureTask == nil else { return }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let didReset = await CloudKitAccountChangeGuard.resetIfAccountChanged(
+                containerIdentifier: Self.cloudContainerID,
+                defaultsKey: Self.accountIdentityDefaultsKey,
+                defaults: .standard,
+                resolveIdentity: self.accountIdentityProvider,
+                resetPersistedState: CloudKitSyncService.resetPersistedState(containerIdentifier:defaults:)
+            )
+            if didReset {
+                Log.app.info("iCloud account changed; reset CloudKit sync checkpoints.")
+            }
+            guard !Task.isCancelled, self.cloudSyncConfigureTask?.id == taskID else { return }
+            self.cloudSyncConfigureTask = nil
+            guard self.cloudSync == nil else { return }
+            let sync = CloudKitSyncService(
+                containerIdentifier: Self.cloudContainerID,
+                store: self.store,
+                settingsStore: self.settingsSyncBridge
+            )
+            self.cloudSync = sync
+            NSApp.registerForRemoteNotifications()
+            self.startCloudSync(sync)
+            self.startCatchUpTriggers()
+        }
+        cloudSyncConfigureTask = (taskID, task)
     }
 
     private func startCloudSync(_ sync: CloudKitSyncService, retryAttempt: Int = 0) {
@@ -324,6 +353,8 @@ final class ClipboardController {
 
     private func tearDownCloudSync(reason: SyncStatus.Reason? = nil) {
         cloudSync?.stop()
+        cloudSyncConfigureTask?.task.cancel()
+        cloudSyncConfigureTask = nil
         cloudSyncStartTask?.task.cancel()
         cloudSyncStartTask = nil
         cloudSyncStartRetry.cancel()
@@ -458,6 +489,42 @@ final class ClipboardController {
             pasteSequenceCoordinator?.discard()
             store.clear()
         }
+    }
+}
+
+/// Detects an iCloud account switch ahead of constructing a fresh sync service, so a
+/// checkpoint (change token, push receipts) left over from the previous account doesn't
+/// suppress uploading the library into the new account's empty zone or aim pulls at a zone
+/// that no longer answers.
+enum CloudKitAccountChangeGuard {
+    /// Compares the resolved account identity against the one persisted under `defaultsKey`,
+    /// resetting `containerIdentifier`'s sync checkpoints when they differ. A first run (no
+    /// persisted identity yet) only records the identity — it must never wipe a healthy
+    /// checkpoint. A failed probe (offline, no account) leaves everything untouched. Returns
+    /// whether a reset happened, so the caller can log it.
+    @discardableResult
+    @MainActor
+    static func resetIfAccountChanged(
+        containerIdentifier: String,
+        defaultsKey: String,
+        defaults: UserDefaults,
+        resolveIdentity: () async throws -> String,
+        resetPersistedState: (String, UserDefaults) -> Void
+    ) async -> Bool {
+        let currentIdentity: String
+        do {
+            currentIdentity = try await resolveIdentity()
+        } catch {
+            return false
+        }
+        let previousIdentity = defaults.string(forKey: defaultsKey)
+        var didReset = false
+        if let previousIdentity, previousIdentity != currentIdentity {
+            resetPersistedState(containerIdentifier, defaults)
+            didReset = true
+        }
+        defaults.set(currentIdentity, forKey: defaultsKey)
+        return didReset
     }
 }
 
