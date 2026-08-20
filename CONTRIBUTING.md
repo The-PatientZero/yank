@@ -70,5 +70,16 @@ and TestFlight checks are release gates documented in
 - Use Conventional Commit subjects such as `fix(sync): preserve failed push receipts`.
 - Update [`CHANGELOG.md`](CHANGELOG.md) for user-visible changes.
 
+## Comments
+
+A comment earns its place only by stating something the code cannot: an invariant, an
+ordering or crash-safety constraint, a platform or API quirk, or a deliberate tradeoff.
+
+- Keep it to one to three lines. If it needs more, restructure the code instead.
+- Never narrate what the next line does, describe a past change, or address a reviewer.
+- Public API gets a one-sentence doc comment stating the contract, not the implementation.
+- State a rationale once, at the declaration that owns it; reference it elsewhere.
+- No commented-out code. A `TODO` names the release or issue that retires it.
+
 Security reports should follow [`SECURITY.md`](SECURITY.md). General support belongs in
 [`SUPPORT.md`](SUPPORT.md).
