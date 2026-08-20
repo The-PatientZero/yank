@@ -18,6 +18,7 @@ enum CloudKitSyncError: LocalizedError {
     case backfillDidNotConverge(Int)
     case pushReceiptEncodingFailed
     case pullQuarantineEncodingFailed
+    case pullQuarantineOverflow
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +36,8 @@ enum CloudKitSyncError: LocalizedError {
             "CloudKit push acknowledgements could not be saved. Sync will safely replay."
         case .pullQuarantineEncodingFailed:
             "Skipped CloudKit records could not be recorded. Sync will safely replay."
+        case .pullQuarantineOverflow:
+            "Too many skipped CloudKit records are awaiting recovery. Sync will retry."
         }
     }
 }
@@ -117,6 +120,7 @@ public final class CloudKitSyncService {
         defaults: UserDefaults = .standard,
         pushDebounceNanoseconds: UInt64 = 750_000_000,
         pushRetryDelaysNanoseconds: [UInt64] = CloudKitSyncService.defaultPushRetryDelaysNanoseconds,
+        resolutionEpoch: String = CloudKitSyncService.defaultResolutionEpoch,
         beforeReceiptPersistence: (() throws -> Void)? = nil,
         afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)? = nil
     ) {
@@ -135,7 +139,13 @@ public final class CloudKitSyncService {
             afterReceiptInvalidationBeforeTokenPersistence
         self.changeToken = Self.loadToken(from: defaults, key: tokenKey)
         self.pushReceipts = Self.loadPushReceipts(from: defaults, key: pushReceiptsKey)
-        self.pullQuarantine = Self.loadPullQuarantine(from: defaults, key: pullQuarantineKey)
+        self.pullQuarantine = Self.reQuarantineForEpoch(
+            Self.loadPullQuarantine(from: defaults, key: pullQuarantineKey),
+            epoch: resolutionEpoch,
+            defaults: defaults,
+            quarantineKey: pullQuarantineKey,
+            epochKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)"
+        )
     }
 
     // `isolated deinit` runs cleanup on the main actor (the runtime hops if the last release lands
@@ -202,6 +212,11 @@ public final class CloudKitSyncService {
             guard shouldReport(error, generation: generation) else {
                 return .failed(message: message)
             }
+            // Even a failed bring-up keeps listening for local edits: their scheduled pushes
+            // (with the bounded retry chain) are what publish work made while the transport
+            // was down, instead of leaving the device silent until the next relaunch.
+            try? startObservingLocalChanges(generation: generation)
+            try? startObservingSettingsChanges(generation: generation)
             syncLog.error("start failed: \(message, privacy: .public)")
             store?.markSyncFailed(message)
             return .failed(message: message)
@@ -523,18 +538,23 @@ public final class CloudKitSyncService {
                 applySettingsFromChangeFeed(remoteSettings)
                 try requireActive(generation)
             }
-            if !accumulation.receiptInvalidationItemIDs.isEmpty {
+            let receiptChanges = Self.pullReceiptChanges(
+                remote: accumulation.remote,
+                reconciled: reconciled,
+                repairItemIDs: accumulation.receiptInvalidationItemIDs
+            )
+            if !receiptChanges.isEmpty {
                 // A push that started before this pull may still commit an older receipt
-                // snapshot. Let it finish, then make repair invalidation the last durable
-                // receipt transition before acknowledging the remote change token.
+                // snapshot. Let it finish, then make this the last durable receipt transition
+                // before acknowledging the remote change token.
                 try await awaitActivePushCompletion(generation: generation)
                 try requireActive(generation)
-                try invalidatePushReceipts(
-                    for: accumulation.receiptInvalidationItemIDs,
-                    generation: generation
-                )
+                try applyPullReceiptChanges(receiptChanges, generation: generation)
                 try afterReceiptInvalidationBeforeTokenPersistence?()
                 try requireActive(generation)
+            }
+            guard !quarantine.didOverflow else {
+                throw CloudKitSyncError.pullQuarantineOverflow
             }
             // Durable before the token: a crash here replays the page instead of losing the
             // record that was skipped.
@@ -566,6 +586,10 @@ public final class CloudKitSyncService {
     private struct QuarantineState {
         var entries: [String: CloudKitPullQuarantineEntry]
         var didChange = false
+        /// A record failed while the list was full, so it could not be tracked. The pull must
+        /// hold the change token in that case — advancing past an untracked skip would lose the
+        /// record on this device with no recovery path.
+        var didOverflow = false
 
         mutating func clear(_ recordName: String) {
             guard entries.removeValue(forKey: recordName) != nil else { return }
@@ -577,8 +601,9 @@ public final class CloudKitSyncService {
             guard existingAttemptCount != nil
                     || entries.count < CloudKitPullQuarantineCodec.maximumEntryCount else {
                 syncLog.error(
-                    "quarantine is full; skipped record \(recordName, privacy: .public) is untracked: \(reason, privacy: .public)"
+                    "quarantine is full; cannot track skipped record \(recordName, privacy: .public): \(reason, privacy: .public)"
                 )
+                didOverflow = true
                 return
             }
             let attemptCount = (existingAttemptCount ?? 0) + 1
@@ -911,8 +936,8 @@ public final class CloudKitSyncService {
         let garbageCollectedReceipts = existingReceipts.filter { currentItemIDs.contains($0.key) }
 
         try requireActive(generation)
-        let prepared = Self.preparePushRecords(itemsToPush, in: zoneID) { item in
-            item.isDeleted ? nil : existingBlobURL(for: item)
+        let prepared = Self.preparePushRecords(itemsToPush.filter { !$0.isDeleted }, in: zoneID) { item in
+            existingBlobURL(for: item)
         }
         // A clip CloudKit cannot represent (blob file gone, unusable blob metadata) is skipped
         // instead of blocking every other pending record. It keeps no receipt, so an ordinary
@@ -920,7 +945,12 @@ public final class CloudKitSyncService {
         for skippedID in prepared.skippedItemIDs {
             syncLog.error("skipping clip with invalid sync blob metadata: \(skippedID.uuidString, privacy: .public)")
         }
-        guard !prepared.records.isEmpty else {
+        let tombstoneRecords = try await prepareTombstonePushRecords(
+            itemsToPush.filter(\.isDeleted),
+            generation: generation
+        )
+        let recordsToSave = prepared.records + tombstoneRecords
+        guard !recordsToSave.isEmpty else {
             if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
                 try persistPushReceipts(garbageCollectedReceipts, generation: generation)
             }
@@ -931,7 +961,7 @@ public final class CloudKitSyncService {
         var committedReceipts = existingReceipts
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
-        try await savePreparedRecords(prepared.records, generation: generation) { batch in
+        try await savePreparedRecords(recordsToSave, generation: generation) { batch in
             let canonicalItemIDs = Set(store.itemsForSync().map(\.id))
             committedReceipts = committedReceipts.filter { canonicalItemIDs.contains($0.key) }
             for pushed in batch where canonicalItemIDs.contains(pushed.itemID) {
@@ -939,6 +969,56 @@ public final class CloudKitSyncService {
             }
             try persistPushReceipts(committedReceipts, generation: generation)
         }
+    }
+
+    /// Builds the push records for locally deleted clips. A tombstone saves through the
+    /// server's own copy when one exists: under `.changedKeys`, only assignments on a fetched
+    /// record mark keys changed, and that is what actually erases the clip's text and asset
+    /// from the zone — a freshly constructed record would set `deletedAt` but leave the full
+    /// content readable in the user's database indefinitely. A record the server never had
+    /// (or permanently lost) has nothing to erase and pushes the minimal tombstone directly;
+    /// one the server merely failed to hand over right now is left for the next push, so a
+    /// transient fetch gap can never downgrade the erase into a content-preserving save.
+    private func prepareTombstonePushRecords(
+        _ tombstones: [ClipboardItem],
+        generation: UInt64
+    ) async throws -> [PreparedPushRecord] {
+        guard !tombstones.isEmpty else { return [] }
+        var records: [PreparedPushRecord] = []
+        records.reserveCapacity(tombstones.count)
+        let itemsByRecordName = Dictionary(
+            tombstones.map { ($0.id.uuidString, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for batch in itemsByRecordName.keys.sorted().chunked(into: 100) {
+            let fetched = try await database.fetchRecords(for: batch, in: zoneID)
+            try requireActive(generation)
+            let serverRecords = Dictionary(
+                fetched.records.map { ($0.recordID.recordName, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for recordName in batch {
+                guard let item = itemsByRecordName[recordName] else { continue }
+                if let serverRecord = serverRecords[recordName] {
+                    ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
+                    records.append(PreparedPushRecord(
+                        itemID: item.id,
+                        record: serverRecord,
+                        modifiedAt: item.modifiedAt
+                    ))
+                } else if fetched.permanentlyMissingRecordNames.contains(recordName) {
+                    guard let record = ClipboardCloudMapping.record(from: item, in: zoneID) else {
+                        continue
+                    }
+                    records.append(PreparedPushRecord(
+                        itemID: item.id,
+                        record: record,
+                        modifiedAt: item.modifiedAt
+                    ))
+                }
+            }
+        }
+        return records
     }
 
     // MARK: - Synced settings
@@ -958,16 +1038,26 @@ public final class CloudKitSyncService {
         local: SyncedSettings,
         remote: RemoteSettingsRecord?
     ) -> SettingsResolution {
-        if let remoteSettings = remote?.settings, remoteSettings.updatedAt > local.updatedAt {
+        let localStamp = Self.millisecondStamp(local.updatedAt)
+        if let remoteSettings = remote?.settings,
+           Self.millisecondStamp(remoteSettings.updatedAt) > localStamp {
             return .adopt(remoteSettings)
         }
-        if let remote, local.updatedAt <= remote.updatedAt {
+        if let remote, localStamp <= Self.millisecondStamp(remote.updatedAt) {
             // Older or tied — including against a value this build cannot interpret. The
             // incumbent remote stands and this device stays quiet.
             return .idle
         }
         guard local.wasChosen else { return .idle }
         return .publish
+    }
+
+    /// Stamps compare at millisecond granularity: CloudKit does not persist a `Date`'s full
+    /// sub-millisecond precision, so a round-tripped copy of the local stamp must still read
+    /// as a tie — otherwise every reconcile would republish an identical record and wake all
+    /// devices with the resulting change-feed entry.
+    private nonisolated static func millisecondStamp(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSinceReferenceDate * 1_000).rounded())
     }
 
     /// Reconciles the singleton settings record fetch-first: read the server's copy, decide, and
@@ -1032,7 +1122,7 @@ public final class CloudKitSyncService {
     /// simply ignored rather than held onto.
     private func applySettingsFromChangeFeed(_ remote: SyncedSettings) {
         guard let settingsStore, let local = settingsStore.syncedSettings else { return }
-        guard remote.updatedAt > local.updatedAt else { return }
+        guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return }
         settingsStore.applySyncedSettings(remote)
     }
 
@@ -1226,20 +1316,65 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: pushWatermarkKey)
     }
 
-    private func invalidatePushReceipts(
-        for itemIDs: Set<UUID>,
+    /// How push receipts move after one pull's merge.
+    struct PullReceiptChanges: Equatable {
+        var seeded: [UUID: Date] = [:]
+        var invalidated: Set<UUID> = []
+        var isEmpty: Bool { seeded.isEmpty && invalidated.isEmpty }
+    }
+
+    /// Seeds a receipt for every item whose reconciled winner is exactly what the server just
+    /// handed over — the zone already holds that version, so the follow-up push must not echo
+    /// the record (and its asset) straight back at it. Any other winner loses its receipt
+    /// instead: a newer local version, or a same-stamp merge that grafted local fields the
+    /// server copy lacks (AI enrichment), must be re-published — the receipt still matched the
+    /// local stamp, so without the drop the zone would keep the stale copy indefinitely.
+    /// Repair items always re-push, so they are never seeded.
+    nonisolated static func pullReceiptChanges(
+        remote: [ClipboardItem],
+        reconciled: [ClipboardItem],
+        repairItemIDs: Set<UUID>
+    ) -> PullReceiptChanges {
+        var changes = PullReceiptChanges(invalidated: repairItemIDs)
+        guard !remote.isEmpty else { return changes }
+        let winners = Dictionary(
+            reconciled.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var newestRemote: [UUID: ClipboardItem] = [:]
+        for item in remote where (newestRemote[item.id]?.modifiedAt ?? .distantPast) < item.modifiedAt {
+            newestRemote[item.id] = item
+        }
+        for (id, remoteItem) in newestRemote {
+            guard let winner = winners[id] else { continue }
+            if ClipboardCloudMapping.syncedFieldsMatch(winner, remoteItem),
+               !repairItemIDs.contains(id) {
+                changes.seeded[id] = remoteItem.modifiedAt
+            } else {
+                changes.invalidated.insert(id)
+            }
+        }
+        return changes
+    }
+
+    private func applyPullReceiptChanges(
+        _ changes: PullReceiptChanges,
         generation: UInt64
     ) throws {
         try requireActive(generation)
-        guard var receipts = pushReceipts else {
+        if pushReceipts == nil, changes.seeded.isEmpty {
             // A missing envelope already means every canonical item must be replayed.
             return
         }
-        let previousReceipts = receipts
-        for itemID in itemIDs {
-            receipts.removeValue(forKey: itemID)
+        let previousReceipts = pushReceipts
+        var receipts = previousReceipts ?? [:]
+        for (id, stamp) in changes.seeded {
+            receipts[id] = stamp
         }
-        guard receipts != previousReceipts else { return }
+        for id in changes.invalidated {
+            receipts.removeValue(forKey: id)
+        }
+        if let previousReceipts, previousReceipts == receipts { return }
         try persistPushReceipts(receipts, generation: generation)
     }
 
@@ -1286,6 +1421,37 @@ public final class CloudKitSyncService {
     ) -> [String: CloudKitPullQuarantineEntry] {
         guard let data = defaults.data(forKey: key) else { return [:] }
         return (try? CloudKitPullQuarantineCodec.decode(data)) ?? [:]
+    }
+
+    /// The app version, so an upgrade grants quarantined records a fresh set of resolution
+    /// attempts — a record this build cannot read may be perfectly readable by the next one,
+    /// and without the reset it would stay skipped forever once it exhausted its attempts.
+    nonisolated static var defaultResolutionEpoch: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+
+    /// Zeroes every entry's attempt count when the resolution epoch changed, keeping the
+    /// entries (and their reasons) so recovery re-attempts them. The epoch marker is only
+    /// advanced once the reset counts are durable — a failed write retries on the next launch.
+    private static func reQuarantineForEpoch(
+        _ entries: [String: CloudKitPullQuarantineEntry],
+        epoch: String,
+        defaults: UserDefaults,
+        quarantineKey: String,
+        epochKey: String
+    ) -> [String: CloudKitPullQuarantineEntry] {
+        guard defaults.string(forKey: epochKey) != epoch else { return entries }
+        let reset = entries.mapValues {
+            CloudKitPullQuarantineEntry(reason: $0.reason, attemptCount: 0)
+        }
+        if reset.isEmpty {
+            defaults.removeObject(forKey: quarantineKey)
+        } else {
+            guard let data = try? CloudKitPullQuarantineCodec.encode(reset) else { return entries }
+            defaults.set(data, forKey: quarantineKey)
+        }
+        defaults.set(epoch, forKey: epochKey)
+        return reset
     }
 
     private func persistToken(

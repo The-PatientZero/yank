@@ -71,6 +71,65 @@ enum ClipboardCloudMapping {
         return record
     }
 
+    /// Whether two same-ID items would produce identical records — `ClipboardItem`'s own
+    /// equality is identity-only, so the sync engine needs a field-wise check to tell "the
+    /// zone already holds this version" apart from "a merge grafted local fields the zone
+    /// lacks". Compares exactly the fields `record(from:)` writes; local-only state
+    /// (`richFilename`) deliberately stays out.
+    static func syncedFieldsMatch(_ lhs: ClipboardItem, _ rhs: ClipboardItem) -> Bool {
+        lhs.id == rhs.id
+            && lhs.type == rhs.type
+            && lhs.timestamp == rhs.timestamp
+            && lhs.sourceApp == rhs.sourceApp
+            && lhs.textContent == rhs.textContent
+            && lhs.textFilename == rhs.textFilename
+            && lhs.imageFilename == rhs.imageFilename
+            && lhs.isPinned == rhs.isPinned
+            && lhs.isBookmarked == rhs.isBookmarked
+            && lhs.tags == rhs.tags
+            && lhs.ocrText == rhs.ocrText
+            && lhs.isTruncated == rhs.isTruncated
+            && lhs.originalSizeBytes == rhs.originalSizeBytes
+            && lhs.searchIndex == rhs.searchIndex
+            && lhs.aiTags == rhs.aiTags
+            && lhs.aiTitle == rhs.aiTitle
+            && lhs.aiEnrichedAt == rhs.aiEnrichedAt
+            && lhs.modifiedAt == rhs.modifiedAt
+            && lhs.deletedAt == rhs.deletedAt
+            && lhs.deviceOrigin == rhs.deviceOrigin
+            && lhs.hasRichContent == rhs.hasRichContent
+    }
+
+    /// Rewrites a record *fetched from the server* into a content-free tombstone. Assigning
+    /// `nil` marks a key changed only on a record that already holds a value for it, so this
+    /// is the one shape of save that actually erases the clip's text, metadata, and asset
+    /// from the zone under the `.changedKeys` policy. The keys `item(from:)` requires
+    /// (`type`, `timestamp`, `modifiedAt`) stay populated, so every build still reads the
+    /// result as a valid deleted clip.
+    static func applyTombstone(from item: ClipboardItem, to record: CKRecord) {
+        record[Key.type] = item.type.rawValue
+        record[Key.timestamp] = item.timestamp
+        record[Key.modifiedAt] = item.modifiedAt
+        record[Key.deletedAt] = item.deletedAt
+        record[Key.sourceApp] = nil
+        record[Key.textContent] = nil
+        record[Key.textFilename] = nil
+        record[Key.imageFilename] = nil
+        record[Key.isPinned] = 0
+        record[Key.isBookmarked] = 0
+        record[Key.tags] = nil
+        record[Key.ocrText] = nil
+        record[Key.isTruncated] = 0
+        record[Key.originalSizeBytes] = nil
+        record[Key.searchIndex] = nil
+        record[Key.aiTags] = nil
+        record[Key.aiTitle] = nil
+        record[Key.aiEnrichedAt] = nil
+        record[Key.deviceOrigin] = nil
+        record[Key.hasRichContent] = 0
+        record[Key.blob] = nil
+    }
+
     static func item(from record: CKRecord) -> ClipboardItem? {
         guard let id = UUID(uuidString: record.recordID.recordName),
               let typeRaw = record[Key.type] as? String,
