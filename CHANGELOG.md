@@ -8,6 +8,23 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Added
+
+- Synced the auto-delete retention window across devices through the shared settings record, so one device's shorter window no longer deletes clips account-wide by surprise — the policy is now a single, deliberate choice.
+
+### Fixed
+
+- Stopped devices from re-uploading every record (and its full image or text attachment) they had just downloaded, removing a sync echo that wasted bandwidth and invited CloudKit rate limiting.
+- Re-published the newer local copy of a clip when a pull revealed the server held a stale version, instead of leaving the two silently diverged.
+- Made a failed CloudKit bring-up recoverable everywhere: iOS re-runs the full zone and subscription setup on the next foreground or push instead of wedging until a force-quit, macOS retries with backoff, and local edits made while sync was down are pushed once it recovers.
+- Added wake-from-sleep and hourly catch-up pulls on macOS, so a Mac that missed silent pushes while asleep converges without a relaunch.
+- Committed a pending delete when the macOS app quits inside the 10-second undo window, so the deletion survives the restart and propagates to other devices.
+- Preserved a clip's local rich-text formatting when an edit from another device wins the sync merge; the merge no longer discards the on-disk rich archive.
+- Erased a deleted clip's text, metadata, and attachment from iCloud when its deletion syncs, instead of leaving the content readable in the private database indefinitely.
+- Held the sync checkpoint when the skipped-record quarantine cannot track another failure, and granted quarantined records fresh resolution attempts after an app update.
+- Reset per-account sync checkpoints after an iCloud account switch, so the new account receives the full library instead of being silently skipped.
+- Swept orphaned clip attachments at launch so a crash mid-sync can no longer leak disk space permanently.
+
 ## [1.1.0] - 2026-08-09
 
 ### Added
