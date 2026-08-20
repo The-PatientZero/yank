@@ -29,7 +29,8 @@ struct IOSCloudSyncLifecycleTests {
                     accountStatus: {
                         await accountGate.wait()
                         return .available
-                    }
+                    },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -47,7 +48,8 @@ struct IOSCloudSyncLifecycleTests {
             },
             unregisterForRemoteNotifications: {
                 unregistrationCount += 1
-            }
+            },
+            syncDefaults: defaults
         )
 
         let startTask = Task { await controller.start() }
@@ -97,7 +99,8 @@ struct IOSCloudSyncLifecycleTests {
                         case .failure:
                             throw LifecycleTestError.accountLookup
                         }
-                    }
+                    },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -115,7 +118,8 @@ struct IOSCloudSyncLifecycleTests {
             },
             unregisterForRemoteNotifications: {
                 unregistrationCount += 1
-            }
+            },
+            syncDefaults: defaults
         )
 
         await controller.start()
@@ -183,7 +187,8 @@ struct IOSCloudSyncLifecycleTests {
             makeContainer: {
                 IOSCloudSyncController.ContainerHandle(
                     database: database,
-                    accountStatus: { accountStatus }
+                    accountStatus: { accountStatus },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -197,7 +202,8 @@ struct IOSCloudSyncLifecycleTests {
                 )
             },
             registerForRemoteNotifications: { registrationCount += 1 },
-            unregisterForRemoteNotifications: { unregistrationCount += 1 }
+            unregisterForRemoteNotifications: { unregistrationCount += 1 },
+            syncDefaults: defaults
         )
 
         await controller.start()
@@ -455,7 +461,8 @@ struct IOSCloudSyncLifecycleTests {
             makeContainer: {
                 IOSCloudSyncController.ContainerHandle(
                     database: database,
-                    accountStatus: { .available }
+                    accountStatus: { .available },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -469,7 +476,8 @@ struct IOSCloudSyncLifecycleTests {
                 )
             },
             registerForRemoteNotifications: {},
-            unregisterForRemoteNotifications: {}
+            unregisterForRemoteNotifications: {},
+            syncDefaults: fixture.defaults
         )
 
         await controller.start()
@@ -505,7 +513,8 @@ struct IOSCloudSyncLifecycleTests {
             makeContainer: {
                 IOSCloudSyncController.ContainerHandle(
                     database: database,
-                    accountStatus: { .available }
+                    accountStatus: { .available },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -519,7 +528,8 @@ struct IOSCloudSyncLifecycleTests {
                 )
             },
             registerForRemoteNotifications: {},
-            unregisterForRemoteNotifications: {}
+            unregisterForRemoteNotifications: {},
+            syncDefaults: fixture.defaults
         )
 
         await controller.start()
@@ -553,7 +563,8 @@ struct IOSCloudSyncLifecycleTests {
             makeContainer: {
                 IOSCloudSyncController.ContainerHandle(
                     database: database,
-                    accountStatus: { .available }
+                    accountStatus: { .available },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -567,7 +578,8 @@ struct IOSCloudSyncLifecycleTests {
                 )
             },
             registerForRemoteNotifications: {},
-            unregisterForRemoteNotifications: {}
+            unregisterForRemoteNotifications: {},
+            syncDefaults: fixture.defaults
         )
 
         await controller.start()
@@ -603,7 +615,8 @@ struct IOSCloudSyncLifecycleTests {
             makeContainer: {
                 IOSCloudSyncController.ContainerHandle(
                     database: database,
-                    accountStatus: { accountStatus }
+                    accountStatus: { accountStatus },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -617,7 +630,8 @@ struct IOSCloudSyncLifecycleTests {
             },
             registerForRemoteNotifications: { registrationCount += 1 },
             unregisterForRemoteNotifications: {},
-            transientRetryDelayNanoseconds: 20_000_000
+            transientRetryDelayNanoseconds: 20_000_000,
+            syncDefaults: defaults
         )
 
         await controller.start()
@@ -659,7 +673,8 @@ struct IOSCloudSyncLifecycleTests {
                     accountStatus: {
                         accountStatusCallCount += 1
                         return .couldNotDetermine
-                    }
+                    },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -673,7 +688,8 @@ struct IOSCloudSyncLifecycleTests {
             },
             registerForRemoteNotifications: {},
             unregisterForRemoteNotifications: {},
-            transientRetryDelayNanoseconds: 20_000_000
+            transientRetryDelayNanoseconds: 20_000_000,
+            syncDefaults: defaults
         )
 
         await controller.start()
@@ -709,7 +725,8 @@ struct IOSCloudSyncLifecycleTests {
                     accountStatus: {
                         stopAccountCallCount += 1
                         return .couldNotDetermine
-                    }
+                    },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -723,7 +740,8 @@ struct IOSCloudSyncLifecycleTests {
             },
             registerForRemoteNotifications: {},
             unregisterForRemoteNotifications: {},
-            transientRetryDelayNanoseconds: 20_000_000
+            transientRetryDelayNanoseconds: 20_000_000,
+            syncDefaults: stopDefaults
         )
         await stopController.start()
         #expect(stopAccountCallCount == 1)
@@ -748,7 +766,8 @@ struct IOSCloudSyncLifecycleTests {
                     accountStatus: {
                         disableAccountCallCount += 1
                         return .couldNotDetermine
-                    }
+                    },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -762,7 +781,8 @@ struct IOSCloudSyncLifecycleTests {
             },
             registerForRemoteNotifications: {},
             unregisterForRemoteNotifications: {},
-            transientRetryDelayNanoseconds: 20_000_000
+            transientRetryDelayNanoseconds: 20_000_000,
+            syncDefaults: disableDefaults
         )
         await disableController.start()
         #expect(disableAccountCallCount == 1)
@@ -792,7 +812,8 @@ struct IOSCloudSyncLifecycleTests {
                             await accountGate.wait()
                         }
                         return .available
-                    }
+                    },
+                    userRecordID: { CKRecord.ID(recordName: "test-user") }
                 )
             },
             makeService: { database, store, settingsStore in
@@ -805,7 +826,8 @@ struct IOSCloudSyncLifecycleTests {
                 )
             },
             registerForRemoteNotifications: {},
-            unregisterForRemoteNotifications: {}
+            unregisterForRemoteNotifications: {},
+            syncDefaults: fixture.defaults
         )
 
         await controller.start()
@@ -837,6 +859,87 @@ struct IOSCloudSyncLifecycleTests {
         #expect(accountCallCount == 2)
     }
 
+    @Test("A different resolved account identity resets this container's persisted checkpoints")
+    func accountSwitchResetsPersistedCheckpoints() async throws {
+        let fixture = try makeAccountIdentityFixture()
+        fixture.syncDefaults.set(Data([1]), forKey: fixture.receiptsKey)
+        fixture.syncDefaults.set("account-A", forKey: fixture.identityKey)
+        let controller = fixture.makeController(resolvedIdentity: { CKRecord.ID(recordName: "account-B") })
+
+        await controller.start()
+
+        #expect(fixture.syncDefaults.object(forKey: fixture.receiptsKey) == nil)
+        #expect(fixture.syncDefaults.string(forKey: fixture.identityKey) == "account-B")
+    }
+
+    @Test("The same resolved account identity leaves persisted checkpoints untouched")
+    func sameAccountIdentityDoesNotReset() async throws {
+        let fixture = try makeAccountIdentityFixture()
+        fixture.syncDefaults.set(Data([1]), forKey: fixture.receiptsKey)
+        fixture.syncDefaults.set("account-A", forKey: fixture.identityKey)
+        let controller = fixture.makeController(resolvedIdentity: { CKRecord.ID(recordName: "account-A") })
+
+        await controller.start()
+
+        #expect(fixture.syncDefaults.object(forKey: fixture.receiptsKey) != nil)
+        #expect(fixture.syncDefaults.string(forKey: fixture.identityKey) == "account-A")
+    }
+
+    @Test("A first-run account identity is stored without resetting anything")
+    func firstRunAccountIdentityIsStoredWithoutReset() async throws {
+        let fixture = try makeAccountIdentityFixture()
+        // No prior identity marker — simulates the first launch after this feature shipped,
+        // with checkpoints a pre-existing install already carried.
+        fixture.syncDefaults.set(Data([1]), forKey: fixture.receiptsKey)
+        let controller = fixture.makeController(resolvedIdentity: { CKRecord.ID(recordName: "account-C") })
+
+        await controller.start()
+
+        #expect(fixture.syncDefaults.object(forKey: fixture.receiptsKey) != nil)
+        #expect(fixture.syncDefaults.string(forKey: fixture.identityKey) == "account-C")
+    }
+
+    @Test("A userRecordID probe failure leaves persisted checkpoints and identity untouched")
+    func accountIdentityProbeFailureDoesNotReset() async throws {
+        let fixture = try makeAccountIdentityFixture()
+        fixture.syncDefaults.set(Data([1]), forKey: fixture.receiptsKey)
+        fixture.syncDefaults.set("account-A", forKey: fixture.identityKey)
+        let controller = fixture.makeController(resolvedIdentity: {
+            throw LifecycleTestError.accountLookup
+        })
+
+        await controller.start()
+
+        #expect(fixture.syncDefaults.object(forKey: fixture.receiptsKey) != nil)
+        #expect(fixture.syncDefaults.string(forKey: fixture.identityKey) == "account-A")
+    }
+
+    /// Keys mirror `CloudKitSyncService`'s private scheme for the live container identifier
+    /// (`Sources/YankCloudKitSync/CloudKitSync.swift`) — the only way to observe a reset from
+    /// outside the service without a network round trip.
+    private func makeAccountIdentityFixture() throws -> AccountIdentityFixture {
+        let liveContainerID = "iCloud.com.thepatientzero.yank"
+        let syncDefaults = try #require(
+            UserDefaults(suiteName: "IOSCloudSyncLifecycleTests.\(UUID().uuidString)")
+        )
+        let settingsDefaults = try #require(
+            UserDefaults(suiteName: "IOSCloudSyncLifecycleTests.\(UUID().uuidString)")
+        )
+        settingsDefaults.set(true, forKey: SettingsKeys.syncEnabled)
+        let settings = IOSSettings(defaults: settingsDefaults)
+        let store = ClipStore(context: nil)
+        let database = RecordingCloudKitDatabase()
+        return AccountIdentityFixture(
+            syncDefaults: syncDefaults,
+            receiptsKey: "cloudkit.pushReceipts.\(liveContainerID)",
+            identityKey: "cloudkit.accountIdentity.\(liveContainerID)",
+            store: store,
+            settings: settings,
+            database: database,
+            settingsDefaults: settingsDefaults
+        )
+    }
+
     /// A `ClipStore` backed by a real, writable App Group so `CloudKitSyncService.start()` can
     /// actually reach `.started` — `ClipStore(context: nil)` disables history writes outright,
     /// which is fine for the failure-path tests above but hides a genuine bring-up success.
@@ -861,6 +964,45 @@ private struct CloudSyncFixture {
     func cleanUp() {
         try? FileManager.default.removeItem(at: root)
         UserDefaults.standard.removePersistentDomain(forName: defaultsName)
+    }
+}
+
+@MainActor
+private struct AccountIdentityFixture {
+    let syncDefaults: UserDefaults
+    let receiptsKey: String
+    let identityKey: String
+    let store: ClipStore
+    let settings: IOSSettings
+    let database: RecordingCloudKitDatabase
+    let settingsDefaults: UserDefaults
+
+    func makeController(
+        resolvedIdentity: @escaping @MainActor () async throws -> CKRecord.ID
+    ) -> IOSCloudSyncController {
+        IOSCloudSyncController(
+            store: store,
+            settings: settings,
+            makeContainer: {
+                IOSCloudSyncController.ContainerHandle(
+                    database: database,
+                    accountStatus: { .available },
+                    userRecordID: resolvedIdentity
+                )
+            },
+            makeService: { database, store, settingsStore in
+                CloudKitSyncService(
+                    containerIdentifier: "test.identity-switch",
+                    store: store,
+                    database: database,
+                    settingsStore: settingsStore,
+                    defaults: settingsDefaults
+                )
+            },
+            registerForRemoteNotifications: {},
+            unregisterForRemoteNotifications: {},
+            syncDefaults: syncDefaults
+        )
     }
 }
 

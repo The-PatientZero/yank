@@ -257,6 +257,7 @@ final class IOSCloudSyncController {
     struct ContainerHandle {
         let database: any CloudKitDatabase
         let accountStatus: @MainActor () async throws -> CKAccountStatus
+        let userRecordID: @MainActor () async throws -> CKRecord.ID
     }
 
     private enum Request {
@@ -274,6 +275,7 @@ final class IOSCloudSyncController {
     /// How long a transient account status (`.temporarilyUnavailable`, `.couldNotDetermine`)
     /// waits before retrying once, instead of stalling until the next foreground/push.
     private static let transientRetryDelayNanoseconds: UInt64 = 10_000_000_000
+    private static let accountIdentityDefaultsKey = "cloudkit.accountIdentity.\(containerID)"
 
     private let store: ClipStore
     private let settings: IOSSettings
@@ -283,6 +285,9 @@ final class IOSCloudSyncController {
     @ObservationIgnored private let registerForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let unregisterForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let transientRetryDelayNanoseconds: UInt64
+    /// The `UserDefaults` domain the sync service persists its checkpoints into — production
+    /// and this controller must agree, or a reset here would clear the wrong store.
+    @ObservationIgnored private let syncDefaults: UserDefaults
 
     @ObservationIgnored private var container: ContainerHandle?
     @ObservationIgnored private var sync: CloudKitSyncService?
@@ -296,6 +301,9 @@ final class IOSCloudSyncController {
     @ObservationIgnored private var operationSequence: UInt64 = 0
     @ObservationIgnored private var pendingRemoteTrigger = false
     @ObservationIgnored private var transientRetryTask: Task<Void, Never>?
+    /// The iCloud account identity resolved this controller lifecycle, so routine foregrounds
+    /// don't re-probe it. Cleared in `stop()`.
+    @ObservationIgnored private var cachedAccountIdentity: String?
     @ObservationIgnored private var lifecycleGeneration: UInt64 = 0
     /// Owned here because the sync service holds it weakly, the same way it holds the store.
     /// The service observes settings choices itself; this root only supplies the port.
@@ -325,7 +333,8 @@ final class IOSCloudSyncController {
         unregisterForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.unregisterForRemoteNotifications()
         },
-        transientRetryDelayNanoseconds: UInt64 = IOSCloudSyncController.transientRetryDelayNanoseconds
+        transientRetryDelayNanoseconds: UInt64 = IOSCloudSyncController.transientRetryDelayNanoseconds,
+        syncDefaults: UserDefaults = .standard
     ) {
         self.store = store
         self.settings = settings
@@ -334,6 +343,7 @@ final class IOSCloudSyncController {
         self.registerForRemoteNotifications = registerForRemoteNotifications
         self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
         self.transientRetryDelayNanoseconds = transientRetryDelayNanoseconds
+        self.syncDefaults = syncDefaults
         self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 
@@ -356,6 +366,7 @@ final class IOSCloudSyncController {
         transientRetryTask?.cancel()
         transientRetryTask = nil
         pendingRemoteTrigger = false
+        cachedAccountIdentity = nil
         operation?.task.cancel()
         operation = nil
         sync = nil
@@ -430,6 +441,8 @@ final class IOSCloudSyncController {
             case .proceed:
                 iCloudSignedOut = false
                 registerForRemoteNotifications()
+                await reconcileAccountIdentity(container: container, generation: generation)
+                guard isActive(generation) else { return false }
             case .hardUnavailable(let reason):
                 iCloudSignedOut = true
                 tearDownService(
@@ -474,6 +487,36 @@ final class IOSCloudSyncController {
                   let sync else { return false }
             return await performRemoteChange(using: sync, generation: generation)
         }
+    }
+
+    /// Detects an iCloud account switch and resets this container's persisted sync
+    /// checkpoints before any service exists for the new account — otherwise the previous
+    /// account's push receipts suppress uploading the library into the new account's empty
+    /// zone, and the stale change token targets a zone that no longer answers. Resolved once
+    /// per controller lifecycle; a probe failure is left conservative (no reset) rather than
+    /// risking a spurious wipe from a transient identity lookup error.
+    private func reconcileAccountIdentity(container: ContainerHandle, generation: UInt64) async {
+        guard cachedAccountIdentity == nil else { return }
+        let identity: String
+        do {
+            identity = try await container.userRecordID().recordName
+        } catch {
+            return
+        }
+        guard isActive(generation) else { return }
+
+        if let previous = syncDefaults.string(forKey: Self.accountIdentityDefaultsKey),
+           previous != identity {
+            sync?.stop()
+            sync = nil
+            syncStarted = false
+            CloudKitSyncService.resetPersistedState(
+                containerIdentifier: Self.containerID,
+                defaults: syncDefaults
+            )
+        }
+        syncDefaults.set(identity, forKey: Self.accountIdentityDefaultsKey)
+        cachedAccountIdentity = identity
     }
 
     private func performStart(
@@ -570,7 +613,8 @@ final class IOSCloudSyncController {
         let container = CKContainer(identifier: containerID)
         return ContainerHandle(
             database: container.privateCloudDatabase,
-            accountStatus: { try await container.accountStatus() }
+            accountStatus: { try await container.accountStatus() },
+            userRecordID: { try await container.userRecordID() }
         )
     }
 }
