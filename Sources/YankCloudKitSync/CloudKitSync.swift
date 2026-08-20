@@ -111,6 +111,23 @@ public final class CloudKitSyncService {
         )
     }
 
+    /// Discards every persisted sync checkpoint for a container: change token, push receipts,
+    /// legacy watermark, quarantine, and quarantine epoch. For an iCloud account change —
+    /// receipts and tokens describe the *previous* account's zone, and carrying them across
+    /// would suppress uploading the library into the new account and aim pulls at a zone
+    /// that no longer answers. Call before constructing a fresh service; the next `start()`
+    /// then replays everything from scratch, which is safe by design.
+    public static func resetPersistedState(
+        containerIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.removeObject(forKey: "cloudkit.changeToken.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.lastPushedModifiedAt.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.pushReceipts.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.pullQuarantine.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
+    }
+
     /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
     init(
         containerIdentifier: String,

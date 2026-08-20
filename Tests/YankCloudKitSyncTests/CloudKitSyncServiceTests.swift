@@ -2880,6 +2880,32 @@ struct CloudKitSyncServiceTests {
         #expect(try pullQuarantine(defaults: defaults, containerID: containerID).isEmpty)
     }
 
+    @Test func resetPersistedStateClearsEveryCheckpointForTheContainer() throws {
+        let defaults = isolatedDefaults()
+        let containerID = "test.\(UUID().uuidString)"
+        defaults.set(Data([0x01]), forKey: "cloudkit.changeToken.\(containerID)")
+        defaults.set(Date(), forKey: "cloudkit.lastPushedModifiedAt.\(containerID)")
+        try setPushReceipts([UUID(): Date()], defaults: defaults, containerID: containerID)
+        defaults.set(
+            try CloudKitPullQuarantineCodec.encode(
+                ["r": CloudKitPullQuarantineEntry(reason: "x", attemptCount: 1)]
+            ),
+            forKey: pullQuarantineKey(containerID)
+        )
+        defaults.set("1", forKey: "cloudkit.pullQuarantine.epoch.\(containerID)")
+        let untouchedKey = "cloudkit.changeToken.other"
+        defaults.set(Data([0x02]), forKey: untouchedKey)
+
+        CloudKitSyncService.resetPersistedState(containerIdentifier: containerID, defaults: defaults)
+
+        #expect(defaults.data(forKey: "cloudkit.changeToken.\(containerID)") == nil)
+        #expect(defaults.object(forKey: "cloudkit.lastPushedModifiedAt.\(containerID)") == nil)
+        #expect(defaults.data(forKey: pushReceiptsKey(containerID)) == nil)
+        #expect(defaults.data(forKey: pullQuarantineKey(containerID)) == nil)
+        #expect(defaults.string(forKey: "cloudkit.pullQuarantine.epoch.\(containerID)") == nil)
+        #expect(defaults.data(forKey: untouchedKey) != nil)
+    }
+
     @Test func resolutionTreatsSubMillisecondStampDriftAsATie() {
         let localSettings = SyncedSettings(
             historyLimit: .deep,
