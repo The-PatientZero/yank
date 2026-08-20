@@ -26,10 +26,9 @@ public struct SyncedSettings: Equatable, Sendable {
     public var wasChosen: Bool { updatedAt > .distantPast }
 }
 
-/// Owns the choose-versus-adopt stamp rule in one place, so the macOS and iOS settings types
-/// cannot drift apart on the thing that decides cross-device conflicts. Despite the name it
-/// carries every synced preference (the name survives for source compatibility); the record
-/// moves as one unit under a single stamp, so choosing either value publishes both.
+/// Owns the choose-versus-adopt stamp rule so macOS and iOS settings types cannot drift on
+/// cross-device conflict resolution. Despite the name (kept for source compatibility) it carries
+/// every synced preference as one unit under a single stamp, so choosing either publishes both.
 public struct SyncedHistoryLimit: Equatable, Sendable {
     public private(set) var current: SyncedSettings
 
@@ -69,10 +68,9 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
         return true
     }
 
-    /// A value adopted from another device. The remote stamp is kept verbatim — re-stamping
-    /// would make this device look like the newest writer and bounce the value straight back
-    /// at the device it came from. A remote record with no retention opinion (an older
-    /// build's) leaves the local retention in place.
+    /// A value adopted from another device. The remote stamp is kept verbatim — re-stamping would
+    /// make this device look like the newest writer and bounce the value back at its origin. A
+    /// remote record with no retention opinion (an older build's) leaves local retention in place.
     public mutating func adopt(_ remote: SyncedSettings) {
         current = SyncedSettings(
             historyLimit: remote.historyLimit,

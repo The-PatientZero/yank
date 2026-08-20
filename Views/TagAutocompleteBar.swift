@@ -27,7 +27,6 @@ struct TagAutocompleteBar: View {
         .overlay(Rectangle().frame(height: 0.5).foregroundColor(Color.yankHairline), alignment: .bottom)
     }
 
-    /// A faint accent ring on the chip that matches the currently-applied filter.
     @ViewBuilder
     private func activeRing(for tag: String) -> some View {
         if tag == activeTag {

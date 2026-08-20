@@ -1,14 +1,8 @@
 import SwiftUI
 
-/// The pin / bookmark status glyph for a clip. Pinned takes precedence over bookmarked,
-/// and nothing renders when the clip is neither — so the single precedence rule, the
-/// brand colours, and the VoiceOver labels live in one place, shared by the list rows,
-/// the tiles, and the peek on both platforms instead of being reimplemented in each.
-///
-/// Pin uses the environment `.tint`, which both apps set to the theme's AA-safe
-/// foreground at their history roots; bookmark uses the tuned `yankBookmark` gold.
-/// `font` lets each surface match its own type ramp (fixed `TypeScale` on macOS, the
-/// Dynamic-Type `.yank(_:)` styles on iOS).
+/// Pin / bookmark status glyph for a clip. Pin takes precedence over bookmark; nothing
+/// renders when neither applies. Pin uses the environment `.tint` (each app's AA-safe
+/// foreground); bookmark uses the tuned `yankBookmark` gold; `font` matches the caller's ramp.
 struct ClipStatusBadge: View {
     let item: ClipboardItem
     var font: Font = ClipStatusBadge.platformFont
@@ -36,6 +30,7 @@ struct ClipStatusBadge: View {
     }
 }
 
+/// Rich-content availability glyph for a clip; renders nothing for `.none`.
 struct RichContentBadge: View {
     let state: ClipboardItem.RichContentState
     var font: Font = ClipStatusBadge.platformFont

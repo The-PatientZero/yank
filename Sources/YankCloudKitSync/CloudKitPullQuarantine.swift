@@ -7,13 +7,9 @@ struct CloudKitPullQuarantineEntry: Equatable {
     var attemptCount: Int
 }
 
-/// Durable list of remote records the pull had to skip.
-///
-/// A single unresolvable record must not freeze the change feed, so the pull skips it, remembers
-/// why, and re-attempts it a bounded number of times on later pulls. The enclosing UserDefaults key
-/// is container-scoped by `CloudKitSyncService`; the payload stays versioned and bounded so corrupt
-/// state degrades into "nothing quarantined" — a record re-quarantines itself on the next pull —
-/// instead of blocking sync.
+/// Durable list of remote records the pull had to skip. A single unresolvable record must not
+/// freeze the change feed, so it's skipped, remembered, and retried a bounded number of times.
+/// Corrupt or oversized state degrades to "nothing quarantined" — it re-quarantines on the next pull.
 enum CloudKitPullQuarantineCodec {
     private struct Envelope: Codable {
         let version: Int

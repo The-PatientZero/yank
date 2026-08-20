@@ -1,9 +1,8 @@
 import Foundation
 
-/// Atomic, file-per-capture handoff from the share extension to the host app.
-///
-/// The extension never rewrites canonical history. The host imports each entry using its
-/// stable ID, commits canonical history durably, then removes the entry.
+/// Atomic, file-per-capture handoff from the share extension to the host app. The extension
+/// never rewrites canonical history; the host imports each entry by its stable ID, commits
+/// canonical history durably, then removes the entry.
 struct ShareCaptureInbox: Sendable {
     enum Error: Swift.Error, Equatable {
         case invalidEntry

@@ -1,12 +1,8 @@
 import Foundation
 
-/// A faithful snapshot of every representation on a pasteboard item.
-///
-/// Most clips are flattened to a single `.text` or `.image` for display, search, and
-/// sync. But rich copies — formatted text (RTF/HTML), Confluence content, a shape
-/// drawn in Preview (PDF) — carry several representations at once. We archive all of
-/// them so paste can replay the exact bytes the source app produced, instead of a
-/// lossy plain-text / raster fallback. Foundation-only so it lives in `YankCore`.
+/// A faithful snapshot of every representation on a pasteboard item. Most clips flatten to a
+/// single `.text`/`.image`, but rich copies (RTF/HTML, PDF) carry several representations at
+/// once; archiving all of them lets paste replay the exact bytes instead of a lossy fallback.
 public struct PasteboardArchive: Codable, Equatable, Sendable {
     public struct Representation: Codable, Equatable, Sendable {
         /// The pasteboard type's UTI, e.g. `public.rtf`, `com.adobe.pdf`.

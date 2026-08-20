@@ -22,10 +22,9 @@ final class ClipboardStore {
         }
     }
 
-    /// Injected capture-relevant settings. Replaces reads of the
-    /// `SettingsManager.shared` singleton on the capture critical path, so the store is
-    /// testable in isolation. The composition root re-assigns this when the user changes
-    /// the history limit or retention window.
+    /// Injected capture-relevant settings — replaces reading `SettingsManager.shared` on the
+    /// capture critical path so the store is testable in isolation. The composition root
+    /// re-assigns this when the user changes the history limit or retention window.
     var captureSettings: CaptureSettings {
         didSet {
             guard captureSettings != oldValue else { return }
@@ -76,14 +75,12 @@ final class ClipboardStore {
 
     var maxItems: Int { captureSettings.historyLimit }
 
-    /// Owns the on-disk blob layout (texts / images / rich), its private-file attributes,
-    /// and all blob reads/writes/deletes. The store delegates every filesystem concern here.
+    /// All on-disk blob storage is delegated here — see `ClipBlobStore`.
     @ObservationIgnored let blobStore: ClipBlobStore
 
-    /// When capture-path age retention last ran. Age-based expiry is a coarse, time-driven
-    /// sweep, so running it on every single capture is wasted work; we gate it to at most
-    /// once per `expirySweepInterval` on the capture path. Explicit prune
-    /// triggers (settings change, retention notification, launch) bypass the gate.
+    /// When capture-path age retention last ran. Age-based expiry is coarse and time-driven, so
+    /// running it every capture is wasted work — gated to at most once per `expirySweepInterval`.
+    /// Explicit triggers (settings change, retention notification, launch) bypass the gate.
     @ObservationIgnored private var lastExpirySweep: Date = .distantPast
 
     /// Minimum spacing between capture-path expiry sweeps. Retention is a day-granularity
@@ -130,10 +127,9 @@ final class ClipboardStore {
         if applyRetentionAndLimit(now: Date()) { persist() }
     }
 
-    /// One-shot sweep for blob files a reconcile's deferred delete never reached (a crash
-    /// between the durable flush and the file delete leaves them behind for good). Runs
-    /// inside `init`, before the watcher or sync can write a blob, so an in-flight capture
-    /// can never look like an orphan.
+    /// One-shot sweep for blob files a reconcile's deferred delete missed — a crash between the
+    /// durable flush and the file delete leaves them behind for good. Runs in `init`, before the
+    /// watcher or sync can write a blob, so an in-flight capture can never look orphaned.
     private func sweepOrphanedBlobsAtLaunch() {
         guard let present = blobStore.allBlobReferences() else { return }
         let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
@@ -161,10 +157,9 @@ final class ClipboardStore {
         insert(stamped, observedAt: observedAt)
     }
 
-    /// Capture-specific insertion boundary. Duplicate resolution stays on the main actor and
-    /// happens before any filesystem work; bounded primary/rich encoding and writes then run on
-    /// a utility executor. Cancellation removes every newly written file before returning, and
-    /// the caller's serial capture queue keeps the final in-memory mutations FIFO.
+    /// Capture-specific insertion boundary. Duplicate resolution runs on the main actor before any
+    /// filesystem work; encoding/writes then run on a utility executor and cancellation removes
+    /// every newly written file. The caller's serial capture queue keeps final mutations FIFO.
     func addCaptured(
         _ item: ClipboardItem,
         primaryBlob: ClipboardCapturePrimaryBlob?,
@@ -261,8 +256,6 @@ final class ClipboardStore {
 
         _ = applyHistoryLimit()
 
-        // Age-based expiry is a day-granularity
-        // sweep, so it need not run on every copy.
         _ = sweepExpiredOnCapture(now: Date())
         persist()
         signalCapture(observedAt: observedAt)

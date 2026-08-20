@@ -68,10 +68,9 @@ final class ClipboardController {
         self.accountIdentityProvider = accountIdentityProvider
     }
 
-    // `isolated deinit` runs cleanup on the main actor (the runtime schedules a hop if the last
-    // release lands off-main), so it never traps the way `MainActor.assumeIsolated` would, while
-    // still allowing access to the non-Sendable `observerTokens`. It's only a backstop:
-    // `stop()` is the normal app-termination path.
+    // `isolated deinit` hops to the main actor for cleanup (unlike `MainActor.assumeIsolated`, it
+    // never traps) and can safely touch the non-Sendable `observerTokens`. Backstop only —
+    // `stop()` is the normal termination path.
     isolated deinit {
         stop()
     }
@@ -96,8 +95,7 @@ final class ClipboardController {
             }
         )
 
-        // Index clips into system-wide Spotlight only when the user has opted in: clipboard
-        // history can hold secrets, so system-wide indexing is off by default.
+        // Off by default — clips can hold secrets; see `SettingsManager.spotlightIndexingEnabled`.
         if dependencies.settings.spotlightIndexingEnabled {
             SpotlightIndexer.index(store.items)
         }
@@ -496,11 +494,9 @@ final class ClipboardController {
 /// previous account's checkpoints are reset first (see
 /// `CloudKitSyncService.resetPersistedState` for why they must not carry across).
 enum CloudKitAccountChangeGuard {
-    /// Compares the resolved account identity against the one persisted under `defaultsKey`,
-    /// resetting `containerIdentifier`'s sync checkpoints when they differ. A first run (no
-    /// persisted identity yet) only records the identity — it must never wipe a healthy
-    /// checkpoint. A failed probe (offline, no account) leaves everything untouched. Returns
-    /// whether a reset happened, so the caller can log it.
+    /// Resets `containerIdentifier`'s sync checkpoints when the resolved identity differs from the
+    /// one persisted under `defaultsKey`. A first run only records the identity — it must never
+    /// wipe a healthy checkpoint — and a failed probe (offline, no account) leaves it untouched.
     @discardableResult
     @MainActor
     static func resetIfAccountChanged(

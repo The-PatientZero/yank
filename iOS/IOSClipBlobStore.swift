@@ -1,12 +1,8 @@
 import Foundation
 
-/// Owns the iOS blob layout inside the App Group container: filename validation, containment,
-/// and every read/write/delete of a clip's backing file. `ClipStore` delegates its filesystem
-/// concerns here and keeps in-memory history, persistence, and sync coordination — the same
-/// split the macOS store already uses with `ClipBlobStore`.
-///
-/// A nil directory means the App Group could not be resolved. Every operation then fails closed
-/// rather than silently writing into a process-local container.
+/// Owns the iOS blob layout inside the App Group container (filename validation, containment,
+/// read/write/delete) — mirrors the macOS split with `ClipBlobStore`. A nil directory means the
+/// App Group is unresolved; every operation then fails closed instead of writing process-local.
 @MainActor
 struct IOSClipBlobStore {
     private let directory: URL?
@@ -119,11 +115,9 @@ struct IOSClipBlobStore {
 
     // MARK: - Launch sweep
 
-    /// Deletes every regular file directly in the blobs directory whose name isn't in
-    /// `referenced` — a crash between a durable write and its deferred blob deletion (or a
-    /// staged pull write and its rename) otherwise leaks the file forever. An unreadable
-    /// listing is a silent no-op.
-    /// - Returns: the number of files removed.
+    /// Deletes every regular file in the blobs directory whose name isn't in `referenced` — a
+    /// crash between a durable write and its deferred blob deletion (or a staged pull write and
+    /// its rename) otherwise leaks the file forever. Returns the removed count; an unreadable listing no-ops.
     @discardableResult
     func sweepOrphans(referenced: Set<String>) -> Int {
         guard let directory,

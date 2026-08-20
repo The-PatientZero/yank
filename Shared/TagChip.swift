@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// A tag pill: a hue dot for identity, a subtle same-hue wash, and `.primary`
-/// text so legibility never depends on the (light) tag color. Optionally tappable
-/// (filter by tag) or removable (clear the active filter).
+/// A tag pill: colour dot for identity, `.primary` text so legibility never depends
+/// on tag hue. Optionally tappable (filter) or removable (clear the filter).
 struct TagChip: View {
     private enum Metrics {
         static let fillOpacity = 0.14
@@ -16,9 +15,8 @@ struct TagChip: View {
 
     private var hue: Color { TagChip.color(for: label) }
 
-    /// The pill type: the Dynamic-Type `.caption2` style on iOS (so tags grow with the
-    /// user's text size like every other iOS label), and the fixed micro size on the
-    /// compact macOS menu-bar surface, matching each platform's ramp.
+    /// iOS uses Dynamic-Type `.caption2` so tags scale with system text size;
+    /// macOS uses a fixed micro size for the compact menu-bar surface.
     private var chipFont: Font {
         #if os(iOS)
         .yank(.caption2)
@@ -33,8 +31,8 @@ struct TagChip: View {
         return .yankDynamic(light: pair.light, dark: pair.dark)
     }
 
-    /// The shared tag rule — see `TagNormalization`. A typed tag and an AI-suggested tag must
-    /// normalize identically, or the enricher cannot tell it is proposing a duplicate.
+    /// Must match `TagNormalization`'s rule, or the enricher can't tell an AI-suggested
+    /// tag is a duplicate of a typed one.
     static func normalize(_ input: String) -> String {
         TagNormalization.normalize(input)
     }

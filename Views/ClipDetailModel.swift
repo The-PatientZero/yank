@@ -143,8 +143,7 @@ final class ClipDetailModel {
     }
 
     func formattedBytes(_ bytes: Int) -> String {
-        // `ByteCountFormatStyle` is a Sendable, system-cached value type — no per-call
-        // `ByteCountFormatter` allocation. Matches the old `.file` + bytes/KB/MB config.
+        // `ByteCountFormatStyle` is a Sendable, system-cached value type — no per-call allocation.
         bytes.formatted(.byteCount(style: .file, allowedUnits: [.bytes, .kb, .mb]))
     }
 }

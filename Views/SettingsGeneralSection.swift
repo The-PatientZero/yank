@@ -1,7 +1,5 @@
 import SwiftUI
 
-// General section — the broad behaviour toggles: launch at login, menu-bar icon,
-// shortcut target, window/picker placement, click-to-paste, haptics, and sound cues.
 extension SettingsView {
     var generalSection: some View {
         VStack(alignment: .leading, spacing: Space.lg) {

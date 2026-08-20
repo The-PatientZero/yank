@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Space-to-peek: the focused clip floated in a glass card over a dimmed scrim. The
-/// caller gates presentation (`if showQuickLook, selectedItem != nil`); this view owns
-/// the sizing and the scrim's tap-to-dismiss.
+/// Focused-clip Quick Look overlay. Caller gates presentation on `showQuickLook &&
+/// selectedItem != nil`; this view owns sizing and the scrim's tap-to-dismiss.
 struct ClipQuickLookOverlay: View {
     var store: ClipboardStore
     var selectedItems: [ClipboardItem]

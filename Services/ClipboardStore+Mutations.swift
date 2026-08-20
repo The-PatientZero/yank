@@ -42,13 +42,11 @@ extension ClipboardStore {
         persist()
     }
 
-    /// Memoised tags, recomputed only when `items` changes. Same shape the
-    /// views already read, so call sites are unchanged.
+    /// All tags across items, memoised and recomputed only when `items` changes.
     var allTags: [String] { cachedTags }
 
-    /// Search / `#tag` / `@app`-filtered, pinned-first — memoised until `items` changes,
-    /// so the window's many per-render reads (header count, stream, sectioning, and the
-    /// selection summaries derived from it) share one filter + sort instead of recomputing.
+    /// Search / `#tag` / `@app`-filtered, pinned-first. Memoised until `items` changes,
+    /// since callers re-read this on every render.
     func filteredItems(search: String, activeTag: String?) -> [ClipboardItem] {
         if let cached = filterCache.result(query: search, tag: activeTag) {
             return cached
@@ -79,7 +77,6 @@ extension ClipboardStore {
         persist()
     }
 
-    /// Move an item to the top of the list (most recent position)
     func moveToTop(_ item: ClipboardItem) {
         if ClipboardMutations.moveToTop(item.id, in: &items) { persist() }
     }

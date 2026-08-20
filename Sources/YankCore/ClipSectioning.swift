@@ -1,9 +1,8 @@
 import Foundation
 
-/// Pin / day sectioning for an ordered clip list: pinned clips form a leading
-/// "Pinned" group, the rest break by calendar day. Pure and shared — macOS draws
-/// inline headers via `startsSection`/`label`, iOS builds `List` sections via
-/// `sections`. Items are assumed already ordered (pinned first, then newest-first).
+/// Pin/day sectioning for an ordered clip list: pinned clips form a leading "Pinned" group,
+/// the rest break by calendar day. Shared — macOS draws inline headers, iOS builds `List`
+/// sections. Assumes items are already ordered (pinned first, then newest-first).
 enum ClipSectioning {
     /// Whether the item at `index` begins a new section.
     static func startsSection(at index: Int, in items: [ClipboardItem],

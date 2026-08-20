@@ -9,6 +9,7 @@ struct SpotlightDocument: Equatable, Sendable {
     let contentDescription: String
 }
 
+/// Abstracts the Core Spotlight index so `SpotlightIndexStorage` can be tested without `CSSearchableIndex`.
 protocol SpotlightIndexClient: Sendable {
     func index(_ documents: [SpotlightDocument]) async throws
     func delete(identifiers: [String]) async throws
@@ -210,6 +211,7 @@ actor SpotlightIndexStorage {
     }
 }
 
+/// Fire-and-forget facade over `SpotlightIndexStorage`; failures are logged, never thrown to callers.
 enum SpotlightIndexer {
     private static let storage = SpotlightIndexStorage()
 

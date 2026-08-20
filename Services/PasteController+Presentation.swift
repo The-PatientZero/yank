@@ -77,10 +77,9 @@ extension PasteController {
         return eventDispatcher()
     }
 
-    /// Simulate Command + V keystroke after a deliberate delay.
-    ///
-    /// The `delay` is load-bearing: it gives the OS time to finish activating the target app
-    /// and to process any preceding synthetic ⌘V before this keystroke is posted.
+    /// Simulate Command + V after a deliberate delay. The delay is load-bearing — it gives the
+    /// OS time to finish activating the target app and process any preceding synthetic ⌘V
+    /// first.
     static func simulatePasteWithCustomDelay(
         _ delay: TimeInterval,
         receipt: PasteboardWriteReceipt,

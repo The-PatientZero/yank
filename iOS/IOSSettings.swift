@@ -42,11 +42,9 @@ enum IOSForegroundCaptureMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// iOS user preferences, backed by the App-Group defaults so they survive relaunches.
-/// Mirrors the slice of the Mac's `SettingsManager` that applies on iOS: accent theme,
-/// layout, density, history limit, and auto-delete retention. Keys and defaults come
-/// from the shared `SettingsKeys` / `SettingsDefaults`, and `ClipStore` reads the same
-/// keys for limit/retention enforcement.
+/// iOS user preferences, backed by App-Group defaults so they survive relaunches. Mirrors the
+/// iOS-relevant slice of macOS `SettingsManager`; keys come from shared `SettingsKeys`/
+/// `SettingsDefaults`, which `ClipStore` reads directly for limit/retention enforcement.
 @MainActor
 @Observable
 final class IOSSettings {
@@ -134,10 +132,9 @@ final class IOSSettings {
         seedDefaults()
     }
 
-    /// Write the resolved values back when absent, so the lean `ClipStore` and the
-    /// extensions — which read the App-Group defaults raw — enforce the same limit and
-    /// retention the UI shows, rather than falling back to "unlimited" until the user
-    /// first opens Settings. Only seeds missing keys, so it never clobbers a real choice.
+    /// Writes resolved values back when absent, so the lean `ClipStore` and extensions — which
+    /// read App-Group defaults raw — see the same limit/retention the UI shows, instead of
+    /// falling back to "unlimited" until Settings is first opened. Only seeds missing keys.
     private func seedDefaults() {
         guard let defaults else { return }
         if defaults.object(forKey: SettingsKeys.historyLimit) == nil {

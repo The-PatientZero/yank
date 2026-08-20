@@ -1,9 +1,8 @@
 import AppKit
 
-/// The tactile feedback channel: maps a semantic `HapticCue` to the trackpad's
-/// `NSHapticFeedbackManager` and performs it — but only when the caller says haptics are enabled.
-/// A no-op on Macs without a Force Touch trackpad (the system performer simply does nothing there),
-/// so call sites never branch on hardware. Driven through `Feedback`, not called directly.
+/// Maps a semantic `HapticCue` to `NSHapticFeedbackManager`, gated by `isEnabled`. A no-op on
+/// Macs without a Force Touch trackpad, so call sites never need to branch on hardware. Driven
+/// through `Feedback`, not called directly.
 @MainActor
 enum Haptics {
     static func fire(_ cue: HapticCue, isEnabled: Bool) {

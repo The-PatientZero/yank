@@ -54,10 +54,9 @@ enum UpdateError: LocalizedError {
 }
 
 enum UpdateSecurityPolicy {
-    /// The manifest and checksum bodies are read into memory, so they carry explicit ceilings.
-    /// Both are generously above their real sizes (the feed is tens of kilobytes, a checksum is
-    /// one line) and exist so a compromised or misbehaving host cannot make the updater buffer
-    /// without limit. The app payload itself streams to disk and is bounded by its checksum.
+    /// Manifest and checksum bodies are read fully into memory, so they carry explicit ceilings —
+    /// generously above their real sizes (a feed is tens of KB, a checksum one line) — so a
+    /// compromised host cannot force unbounded buffering. The app payload streams to disk instead.
     static let maximumReleaseFeedBytes = 4 * 1_024 * 1_024
     static let maximumChecksumBytes = 4 * 1_024
 

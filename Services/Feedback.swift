@@ -11,18 +11,9 @@ enum CaptureFeedbackPolicy {
     }
 }
 
-/// The single fire-and-forget feedback layer. A call site emits a *semantic* cue — `capture`,
-/// `paste`, `pin`, … — and this fans it out to every non-visual channel (tactile now, audible too
-/// once enabled). Each channel self-gates on its own user setting, so emitting a cue is always safe
-/// and stays silent when the user has everything off.
-///
-/// View-layer animation is deliberately *not* here: it must run where the view lives (it observes
-/// state, it can't be fired from a store or controller). Animation composes with these cues at the
-/// view, not through this facade.
-///
-/// The preferences are read once here, at the app edge, and passed down. `Sounds` and
-/// `Haptics` stay functions of their arguments rather than reaching back into
-/// `SettingsManager.shared` themselves.
+/// Fire-and-forget: a call site emits a semantic cue (`capture`, `paste`, `pin`, …), fanned out
+/// to every channel, each self-gating on its own setting so emitting is always safe. Animation
+/// stays at the view layer, not here; `Sounds`/`Haptics` stay pure functions of their arguments.
 @MainActor
 enum Feedback {
     static func emit(

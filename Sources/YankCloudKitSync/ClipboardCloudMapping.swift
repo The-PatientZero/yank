@@ -97,10 +97,9 @@ enum ClipboardCloudMapping {
             && lhs.hasRichContent == rhs.hasRichContent
     }
 
-    /// Rewrites a record *fetched from the server* into a content-free tombstone: assigning
-    /// nil marks a key changed only on a record that already holds a value, which is what
-    /// erases the server-side content under `.changedKeys`. The keys `item(from:)` requires
-    /// stay populated, so every build still reads a valid deleted clip.
+    /// Rewrites a *server-fetched* record into a content-free tombstone: nil only marks a key
+    /// changed when the record already held a value, which is what erases it under `.changedKeys`.
+    /// Keys `item(from:)` requires stay populated, so every build still reads a valid deleted clip.
     static func applyTombstone(from item: ClipboardItem, to record: CKRecord) {
         record[Key.type] = item.type.rawValue
         record[Key.timestamp] = item.timestamp

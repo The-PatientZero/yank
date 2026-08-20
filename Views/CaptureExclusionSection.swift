@@ -2,20 +2,16 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Privacy: apps whose copies are never recorded. A managed list, not a
-/// pile of toggles — excluded apps are uniform removable rows; adding is one "Add app…"
-/// menu that offers installed password managers plus a Browse option.
+/// Manages the list of apps whose copies Yank never records.
 struct CaptureExclusionSection: View {
     var settings: SettingsManager = .shared
 
-    /// Currently-excluded apps, sorted by display name.
     private var excluded: [String] {
         settings.excludedBundleIDs.sorted {
             appName(for: $0).localizedCaseInsensitiveCompare(appName(for: $1)) == .orderedAscending
         }
     }
 
-    /// Suggested apps that are installed and not yet excluded — offered in the menu.
     private var addableSuggestions: [AppExclusionSuggestion] {
         suggestedExclusions.filter {
             isInstalled($0.bundleID) && !settings.excludedBundleIDs.contains($0.bundleID)
@@ -102,7 +98,6 @@ struct CaptureExclusionSection: View {
 
     private func appName(for bundleID: String) -> String {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            // Fall back to the suggestion's friendly name, else the raw id.
             return suggestedExclusions.first { $0.bundleID == bundleID }?.name ?? bundleID
         }
         return FileManager.default.displayName(atPath: url.path)

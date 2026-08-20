@@ -1,12 +1,8 @@
 import Foundation
 
-/// Reads a response body into memory under an explicit ceiling.
-///
-/// `URLSession.data` buffers whatever the server sends, so a compromised or misbehaving host
-/// could make the updater allocate without limit. Streaming the body and stopping at the
-/// declared limit bounds that, and a lied-about `Content-Length` cannot get past it because the
-/// running total is what decides. Only the small metadata bodies use this — the app payload
-/// streams to disk and is bounded by its checksum instead.
+/// Reads a response body into memory under an explicit ceiling: streams and stops at
+/// `maximumBytes` so a lied `Content-Length` can't bypass it (`URLSession.data` buffers
+/// unbounded). Only small metadata bodies use this; the app payload streams to disk instead.
 enum BoundedResponse {
     /// Chunk the byte stream rather than appending one byte at a time: `AsyncBytes` yields
     /// individual bytes, and a per-byte `Data.append` over a multi-kilobyte body is needlessly

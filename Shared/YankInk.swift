@@ -1,11 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// Yank's ink table — every brand colour as packed `0xRRGGBB` `(light, dark)` pairs, in
-/// one place so the platform colour bridges (`NSColor` on macOS, `UIColor` on iOS) can't
-/// drift. The bridges read these pairs and expose them as named `Color`s; the saturated
-/// accent *fills* live in `Theme.swift` (`AppTheme.color`) and its AA-safe foregrounds in
-/// the same file. Neutrals plus the semantic inks below cover everything else.
+/// Yank's canonical brand colours as packed `0xRRGGBB` `(light, dark)` pairs, so the
+/// platform bridges (`NSColor`/`UIColor`) can't drift apart. Accent fills and their
+/// AA-safe foregrounds live in `Theme.swift` (`AppTheme.color`).
 enum YankInk {
     private static let byteRadix = 256
 
@@ -20,24 +18,19 @@ enum YankInk {
 
     // MARK: Semantic ink (appearance pairs the bridges expose as named Colors)
 
-    /// Bookmark marker (gold), legible as a glyph in both appearances. The light value
-    /// is tuned to clear WCAG 2.2 1.4.11 (≥3:1 non-text) on the paper/raised surfaces at
-    /// full opacity — 4.05:1 on surface, 4.3:1 on raised — so the glyph never depends on
-    /// stacked `.opacity` to be perceivable.
+    /// Bookmark glyph ink. Light value clears WCAG 2.2 1.4.11 (≥3:1 non-text) on
+    /// paper/raised at full opacity — 4.05:1 / 4.3:1 — without relying on `.opacity`.
     static let bookmark = (light: 0x9A6F08, dark: 0xFFCC4D)
-    /// Bookmark as a *fill* behind a white glyph (the iOS swipe action), distinct from the
-    /// on-paper `bookmark` glyph above: white on #FFCC4D is only 1.5:1, so the fill takes a
-    /// darker goldenrod that gives white 5.38:1. The pair is intentionally identical — the
-    /// fill is drawn behind white regardless of the app surface, so it doesn't adapt.
+    /// Bookmark as a fill behind a white glyph (iOS swipe action): white on `bookmark`'s
+    /// #FFCC4D is only 1.5:1, so this uses a darker goldenrod giving 5.38:1. Identical in
+    /// both appearances — it's always drawn behind white, so it doesn't need to adapt.
     static let bookmarkFill = (light: 0x8A6400, dark: 0x8A6400)
-    /// Tertiary text — quiet metadata and hints tuned to clear WCAG-AA (~5:1) on the
-    /// paper/raised surfaces, so small labels never depend on stacked `.opacity`.
+    /// Tertiary text — quiet metadata/hints, clears WCAG AA (~5:1) on paper/raised
+    /// without relying on stacked `.opacity`.
     static let textTertiary = (light: 0x6E665A, dark: 0x9C948A)
-    /// Code / preview body text — a softened but still high-contrast ink for monospaced
-    /// previews and long-text excerpts. Sits one step above `textTertiary` (it carries
-    /// the full content, not metadata): a warm secondary weight that clears AA comfortably
-    /// (~8:1 light, ~7:1 dark) so it stays legible as body/code text without the stacked
-    /// `.primary.opacity(0.8x)` that wasn't contrast-verified per appearance.
+    /// Code/preview body ink — a step above `textTertiary` since it carries full content,
+    /// not metadata. Clears AA (~8:1 light, ~7:1 dark) as a solid colour; stacked
+    /// `.primary.opacity()` can't guarantee that per appearance.
     static let codeText = (light: 0x4A453E, dark: 0xC4BCB2)
     /// Destructive / error semantics — a warm-leaning red, AA-legible as a foreground.
     static let danger = (light: 0xC2371F, dark: 0xFF6B5A)
@@ -49,21 +42,19 @@ enum YankInk {
     /// Text and glyph ink drawn directly on `successFill`.
     static let onSuccess = (light: 0xFFFFFF, dark: 0x1A1916)
     /// "Large" badge background; pairs with white text at full opacity (5.02:1 light,
-    /// 5.18:1 dark — both clear AA for small text). The dark variant is lifted a touch
-    /// so the badge sits warmer on the dark surface instead of reading as a flat block.
+    /// 5.18:1 dark, both clear AA for small text).
     static let oversize = (light: 0xB45309, dark: 0xC2410C)
 
-    /// Tag-pill hues — a muted, warm-leaning palette indexed by a stable SHA-256 digest
-    /// (identity without a saturated rainbow). Dark variants are lifted so the dot + wash
-    /// stay legible on the dark surface. Pill text is `.primary`, so colour never carries
-    /// meaning alone.
+    /// Tag-pill hues, indexed by a stable SHA-256 digest (identity without a rainbow).
+    /// Dark variants are lifted for legibility on the dark surface; pill text stays
+    /// `.primary` so colour never carries meaning alone.
     static let tagPalette: [(light: Int, dark: Int)] = [
-        (light: 0x6B8CC7, dark: 0x8FAEDB), // dusty blue
-        (light: 0x669E80, dark: 0x86C0A0), // sage
-        (light: 0xCC8C4D, dark: 0xDBA46B), // clay
-        (light: 0xBD7885, dark: 0xD296A2), // dusty rose
-        (light: 0x8C7DB3, dark: 0xA89DD0), // muted violet
-        (light: 0x6B999E, dark: 0x8AB8BD) // teal-slate
+        (light: 0x6B8CC7, dark: 0x8FAEDB),
+        (light: 0x669E80, dark: 0x86C0A0),
+        (light: 0xCC8C4D, dark: 0xDBA46B),
+        (light: 0xBD7885, dark: 0xD296A2),
+        (light: 0x8C7DB3, dark: 0xA89DD0),
+        (light: 0x6B999E, dark: 0x8AB8BD)
     ]
 
     /// Stable identity for a tag's palette slot. Swift's `hashValue` is intentionally

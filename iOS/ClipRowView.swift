@@ -1,9 +1,6 @@
 import SwiftUI
 
-/// A content-aware list row for iOS — a kind icon (swatch / thumbnail / glyph), a
-/// two-line excerpt, quiet metadata, tags, and the pin/bookmark marker. Kind
-/// detection comes from the shared `ClipKind`, so it recognises clips exactly like
-/// the Mac. Fonts use the Dynamic-Type ramp.
+/// List row rendering `item`; visual kind detection stays in sync with the macOS row via the shared `ClipKind`.
 struct ClipRowView: View {
     let item: ClipboardItem
     let store: ClipStore
@@ -12,10 +9,8 @@ struct ClipRowView: View {
     var isSelected = false
     var onTagTap: ((String) -> Void)? = nil
 
-    /// A 1pt unit that tracks the user's preferred text size, so the density-driven
-    /// `bodySize` below still grows with Dynamic Type. `@ScaledMetric` needs a literal
-    /// anchor, so the per-density size is derived (unit × `readingSize`) rather than
-    /// stored directly — Snug/Cozy/Airy change the base, Dynamic Type still scales it.
+    /// `@ScaledMetric` requires a literal anchor, so the Dynamic-Type-scaled size is derived
+    /// as `scaleUnit * readingSize` below rather than stored directly.
     @ScaledMetric(relativeTo: .body) private var scaleUnit: CGFloat = 1
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -23,10 +18,8 @@ struct ClipRowView: View {
     private var kind: ClipKind { item.kind }
     private var stacksMetadata: Bool { dynamicTypeSize.isAccessibilitySize }
 
-    /// The iOS clip-reading size by density, anchored to `IOSType.readingBody` (19pt — a
-    /// deliberate +2 over the 17pt system body) so even Snug stays at system body. Density
-    /// modulates the reading size by ±2 rather than borrowing the compact macOS `bodyFont`
-    /// (12–14pt), which would push the primary clip content *below* system body on iOS.
+    /// Anchored to `IOSType.readingBody` (19pt, deliberately +2 over system body) rather than the
+    /// compact macOS `bodyFont` (12–14pt), which would push clip content below system body on iOS.
     private var readingSize: CGFloat {
         switch density {
         case .snug: return IOSType.readingBody - 2  // 17
@@ -102,10 +95,8 @@ struct ClipRowView: View {
     private var borderStyle: AnyShapeStyle {
         if isSelected { return AnyShapeStyle(.tint.opacity(0.55)) }
         if isHighlighted { return AnyShapeStyle(.tint.opacity(0.28)) }
-        // A subtle resting hairline so list rows carry the same edge density as the grid
-        // tiles (which always draw `Color.yankHairline`) instead of relying on the `List`
-        // separators alone. `yankHairline` is a solid warm ink, so it stays semantic in
-        // dark mode and honours Reduce Transparency (no alpha to flatten).
+        // Resting hairline matches the grid tiles' edge density instead of relying on `List` separators alone.
+        // `yankHairline` is a solid color, so it stays semantic in dark mode and honors Reduce Transparency.
         return AnyShapeStyle(Color.yankHairline)
     }
 
@@ -131,7 +122,7 @@ struct ClipRowView: View {
         }
     }
 
-    @ViewBuilder private var icon: some View {  // swatch / thumbnail / glyph
+    @ViewBuilder private var icon: some View {
         switch kind {
         case let .color(color, _):
             RoundedRectangle(cornerRadius: Radius.sm)

@@ -1,11 +1,8 @@
 import Foundation
 
-/// Memoises one `ClipQuery.filter` result for the query that produced it.
-///
-/// Both platforms' history views read the filtered list several times per render — the list
-/// itself, the header count, sectioning, and every selection summary derived from it — so
-/// without this each render recomputes the same filter and sort. The store invalidates the
-/// cache whenever `items` changes; a hit is then a two-field compare.
+/// Memoises one `ClipQuery.filter` result. Both platforms re-read the filtered list several
+/// times per render (list, header count, sectioning, selection summaries), so without this
+/// every render recomputes the same filter/sort. The store invalidates it when `items` changes.
 public struct ClipFilterCache {
     private var query: String?
     private var tag: String?

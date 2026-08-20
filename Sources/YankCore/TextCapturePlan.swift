@@ -1,11 +1,8 @@
 import Foundation
 
-/// Pure capture decision for plain text clips.
-///
-/// The AppKit watcher owns pasteboard access; this policy owns the CPU-heavy work
-/// derived from the captured string: byte counting, previews, truncation,
-/// and the file-backed search index. It is intentionally Foundation-only so it can be
-/// tested in `YankCore` and shared by future capture surfaces.
+/// Pure capture decision for plain text clips: the AppKit watcher owns pasteboard access,
+/// this policy owns the CPU-heavy derived work (byte counting, previews, truncation, search
+/// index). Foundation-only, so it's testable in `YankCore` and reusable by future capture surfaces.
 struct TextCapturePlan: Equatable, Sendable {
     enum Storage: Equatable, Sendable {
         case inline(String)

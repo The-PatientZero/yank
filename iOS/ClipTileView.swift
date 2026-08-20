@@ -1,13 +1,8 @@
 import SwiftUI
 
-/// A content-aware tile for the iOS grid / gallery modes — swatch, thumbnail, link
-/// card, code block, or text — so a clip is recognisable without reading, mirroring
-/// the Mac's ClipTile. Kind detection comes from the shared `ClipKind`.
-///
-/// Deliberately parallels macOS `ClipTile` (see its note): identical-looking previews
-/// kept separate because of the font model (Dynamic-Type `.yank` here vs fixed
-/// `TypeScale` there) and image type (`UIImage` vs `NSImage`). Shared pieces already
-/// live in the shared layer; don't fold the previews together.
+/// iOS grid/gallery tile, visually mirroring macOS `ClipTile`; kind detection shared via `ClipKind`.
+/// Kept separate rather than merged: divergent font model (Dynamic-Type `.yank` vs fixed
+/// `TypeScale`) and image type (`UIImage` vs `NSImage`) — see macOS `ClipTile`'s note.
 struct ClipTileView: View {
     let item: ClipboardItem
     let store: ClipStore
@@ -21,11 +16,9 @@ struct ClipTileView: View {
     private var kind: ClipKind { item.kind }
     private var isGallery: Bool { mode == .gallery }
     private var metrics: ClipTileMetrics { mode.tileMetrics(density: density) }
-    // Naming inverts vs the macOS twin (`ClipTile.emphasisRole`) on purpose: here
-    // `isHighlighted` is the focused/primary clip (`.focused`) and `isSelected` is a
-    // multi-select member (`.selected`); on macOS those map through `isPrimarySelection`
-    // → `.focused` and `isMultiSelected` → `.selected`. Same two emphasis roles, opposite
-    // boolean vocabulary — keep them in sync if either changes.
+    // Naming inverts the macOS twin (`ClipTile.emphasisRole`) on purpose: here `isHighlighted`→`.focused`,
+    // `isSelected`→`.selected`; macOS maps `isPrimarySelection`→`.focused`, `isMultiSelected`→`.selected`.
+    // Same two roles, opposite boolean vocabulary — keep both in sync if either changes.
     private var emphasisRole: ClipTileEmphasisRole {
         if isSelected { return .selected }
         if isHighlighted { return .focused }
@@ -58,10 +51,8 @@ struct ClipTileView: View {
         .animation(IOSMotion.state(reduceMotion), value: isSelected)
     }
 
-    /// Selection and focus share one wash — `emphasisRole` already encodes the difference
-    /// in `fillOpacity` (0 for `.none`), so a single tint overlay covers both. The accent is
-    /// the environment `.tint` (the chosen theme), matching the row and the swipe actions
-    /// rather than the system accent.
+    /// Selection/focus share one wash — `emphasisRole.fillOpacity` is 0 for `.none`. Uses the
+    /// environment `.tint` (chosen theme) to match the row and swipe actions, not the system accent.
     private var tileBackground: some View {
         RoundedRectangle(cornerRadius: Radius.md)
             .fill(Color.yankRaised)

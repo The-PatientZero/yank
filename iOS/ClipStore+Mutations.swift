@@ -24,10 +24,9 @@ enum IOSPasteboardItemBuilder {
         ]]
     }
 
-    /// Returns the new generation only when the item carrying our tag is still current.
-    /// Another process can replace the pasteboard immediately after `setItems`; validating
-    /// the tag between two generation reads prevents that external generation from being
-    /// marked handled by the foreground coordinator.
+    /// Returns the new generation only when the item carrying our tag is still current. Another
+    /// process can replace the pasteboard right after `setItems`; re-validating the tag between
+    /// two generation reads prevents that external write from being marked handled by us.
     static func writeAndValidateCurrentGeneration(
         _ items: [[String: Any]],
         marker: IOSPasteboardOriginMarker,
@@ -49,10 +48,9 @@ enum IOSPasteboardItemBuilder {
     }
 }
 
-/// iOS clip edits — pin / bookmark / tag / OCR, plus image loading — built on the
-/// shared `ClipboardMutations` so they behave exactly like the Mac and stamp
-/// `modifiedAt` for last-writer-wins sync. App-only: the keyboard and share
-/// extensions never need these, so they stay out of the lean shared `ClipStore`.
+/// iOS clip edits (pin/bookmark/tag/OCR) and payload loading — built on the shared
+/// `ClipboardMutations` so edits behave like macOS and stamp `modifiedAt` for sync. App-only:
+/// kept out of the lean shared `ClipStore`, which the extensions also compile.
 extension ClipStore {
     func togglePin(_ item: ClipboardItem) {
         mutate { ClipboardMutations.togglePin(&$0, id: item.id) }
@@ -81,11 +79,9 @@ extension ClipStore {
         return tags
     }
 
-    /// Search / `#tag` / `@app`-filtered, pinned-first — the shared `ClipQuery`, memoised
-    /// until `items` changes. The view reads this several times per render (the list plus
-    /// every selection summary derived from it); on a cache hit it's a tuple compare
-    /// instead of a fresh filter + sort. Lives here (app-only) because `ClipQuery` isn't
-    /// linked into the lean keyboard/share extensions.
+    /// Search/`#tag`/`@app`-filtered, pinned-first via the shared `ClipQuery`, memoised until
+    /// `items` changes — a cache hit is a tuple compare instead of a fresh filter + sort.
+    /// App-only: `ClipQuery` isn't linked into the lean keyboard/share extensions.
     func filteredItems(search: String, activeTag: String?) -> [ClipboardItem] {
         if let cached = filterCache.result(query: search, tag: activeTag) {
             return cached

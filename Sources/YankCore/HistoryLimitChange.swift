@@ -1,12 +1,8 @@
 import Foundation
 
-/// What picking a history-limit tier should do. Pure, so both platforms' settings screens ask
-/// the same question — and so the destructive branch is decided somewhere a test can reach,
-/// rather than inside a view.
-///
-/// The rule is "would this actually delete clips?", not "is this a smaller number?": with sync
-/// on, a reduction propagates to every device, so the warning has to be both unmissable when it
-/// matters and absent when nothing is at stake.
+/// What picking a history-limit tier should do — pure, so both platforms' settings ask the same
+/// question. The rule is "would this delete clips?", not "is this a smaller number?": with sync
+/// on, a reduction propagates to every device, so the warning must be exact, not approximate.
 public enum HistoryLimitChange: Equatable, Sendable {
     /// Already the current tier — do nothing at all, so no stamp moves and nothing is announced.
     case unchanged

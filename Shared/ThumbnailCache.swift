@@ -2,12 +2,9 @@ import Foundation
 import CoreGraphics
 import ImageIO
 
-/// A bounded, shared cache of downsampled thumbnails decoded straight off disk via
-/// ImageIO — so scrolling a grid never re-decodes (or full-resolution decodes) the same
-/// blob. Stores platform-neutral `CGImage`; the macOS/iOS thumbnail views wrap it into
-/// `NSImage`/`UIImage`. Keyed by the immutable blob identity + the requested pixel size
-/// (a clip's image never changes for a given id, so entries never go stale). `NSCache`
-/// is thread-safe and evicts under memory pressure on its own; the count limit is a backstop.
+/// Shared cache of downsampled thumbnails decoded via ImageIO, keyed by blob id + pixel
+/// size (a clip's image never changes for a given id, so entries never go stale). Backed
+/// by `NSCache`, which is thread-safe — the basis for `@unchecked Sendable` below.
 final class ThumbnailCache: @unchecked Sendable {
     static let shared = ThumbnailCache()
 
@@ -26,6 +23,7 @@ final class ThumbnailCache: @unchecked Sendable {
         return image
     }
 
+    /// Awaitable wrapper around `thumbnail(for:at:maxPixel:)` that decodes off the caller's actor.
     func loadThumbnail(for id: UUID, at url: URL, maxPixel: Int) async -> CGImage? {
         await Task.detached(priority: .userInitiated) {
             ThumbnailCache.shared.thumbnail(for: id, at: url, maxPixel: maxPixel)

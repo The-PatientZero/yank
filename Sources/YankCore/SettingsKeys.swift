@@ -1,10 +1,8 @@
 import Foundation
 
-/// The `UserDefaults` keys for settings that both platforms persist. This is a
-/// cross-process contract — the macOS app, the iOS app, and the iOS extensions
-/// (which read the App-Group defaults directly) must agree on these strings, so they
-/// live here once rather than as scattered literals. Pure strings, no type deps, so
-/// the lean extensions can compile against it.
+/// `UserDefaults` keys shared cross-process: macOS, iOS, and the iOS extensions (reading
+/// App-Group defaults directly) must agree on these strings, so they live here once. Pure
+/// strings, no type deps, so lean extensions can compile against it.
 enum SettingsKeys {
     static let themeID = "themeID"
     static let viewMode = "clipViewMode"

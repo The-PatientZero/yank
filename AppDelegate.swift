@@ -194,7 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static let restartDelaySeconds: TimeInterval = 0.4
 
-    /// Finish a staged update if one is ready, otherwise relaunch the app.
     private func restartOrFinishUpdate() {
         if UpdateService.shared.finishStagedUpdateIfAvailable() { return }
         restart()

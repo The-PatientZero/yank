@@ -13,10 +13,8 @@ public enum CloudKitSyncStartResult: Equatable, Sendable {
 }
 
 /// Plain-data view of one page of zone changes, so the sync engine can be exercised with a
-/// fake — `CKDatabase.RecordZoneChanges` is not constructible outside CloudKit. It holds
-/// non-`Sendable` `CKRecord`s but never crosses an actor boundary: the `CloudKitDatabase`
-/// seam below is `@MainActor`, so records stay on the sync service's actor exactly as they
-/// did when the service called `CKDatabase` directly.
+/// fake (`CKDatabase.RecordZoneChanges` isn't constructible outside CloudKit). Its non-`Sendable`
+/// `CKRecord`s stay safe: the `CloudKitDatabase` seam is `@MainActor`, so they never cross actors.
 struct CloudKitZoneChanges {
     var changedRecords: [CKRecord]
     var deletedRecordNames: [String]
@@ -56,13 +54,9 @@ struct CloudKitRecordPresence {
     var missingRecordNames: Set<String> = []
 }
 
-/// The CloudKit operations `CloudKitSyncService` depends on, abstracted behind a seam (DIP)
-/// so the orchestration — ensure zone/subscription → paginated pull → `ClipboardMerge` →
-/// apply → receipt-driven push — is unit-tested against an in-memory fake instead of a live
-/// network. The live conformance is
-/// `CKDatabase`; tests substitute a fake. Declared `@MainActor` so `CKRecord` value types
-/// stay on the service's actor (matching the prior direct-`CKDatabase` calls) — no
-/// `Sendable` laundering of CloudKit types is required.
+/// The CloudKit operations `CloudKitSyncService` depends on, abstracted as a seam (DIP) so the
+/// full pull → `ClipboardMerge` → apply → push pipeline is unit-tested against an in-memory
+/// fake. `@MainActor` keeps `CKRecord` on the service's actor, avoiding `Sendable` laundering.
 @MainActor
 protocol CloudKitDatabase {
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws

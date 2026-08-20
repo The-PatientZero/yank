@@ -24,10 +24,9 @@ public enum ClipboardMerge {
     private static func preferred(_ lhs: ClipboardItem, _ rhs: ClipboardItem) -> ClipboardItem {
         let (winnerByClock, loser) = orderedByWriteClock(lhs, rhs)
         var winner = winnerByClock
-        // AI enrichment is derived metadata, computed only on macOS, that rides `modifiedAt`.
-        // A metadata edit (pin/tag) from a device that never enriched would otherwise win the
-        // last-writer race and erase it. Resolve the AI fields on their own clock so the most
-        // recent enrichment survives regardless of which side won the item itself.
+        // AI enrichment is derived metadata (macOS-only) that rides `modifiedAt`, so a metadata-only
+        // edit (pin/tag) from a device that never enriched would otherwise win the last-writer race
+        // and erase it. Resolve AI fields on their own clock, independent of which side wins the item.
         let enriched = freshestEnrichment(lhs, rhs)
         winner.aiTags = enriched.aiTags
         winner.aiTitle = enriched.aiTitle

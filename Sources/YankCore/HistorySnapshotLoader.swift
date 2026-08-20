@@ -1,9 +1,8 @@
 import Foundation
 
-/// Strict loader for the on-disk history snapshot.
-///
-/// A missing file means "no local history yet"; an unreadable or malformed existing
-/// file means "do not write over this path until a human/app flow can recover it."
+/// Strict loader for the on-disk history snapshot. A missing file means "no local history yet";
+/// an unreadable or malformed one means "do not write over this path until a human/app flow can
+/// recover it."
 enum HistorySnapshotLoader {
     struct Snapshot: Equatable, Sendable {
         var items: [ClipboardItem]

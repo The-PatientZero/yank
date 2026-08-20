@@ -4,12 +4,9 @@ import CloudKit
 import YankCore
 #endif
 
-/// Pure `SyncedSettings ⇄ CKRecord` mapping for the zone's singleton settings record.
-/// No network — round-trips offline, so it is unit-tested directly.
-///
-/// The record is a singleton by construction: one fixed record name in the same private
-/// zone the clips live in, so it rides the existing change feed and needs no second
-/// subscription, zone, or change token.
+/// Pure `SyncedSettings ⇄ CKRecord` mapping for the zone's singleton settings record. No
+/// network — round-trips offline. The record uses one fixed name in the clips' private zone,
+/// so it rides the existing change feed without a second subscription, zone, or token.
 enum SyncedSettingsCloudMapping {
     static let recordType = "SyncedSettings"
     static let recordName = "settings"

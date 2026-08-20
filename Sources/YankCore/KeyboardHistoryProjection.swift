@@ -1,10 +1,8 @@
 import Foundation
 
-/// A bounded, read-only view of canonical history for the keyboard extension.
-///
-/// The persisted DTO intentionally carries only fields needed to insert and label text.
-/// Full `ClipboardItem` metadata can include large search/OCR/AI payloads and must never
-/// cross into the memory-constrained keyboard process.
+/// A bounded, read-only view of canonical history for the keyboard extension. The DTO carries
+/// only fields needed to insert and label text — full `ClipboardItem` metadata can include large
+/// search/OCR/AI payloads and must never cross into the memory-constrained keyboard process.
 struct KeyboardHistoryProjection: Codable, Sendable {
     enum Error: Swift.Error, Equatable {
         case encodedSizeExceeded(Int)

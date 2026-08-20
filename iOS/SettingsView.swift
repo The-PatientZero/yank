@@ -230,8 +230,7 @@ struct SettingsView: View {
 
     private var historySection: some View {
         Section {
-            // The binding reads the committed value, so a cancelled reduction snaps the picker
-            // back on its own — nothing is written until the user agrees.
+            // Committed-value binding: see `HistoryLimitConfirmation` for the cancel-path guarantee.
             Picker("Keep", selection: Binding(
                 get: { settings.historyLimit },
                 set: { selectHistoryLimit($0) }

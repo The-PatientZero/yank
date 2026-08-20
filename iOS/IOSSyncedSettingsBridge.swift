@@ -1,11 +1,8 @@
 import Foundation
 
-/// Adapts `IOSSettings` to the sync transport's `SyncedSettingsStore` port, so the CloudKit
-/// engine reads and writes the history limit without knowing the settings type exists.
-///
-/// Unlike macOS — where saving preferences posts `.yankCaptureSettingsChanged` and the store
-/// re-trims off the back of it — iOS has no such broadcast, so adoption re-applies retention
-/// directly. `SettingsView`'s own `onChange` only fires while Settings is on screen.
+/// Adapts `IOSSettings` to the sync transport's `SyncedSettingsStore` port. Unlike macOS, which
+/// re-trims off `.yankCaptureSettingsChanged`, iOS has no such broadcast — adoption re-applies
+/// retention directly here since `SettingsView`'s `onChange` only fires while on screen.
 @MainActor
 final class IOSSyncedSettingsBridge: SyncedSettingsStore {
     private let settings: IOSSettings

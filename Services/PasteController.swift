@@ -53,10 +53,8 @@ final class DeferredPasteboardWriteCoordinator {
     }
 }
 
-/// Handles pasting content into the frontmost application.
-///
-/// Caseless `enum` used purely as a namespace — it has only static members and must never
-/// be instantiated.
+/// Handles pasting content into the frontmost application. Caseless `enum` used purely as
+/// a namespace.
 @MainActor
 enum PasteController {
     nonisolated static let staleTempDirectoryAge: TimeInterval = 24 * 60 * 60
@@ -81,8 +79,7 @@ enum PasteController {
                 to: pasteboard,
                 temporaryFileCleanupDelay: pasteFileCleanupDelay
             ) else {
-                // Nothing was written, so the click produced no visible effect. Say why
-                // instead of returning silently.
+                // Log rather than fail silently: nothing written means no visible effect.
                 Log.paste.error(
                     "Paste produced no pasteboard content for clip \(item.id, privacy: .public)"
                 )
@@ -107,9 +104,8 @@ enum PasteController {
     /// Paste a plain-text string (e.g. an image's OCR text) into the frontmost app.
     static func pasteText(_ text: String, axPermission: AccessibilityPermission? = nil,
                           previousApp: NSRunningApplication? = nil) {
-        // Preserve the existing copy-first fallback for ordinary Yank pastes: without
-        // Accessibility permission the text still lands on the clipboard for manual ⌘V.
-        // Paste Sequence preflights permission and calls the result-bearing API directly.
+        // Without Accessibility permission, text still lands on the clipboard for manual ⌘V
+        // (Paste Sequence preflights permission and calls the result-bearing API directly instead).
         if let axPermission, !axPermission.isTrusted {
             guard copyTextToClipboard(text) != nil else { return }
             AccessibilityPermission.requestPrompt()
@@ -182,10 +178,9 @@ enum PasteController {
         return .dispatched(pasteboardGeneration: receipt.generation)
     }
 
-    /// Smart Paste: transform a text clip's content on-device, then paste the result. The
-    /// transform is throwaway (never stored); on failure or when the model is unavailable it
-    /// falls back to the original text. The transform is awaited *before* the pasteboard write,
-    /// so the 0.1s focus-settle in `pasteText` stays correct regardless of inference latency.
+    /// Smart Paste: transforms a text clip on-device, falling back to the original text on
+    /// failure/unavailability. The transform result is never stored, and is awaited *before*
+    /// the pasteboard write so the 0.1s focus-settle timing stays correct.
     static func pasteTransformed(_ item: ClipboardItem, as transform: TextTransform,
                                  store: ClipboardStore,
                                  transformer: TextTransformer = FoundationModelTransformer(),

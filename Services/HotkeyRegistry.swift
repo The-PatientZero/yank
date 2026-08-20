@@ -1,10 +1,9 @@
 import Cocoa
 import Carbon
 
-/// Sole owner of the process-wide Carbon hot-key event tap.
-///
-/// macOS installs exactly one application event handler, so the handler ref lives here once.
-/// The app only binds one global shortcut: open clipboard history.
+/// Sole owner of the process-wide Carbon hot-key event tap: macOS allows only one application
+/// event handler, so the handler ref lives here once. The app binds a single global shortcut
+/// (open clipboard history).
 @MainActor
 private final class CarbonHotkeyTap {
     static let shared = CarbonHotkeyTap()
@@ -92,7 +91,6 @@ private final class CarbonHotkeyTap {
 }
 
 /// The clipboard history global-shortcut facade.
-/// Wraps the shared Carbon tap and translates the app's `HotkeyModifiers` into Carbon's mask.
 @MainActor
 struct HotkeyRegistry {
     /// Register the global clipboard-history shortcut, replacing any prior binding.

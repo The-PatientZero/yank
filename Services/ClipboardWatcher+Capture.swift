@@ -12,10 +12,8 @@ final class ClipboardWatcher {
 
     private let store: ClipboardStore
 
-    /// Injected capture-relevant settings: the excluded-app set and the
-    /// minimum capture length, read on the capture path instead of from the
-    /// `SettingsManager.shared` singleton, so capture is testable in isolation. The
-    /// composition root re-assigns this when the user changes either setting.
+    /// Capture-relevant settings, injected rather than read from `SettingsManager.shared` so
+    /// capture is testable in isolation; the composition root re-assigns this on change.
     var captureSettings: CaptureSettings
 
     private var timer: Timer?
@@ -24,11 +22,9 @@ final class ClipboardWatcher {
     @ObservationIgnored private let captureQueue = SerialCaptureQueue<PreparedClipboardCapture>()
     private var changeSuppression = PasteboardChangeSuppression()
 
-    /// Consecutive-capture suppression: some apps re-assert pasteboard ownership with
-    /// byte-identical content (lazy-promise re-declares, activation-time rewrites), which
-    /// bumps `changeCount` without a user copy. Durable-history dedup cannot absorb those
-    /// for rich/image/file-backed captures, so the watcher drops any capture whose content
-    /// matches the one it applied last.
+    /// Some apps re-assert pasteboard ownership with byte-identical content (lazy-promise
+    /// re-declares, activation rewrites), bumping `changeCount` without a user copy; durable
+    /// dedup misses those for rich/image/file captures, so drop repeats of the last-applied content.
     private var lastContentFingerprint: ClipboardContentFingerprint?
 
     /// Reports eligible text occurrences before durable-history deduplication.
@@ -60,7 +56,6 @@ final class ClipboardWatcher {
         self.pasteboardName = pasteboardName
         self.lastChangeCount = NSPasteboard(name: pasteboardName).changeCount
 
-        // Listen for ignore notification (when copying from history)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleIgnoreNextChange(_:)),
@@ -95,8 +90,7 @@ final class ClipboardWatcher {
                 self?.checkClipboard()
             }
         }
-        // Let the OS coalesce our wakeups with other timers to save power on this
-        // always-on background poll; 0.1 s slack is imperceptible for clipboard capture.
+        // Coalesce wakeups with other timers to save power; 0.1s slack is imperceptible here.
         timer.tolerance = pollInterval / 5
         self.timer = timer
         RunLoop.main.add(timer, forMode: .common)
@@ -141,8 +135,7 @@ final class ClipboardWatcher {
         ignoreNextChange.toggle()
     }
 
-    /// Test hook: await the serial capture pipeline draining so assertions observe the
-    /// applied history state.
+    /// Test hook: awaits the capture pipeline draining so assertions see the applied history.
     func waitForCaptureQueueIdle() async {
         await captureQueue.waitUntilIdle()
     }
@@ -152,12 +145,11 @@ final class ClipboardWatcher {
 
         let currentChangeCount = pasteboard.changeCount
 
-        // No change detected
         guard currentChangeCount != lastChangeCount else { return }
         lastChangeCount = currentChangeCount
 
-        // App-owned writes identify the exact pasteboard generation they created. A newer
-        // user copy must still be captured even if the watcher did not poll in between.
+        // App-owned writes tag the exact generation they create, so suppression can't swallow a
+        // newer user copy the watcher missed polling for.
         if changeSuppression.shouldSuppress(currentChangeCount) { return }
 
         // The explicit user-facing "ignore next copy" action remains a one-change arm.
@@ -169,8 +161,8 @@ final class ClipboardWatcher {
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         let observedAppName = frontmostApp?.localizedName
         let observedBundleID = frontmostApp?.bundleIdentifier
-        // AppKit does not expose an authenticated pasteboard writer. The observed app is
-        // display attribution and a best-effort privacy hint, not a trusted source identity.
+        // AppKit exposes no authenticated pasteboard writer; the observed app is a best-effort
+        // display/privacy hint, not a trusted source identity.
 
         // Privacy guard: never record concealed/secret copies or excluded apps.
         let settings = captureSettings

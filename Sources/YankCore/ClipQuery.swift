@@ -3,12 +3,9 @@ import Foundation
 /// The history search/filter, shared by the macOS history window and the iOS list so
 /// both resolve `@app`, `#tag`, and plain-text queries identically. Pure and testable.
 enum ClipQuery {
-    /// Filter and order clips for display. An `activeTag` chip ANDs with the search box,
-    /// which understands:
-    ///   - `@app`  — clips whose source app contains the term (case-insensitive)
-    ///   - `#tag`  — clips carrying a tag with that prefix (case-insensitive)
-    ///   - text    — clips whose content or OCR text contains the term
-    /// Pinned clips float to the top; everything else keeps the input order.
+    /// Filter and order clips for display: `@app` matches source app (contains), `#tag` matches
+    /// a tag prefix, plain text searches content/OCR — all case-insensitive. `activeTag` ANDs
+    /// with the search box. Pinned clips float to top; everything else keeps input order.
     static func filter(_ items: [ClipboardItem], search: String, activeTag: String?) -> [ClipboardItem] {
         var base = items
         if let activeTag {

@@ -151,10 +151,9 @@ final class SettingsManager {
     /// How much breathing room each clip gets.
     var density: ClipDensity = SettingsDefaults.density
 
-    /// Snapshot of just the settings the capture path needs. The composition
-    /// root injects this into `ClipboardStore` / `ClipboardWatcher` at construction and
-    /// re-pushes it when the user changes a relevant setting, so capture logic depends on
-    /// an injected value rather than this singleton.
+    /// Snapshot of just the settings the capture path needs. Injected into `ClipboardStore` /
+    /// `ClipboardWatcher` at construction and re-pushed on relevant changes, so capture logic
+    /// depends on an injected value, not this singleton.
     var captureSettings: CaptureSettings {
         CaptureSettings(
             historyLimit: historyLimit.rawValue,
@@ -256,8 +255,8 @@ final class SettingsManager {
         NotificationCenter.default.post(name: .yankCaptureSettingsChanged, object: nil)
     }
 
-    // Each setter pairs a write with the exact notification its call site posts today, so the
-    // two can't drift apart. The notification mapping is preserved verbatim from `SettingsView`.
+    // Each setter pairs its write with the exact notification its call site posts, so the two
+    // can't drift apart.
 
     func setShowMenuBarIcon(_ value: Bool) {
         showMenuBarIcon = value

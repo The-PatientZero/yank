@@ -1,10 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// Single-quotes a string for safe interpolation into a `/bin/bash` command line, escaping
-/// any embedded single quotes. Shared by the updater's install script and the status-bar
-/// restart path, which both shell out with a bundle path that the user could in principle
-/// control. One home so the quoting rule can't drift between the two call sites.
+/// Single-quotes a string for safe `/bin/bash` interpolation, escaping embedded quotes. Shared
+/// by the installer script and status-bar restart path — both interpolate a bundle path a user
+/// could in principle control, so the quoting rule must live in one place.
 enum ShellQuoting {
     static func quoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
@@ -28,10 +27,9 @@ private func mapUpdateError<T>(
     }
 }
 
-/// The external commands the installer shells out to — extraction, signature verification,
-/// Gatekeeper assessment, and the install script's mode change. Injected so each install gate
-/// can be exercised without a signed archive or the machine's real Gatekeeper state; production
-/// always uses `.system`.
+/// The external commands the installer shells out to (extraction, codesign verification,
+/// Gatekeeper, chmod). Injected so each install gate can be tested without a signed archive or
+/// the machine's real Gatekeeper state; production always uses `.system`.
 struct UpdateProcessRunner: Sendable {
     private let execute: @Sendable (String, String, [String]) throws -> Void
 
@@ -39,8 +37,7 @@ struct UpdateProcessRunner: Sendable {
         self.execute = execute
     }
 
-    /// Folds any untyped launch failure into `UpdateError` so the install path stays fully
-    /// typed-throws; an `UpdateError` the command itself raised passes through unchanged.
+    /// Launches the process, folding failures into `UpdateError` (see `mapUpdateError`).
     func run(_ name: String, _ executable: String, _ arguments: [String]) throws(UpdateError) {
         try mapUpdateError(operation: "Launching \(name)") {
             try execute(name, executable, arguments)

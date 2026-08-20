@@ -2,10 +2,9 @@ import SwiftUI
 import CloudKit
 import UIKit
 
-/// Coordinates the two foreground-only freshness jobs that iOS permits: importing the
-/// current plain-text pasteboard generation and pulling CloudKit. In-process generation
-/// tracking and the persisted installation marker both prevent Yank's own writes from
-/// being captured again.
+/// Coordinates the two foreground-only freshness jobs iOS permits: importing the current
+/// plain-text pasteboard generation and pulling CloudKit. In-process generation tracking plus
+/// the persisted installation marker together prevent Yank's own writes from being recaptured.
 enum IOSForegroundCaptureOutcome: Equatable {
     case durable
     case terminalPolicyRejection
@@ -235,13 +234,9 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
     }
 }
 
-/// What one CloudKit account probe means for the sync lifecycle.
-///
-/// iOS reports `.temporarilyUnavailable` and `.couldNotDetermine` for recoverable conditions
-/// (account under maintenance, a probe before the device finished unlocking, a network hiccup),
-/// so those must not unregister remote notifications or claim the user signed out — the app would
-/// lose live push delivery until the next relaunch. Only a genuinely absent or restricted account
-/// tears the service down.
+/// What one CloudKit account probe means for the sync lifecycle. `.temporarilyUnavailable`/
+/// `.couldNotDetermine` are recoverable (maintenance, pre-unlock probe, network hiccup); treating
+/// them as sign-out would drop push delivery until relaunch — only absent/restricted accounts tear sync down.
 enum IOSCloudAccountDecision: Equatable {
     case proceed
     case hardUnavailable(reason: SyncStatus.Reason)
@@ -539,10 +534,9 @@ final class IOSCloudSyncController {
         }
     }
 
-    /// Schedules one retry of `request` after a transient account status. A no-op if this
-    /// controller was stopped, sync got disabled, or another operation ran before the delay
-    /// elapses — that operation already reflects the current account state, so a stale retry
-    /// would only duplicate work.
+    /// Schedules one retry of `request` after a transient account status. No-op if the controller
+    /// stopped, sync got disabled, or another operation already ran before the delay elapses —
+    /// that operation already reflects current account state, so a stale retry would only duplicate work.
     private func scheduleTransientRetry(request: Request, generation: UInt64) {
         transientRetryTask?.cancel()
         let sequenceAtSchedule = operationSequence

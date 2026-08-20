@@ -73,9 +73,8 @@ public final class CloudKitSyncService {
     private let beforeReceiptPersistence: (() throws -> Void)?
     private let afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)?
     private weak var store: SyncableStore?
-    /// Weak for the same reason as `store`: the composition root owns the settings bridge and
-    /// outlives the service, and a strong edge here would keep the app's settings graph alive
-    /// past `stop()`.
+    /// Weak like `store`: the composition root owns the settings bridge and outlives the
+    /// service, so a strong edge here would keep the app's settings graph alive past `stop()`.
     private weak var settingsStore: (any SyncedSettingsStore)?
     private var changeToken: CKServerChangeToken?
     private var pushReceipts: [UUID: Date]?
@@ -111,11 +110,9 @@ public final class CloudKitSyncService {
         )
     }
 
-    /// Discards every persisted sync checkpoint for a container: change token, push receipts,
-    /// legacy watermark, quarantine, and its epoch. For an iCloud account change — the
-    /// checkpoints describe the previous account's zone, and carrying them across would
-    /// suppress uploading the library into the new one. Call before constructing a fresh
-    /// service; the next `start()` replays everything from scratch.
+    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch)
+    /// for a container. They describe the previous iCloud account's zone, and keeping them would
+    /// suppress re-uploading the library into a new one. Call before constructing a fresh service.
     public static func resetPersistedState(
         containerIdentifier: String,
         defaults: UserDefaults = .standard
@@ -330,7 +327,7 @@ public final class CloudKitSyncService {
                     self.settingsReconciliationPending = true
                     try self.schedulePush(generation: generation)
                 } catch {
-                    // A queued notification from a stopped generation is intentionally ignored.
+                    // Same as the local-change observer above: ignore it.
                 }
             }
         }
@@ -650,10 +647,9 @@ public final class CloudKitSyncService {
     ) async throws {
         try requireActive(generation)
         let recordName = record.recordID.recordName
-        // Branch on the record type before any clip mapping: the settings record is not a clip,
-        // so it must never reach `ClipboardCloudMapping` (which would read it as unmappable) or
-        // the quarantine. This is the single choke point for remote records — the page loop and
-        // the quarantine-recovery re-fetch both come through here.
+        // Settings records must never reach `ClipboardCloudMapping` (misread as unmappable) or
+        // the quarantine — branch on record type first. Single choke point: both the page loop
+        // and the quarantine-recovery re-fetch route through here.
         if record.recordType == SyncedSettingsCloudMapping.recordType {
             if let settings = SyncedSettingsCloudMapping.settings(from: record) {
                 accumulation.remoteSettings = settings
@@ -774,10 +770,9 @@ public final class CloudKitSyncService {
         cloudKitErrorCode(of: error) == .unknownItem
     }
 
-    /// A resolution failure is permanent when replaying the same record can only fail the same way:
-    /// the record's blob is absent from CloudKit, oversized, or unusable as a local file. Local
-    /// environment failures (a blob that cannot be written right now) stay fatal, so the token is
-    /// held and the record is retried instead of being skipped past.
+    /// Permanent when replaying can only fail the same way (blob absent, oversized, or unusable
+    /// locally). A local environment failure (e.g. cannot write right now) stays fatal, so the
+    /// token is held and the record is retried rather than skipped.
     private nonisolated static func isPermanentRecordResolutionFailure(_ error: any Error) -> Bool {
         if let syncError = error as? CloudKitSyncError, case .missingBlobAsset = syncError {
             return true
@@ -985,11 +980,9 @@ public final class CloudKitSyncService {
         }
     }
 
-    /// A tombstone saves through the server's own copy when one exists: only assignments on
-    /// a fetched record mark keys changed under `.changedKeys`, which is what erases the
-    /// clip's content and asset from the zone. A record the server never had pushes the
-    /// minimal tombstone directly; one it merely failed to hand over is left for the next
-    /// push, so a transient gap cannot downgrade the erase into a content-preserving save.
+    /// Tombstones save onto the server's fetched record: only assignments on a fetched record
+    /// mark `.changedKeys`, erasing the clip's content/asset. A record the server never had gets
+    /// a minimal tombstone directly; one merely not handed over yet stays unsent, not downgraded.
     private func prepareTombstonePushRecords(
         _ tombstones: [ClipboardItem],
         generation: UInt64
@@ -1126,10 +1119,9 @@ public final class CloudKitSyncService {
         return fetched.records.first { $0.recordType == SyncedSettingsCloudMapping.recordType }
     }
 
-    /// Live fast path for a settings record arriving in the change feed, so another device's
-    /// choice lands without waiting for the next launch. Purely an accelerator: the fetch-first
-    /// reconcile is what guarantees convergence, which is why an unreadable record here is
-    /// simply ignored rather than held onto.
+    /// Live fast path for a settings record in the change feed — lands another device's choice
+    /// without waiting for launch. Purely an accelerator; the fetch-first reconcile guarantees
+    /// convergence, so an unreadable record here is simply ignored.
     private func applySettingsFromChangeFeed(_ remote: SyncedSettings) {
         guard let settingsStore, let local = settingsStore.syncedSettings else { return }
         guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return }
@@ -1232,10 +1224,9 @@ public final class CloudKitSyncService {
         try requireActive(generation)
         guard !item.isDeleted, let blob = item.syncBlobReference else { return .notRequired }
         let assetURL = (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL
-        // A blob is immutable for a given filename — editing a clip mints a new one — so if the
-        // file is already on disk there is nothing to fetch. This skips re-reading the full (up to
-        // 32 MB) CKAsset on every metadata-only edit (pin/tag), which re-surfaces the record in the
-        // change feed with its asset attached.
+        // A blob is immutable per filename (an edit mints a new one), so an on-disk file needs no
+        // fetch. This skips re-reading the full (up to 32 MB) CKAsset on every metadata-only edit
+        // (pin/tag), which re-surfaces the record in the change feed with its asset attached.
         if let localURL = store.blobURL(for: blob), FileManager.default.fileExists(atPath: localURL.path) {
             let requiresLocalRepush = assetURL == nil
             if requiresLocalRepush {
@@ -1333,11 +1324,9 @@ public final class CloudKitSyncService {
         var isEmpty: Bool { seeded.isEmpty && invalidated.isEmpty }
     }
 
-    /// Seeds a receipt for every item whose reconciled winner is exactly what the server just
-    /// handed over, so the follow-up push does not echo the record (and its asset) back at
-    /// the zone. Any other winner — a newer local copy, or a same-stamp merge that grafted
-    /// local fields — loses its receipt so the next push re-publishes it. Repair items always
-    /// re-push and are never seeded.
+    /// Seeds a receipt only when the reconciled winner exactly matches the server's copy, so the
+    /// next push won't echo it back. Any other winner (newer local, or a merged same-stamp record)
+    /// loses its receipt and re-publishes; repair items always re-push and are never seeded.
     nonisolated static func pullReceiptChanges(
         remote: [ClipboardItem],
         reconciled: [ClipboardItem],

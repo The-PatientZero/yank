@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// A *suggested* (on-device AI) tag. Deliberately subordinate to `TagChip` within the same
-/// vocabulary: a hollow ring instead of a filled hue dot, tertiary text, and a dashed
-/// hairline — it reads as a suggestion, not a user tag. Tapping promotes it to a real tag.
+/// A suggested (on-device AI) tag, visually subordinate to `TagChip` so it reads as a
+/// suggestion rather than a user tag. Tapping promotes it to a real tag.
 struct AITagChip: View {
     let label: String
     var onPromote: (() -> Void)? = nil

@@ -1,9 +1,8 @@
 import AppKit
 import SwiftUI
 
-// The numeric scales (Space / Radius / TypeScale) live in Shared/DesignScale.swift,
-// compiled into both the macOS and iOS targets. This file keeps the macOS-only
-// colour bridges, view helpers, and reusable styles.
+// Space/Radius/TypeScale live in Shared/DesignScale.swift (both targets); this file holds
+// macOS-only color bridges, view helpers, and reusable styles.
 
 /// Native window vibrancy (macOS "Liquid Glass" material) — used behind the
 /// floating panel, warmed by a translucent paper tint on top.
@@ -22,11 +21,9 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 }
 
-/// The window's content-layer canvas: translucent warm vibrancy the desktop faintly
-/// shows through. When the user turns on Reduce Transparency it collapses to a solid
-/// surface — the vibrancy view alone doesn't fully honour that once a translucent
-/// tint sits on top. Glass still lives only on the floating controls above this
-/// (Apple HIG), never on the content layer.
+/// Content-layer canvas: warm vibrancy the desktop shows through. Reduce Transparency
+/// collapses it to a solid fill — the vibrancy view alone doesn't honor that once a tint
+/// sits on top. Never glass here; see the Liquid Glass extension below for why.
 struct YankWindowBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -54,19 +51,15 @@ extension Color {
         })
     }
 
-    // The warm neutral values live in the shared `YankInk` table (Shared/), so macOS
-    // and iOS can't drift; only the NSColor/UIColor bridge differs per platform.
+    // Warm neutral values live in the shared `YankInk` table (Shared/) so macOS/iOS can't drift.
     static let yankSurface = yankDynamic(light: YankInk.surface.light, dark: YankInk.surface.dark)
     static let yankRaised = yankDynamic(light: YankInk.raised.light, dark: YankInk.raised.dark)
     static let yankHairline = yankDynamic(light: YankInk.hairline.light, dark: YankInk.hairline.dark)
 
-    /// Quiet pointer-hover fill — interactive feedback, lighter than any selection.
+    /// Must stay lighter than any selection fill.
     static let yankHover = Color.primary.opacity(0.05)
-    /// Lowest-emphasis neutral fill, used for code wells and inline key badges.
     static let yankQuietFill = Color.primary.opacity(0.04)
-    /// Soft neutral fill for secondary controls and empty-state marks.
     static let yankSubtleFill = Color.primary.opacity(0.06)
-    /// Placeholder wash for unloaded media.
     static let yankPlaceholderFill = Color.secondary.opacity(0.12)
     /// Hairline on top of media/swatch content where the normal separator is too quiet.
     static let yankSubtleBorder = Color.primary.opacity(0.15)
@@ -76,25 +69,21 @@ extension Color {
     static let yankMultiSelect = Color.primary.opacity(0.12)
     /// Softer multi-select border for compact rows, where the full border reads too heavy.
     static let yankMultiSelectSoftBorder = Color.primary.opacity(0.18)
-    /// Neutral selected-state border, paired with `yankMultiSelect`.
     static let yankMultiSelectBorder = Color.primary.opacity(0.28)
-    // The semantic inks below come from the shared `YankInk` table, so macOS and iOS
-    // expose the identical values. Use `.secondary` for standard labels; reach for
-    // `yankTextTertiary` only where small text (10–11pt) was previously dimmed further
-    // (it's tuned to ~5:1 so it never dips below AA the way `.secondary` + opacity does).
+    // Use `.secondary` for standard labels; reach for `yankTextTertiary` only for small text
+    // that needs to stay AA-safe (see its doc comment).
 
     /// Bookmark marker (gold), legible as a glyph in both appearances.
     static let yankBookmark = yankDynamic(light: YankInk.bookmark.light, dark: YankInk.bookmark.dark)
     /// "Large" badge background; pairs with white text (AA in both appearances).
     static let yankOversize = yankDynamic(light: YankInk.oversize.light, dark: YankInk.oversize.dark)
-    /// Tertiary text — quiet metadata and keyboard hints, AA-safe at small sizes.
+    /// Tertiary text for quiet metadata/keyboard hints — tuned to ~5:1 contrast so small text
+    /// (10–11pt) stays AA-safe, unlike `.secondary` + opacity.
     static let yankTextTertiary = yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
-    /// Code / preview body text — a softened but AA-legible ink for monospaced previews and
-    /// long-text excerpts, replacing stacked `.primary.opacity(0.8x)` so dark mode stays semantic.
+    /// Code / preview body text — AA-legible ink for monospaced previews and long excerpts;
+    /// kept semantic (not `.primary` + opacity) so dark mode contrast holds.
     static let yankCodeText = yankDynamic(light: YankInk.codeText.light, dark: YankInk.codeText.dark)
-    /// Destructive / error semantics — a warm-leaning red. Replaces ad-hoc system `.red`.
     static let yankDanger = yankDynamic(light: YankInk.danger.light, dark: YankInk.danger.dark)
-    /// Success semantics — verified-update confirmation and similar positive states.
     static let yankSuccess = yankDynamic(light: YankInk.success.light, dark: YankInk.success.dark)
     /// Matched success-badge pair; unlike the foreground success ink, this remains
     /// contrast-safe when one token is drawn directly on the other.
@@ -152,30 +141,27 @@ extension AppTheme {
 
 // MARK: - Motion
 
-/// Shared motion tokens for the macOS surface. The timings are intentionally short:
-/// Yank is a power-user clipboard tool, so motion should add tactility without making
-/// keyboard workflows feel slower.
+/// Shared motion tokens for the macOS surface, intentionally short: Yank is a power-user
+/// tool, so motion adds tactility without slowing keyboard workflows.
 enum YankMotion {
     static let pasteScale: CGFloat = 1.03
     static let pasteLift: CGFloat = -2
     static let pasteDelay: Double = 0.085
 
-    // Capture pulse — the menu-bar glyph confirms a copy with a quick spring-like scale bounce.
-    // Driven at the Core Animation layer in HubController, so these are plain scalars Core
-    // Animation consumes directly (a brief overshoot, then settle).
+    // Capture pulse (menu-bar glyph copy confirmation) is driven at the Core Animation layer
+    // in HubController — these are plain scalars CA consumes directly, not a SwiftUI animation.
     static let capturePulseScale: CGFloat = 1.22
     static let capturePulseDuration: Double = 0.34
 
-    // Window summon (the floating history panel) — the scale+fade is driven at the AppKit /
-    // Core Animation layer in HistoryWindowController, so these are plain scalars Core
-    // Animation consumes directly. The curve reuses `expoOutControlPoints` for one language.
+    // Window summon (floating history panel) — driven at the AppKit/Core Animation layer in
+    // HistoryWindowController; same plain-scalar reasoning as the capture pulse above. Curve
+    // reuses `expoOutControlPoints` for one shared language.
     static let summonScale: CGFloat = MotionScale.summon
     static let summonInDuration: Double = 0.18
     static let summonOutDuration: Double = 0.12
 
-    /// Control points for the expo-out curve as `Float`, for the Core Animation window
-    /// summon (`CAMediaTimingFunction` needs raw `Float` points). Derived from the shared
-    /// `MotionCurve.expoOut` so the SwiftUI and Core Animation summons can't diverge.
+    /// Expo-out curve control points as `Float` — `CAMediaTimingFunction` requires raw `Float`.
+    /// Derived from `MotionCurve.expoOut` so SwiftUI and Core Animation summons can't diverge.
     static let expoOutControlPoints: (x1: Float, y1: Float, x2: Float, y2: Float) = {
         let c = MotionCurve.expoOut
         return (Float(c.x1), Float(c.y1), Float(c.x2), Float(c.y2))
@@ -252,11 +238,9 @@ enum YankPanelTokens {
 
 // MARK: - Liquid Glass (macOS 26 design language)
 
-/// Per Apple's HIG, Liquid Glass lives on the navigation/control layer that floats
-/// above content — never on scrollable content, and never glass directly on glass.
-/// The system handles Reduce Transparency / Increase Contrast / Reduce Motion
-/// automatically, which is why glass is the language, not a setting. These helpers
-/// use the real `glassEffect` on macOS 26+ and fall back to vibrancy below it.
+/// Liquid Glass (HIG): lives only on the floating nav/control layer, never on scrollable
+/// content or stacked glass-on-glass. Reduce Transparency/Contrast/Motion are handled by
+/// the system automatically. Uses real `glassEffect` on macOS 26+, vibrancy fallback below.
 extension View {
     /// A small control cluster on glass (capsule) — e.g. a segmented toggle.
     @ViewBuilder
@@ -283,11 +267,9 @@ extension View {
 
 // MARK: - Reusable styles
 
-/// A compact icon-only button with two guarantees the loose `Button { Image(...) }`
-/// pattern kept getting wrong: a required `label` (so it can never ship without a
-/// VoiceOver name) and a hit target that meets WCAG 2.5.8 (≥24×24pt) no matter how
-/// small the glyph is drawn. `help` defaults to the label, so every button also
-/// gets a tooltip for free.
+/// Icon-only button with two guarantees ad-hoc `Button { Image(...) }` calls miss: a
+/// required `label` (VoiceOver name) and a hit target meeting WCAG 2.5.8 (≥24×24pt).
+/// `help` defaults to `label`, so every button gets a tooltip for free.
 struct IconButton: View {
     let systemName: String
     let label: String

@@ -8,12 +8,9 @@ enum SettingsChipMetrics {
     static let topBarTitleBalance: CGFloat = 64
 }
 
-/// Settings — a single scrolling column of grouped cards, shown as a screen inside
-/// the main window (not a separate window). `onBack` returns to history.
-///
-/// The cards compose here; each section's controls live in a `Settings…Section.swift`
-/// extension file (General, History, Privacy, Sync, Shortcut, Appearance). The shared
-/// state and the reusable label/row helpers stay here so every section reads from one place.
+/// Settings — a single scrolling screen inside the main window (not a separate window);
+/// `onBack` returns to history. Section controls live in `Settings…Section.swift`
+/// extensions; shared state and label/row helpers stay here.
 struct SettingsView: View {
     var onBack: (() -> Void)? = nil
     var store: ClipboardStore? = nil
@@ -182,11 +179,9 @@ struct SettingsView: View {
 
     // MARK: - Pieces
 
-    /// One label model across the whole screen: title, then its one-line explanation
-    /// directly beneath it, then the control. `field` stacks the control under the
-    /// caption (for grids/swatches); `settingRowControl` floats the control to the
-    /// trailing edge (for a single toggle/picker) — but the "explanation lives right
-    /// under the title" rule is now the same in both, so the eye learns it once.
+    /// Title + one-line explanation, then the control. `field` stacks the control below
+    /// (grids/swatches); `settingRowControl` floats it trailing (single toggle/picker) —
+    /// both keep the explanation directly under the title.
     func field<C: View>(_ title: String, _ subtitle: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             settingLabel(title, subtitle)

@@ -1,10 +1,8 @@
 import Foundation
 
-/// Pure keyboard-extension search/index helper.
-///
-/// The extension renders only text clips. It scans the store's items directly and normalizes
-/// lazily during the scan — stopping at the result limit — so the memory-constrained keyboard
-/// never holds a second copy of the history's text (the store already holds it once).
+/// Pure keyboard-extension search/index helper. The extension renders only text clips, scanning
+/// and normalizing lazily up to the result limit, so the memory-constrained keyboard never holds
+/// a second copy of the history's text (the store already holds it once).
 enum KeyboardClipSearch {
     /// Live, insertable text clips, order preserved. Used to decide whether the keyboard has
     /// anything to show before building the search UI.
