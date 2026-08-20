@@ -489,12 +489,9 @@ final class IOSCloudSyncController {
         }
     }
 
-    /// Detects an iCloud account switch and resets this container's persisted sync
-    /// checkpoints before any service exists for the new account — otherwise the previous
-    /// account's push receipts suppress uploading the library into the new account's empty
-    /// zone, and the stale change token targets a zone that no longer answers. Resolved once
-    /// per controller lifecycle; a probe failure is left conservative (no reset) rather than
-    /// risking a spurious wipe from a transient identity lookup error.
+    /// Detects an iCloud account switch and resets this container's checkpoints before any
+    /// service exists for the new account (see `CloudKitSyncService.resetPersistedState`).
+    /// Resolved once per controller lifecycle; a probe failure stays conservative — no reset.
     private func reconcileAccountIdentity(container: ContainerHandle, generation: UInt64) async {
         guard cachedAccountIdentity == nil else { return }
         let identity: String

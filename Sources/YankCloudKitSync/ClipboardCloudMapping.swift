@@ -71,11 +71,8 @@ enum ClipboardCloudMapping {
         return record
     }
 
-    /// Whether two same-ID items would produce identical records — `ClipboardItem`'s own
-    /// equality is identity-only, so the sync engine needs a field-wise check to tell "the
-    /// zone already holds this version" apart from "a merge grafted local fields the zone
-    /// lacks". Compares exactly the fields `record(from:)` writes; local-only state
-    /// (`richFilename`) deliberately stays out.
+    /// Field-wise equality over exactly what `record(from:)` writes — `ClipboardItem`'s own
+    /// `==` is identity-only, and local-only state (`richFilename`) deliberately stays out.
     static func syncedFieldsMatch(_ lhs: ClipboardItem, _ rhs: ClipboardItem) -> Bool {
         lhs.id == rhs.id
             && lhs.type == rhs.type
@@ -100,12 +97,10 @@ enum ClipboardCloudMapping {
             && lhs.hasRichContent == rhs.hasRichContent
     }
 
-    /// Rewrites a record *fetched from the server* into a content-free tombstone. Assigning
-    /// `nil` marks a key changed only on a record that already holds a value for it, so this
-    /// is the one shape of save that actually erases the clip's text, metadata, and asset
-    /// from the zone under the `.changedKeys` policy. The keys `item(from:)` requires
-    /// (`type`, `timestamp`, `modifiedAt`) stay populated, so every build still reads the
-    /// result as a valid deleted clip.
+    /// Rewrites a record *fetched from the server* into a content-free tombstone: assigning
+    /// nil marks a key changed only on a record that already holds a value, which is what
+    /// erases the server-side content under `.changedKeys`. The keys `item(from:)` requires
+    /// stay populated, so every build still reads a valid deleted clip.
     static func applyTombstone(from item: ClipboardItem, to record: CKRecord) {
         record[Key.type] = item.type.rawValue
         record[Key.timestamp] = item.timestamp

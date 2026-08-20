@@ -32,10 +32,9 @@ public enum ClipboardMerge {
         winner.aiTags = enriched.aiTags
         winner.aiTitle = enriched.aiTitle
         winner.aiEnrichedAt = enriched.aiEnrichedAt
-        // richFilename references a local rich-content blob that sync never transports (there is
-        // no CloudKit mapping for it). A device only ever has its own reference and there is no
-        // clock to compare, so losing the last-writer race must not erase it: carry it across from
-        // the losing side rather than let the cleanup pass treat it as unreferenced and delete it.
+        // richFilename references a local rich archive that sync never transports, so there is
+        // no clock to compare and losing the last-writer race must not let the cleanup pass
+        // delete it: carry it across from the losing side.
         if winner.richFilename == nil {
             winner.richFilename = loser.richFilename
         }

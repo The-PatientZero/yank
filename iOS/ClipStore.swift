@@ -753,10 +753,9 @@ final class ClipStore: SyncableStore {
         }
     }
 
-    /// Once per launch, right after the snapshot loads and before sync or foreground capture
-    /// can add anything — so `items` is the complete and only source of truth for what's still
-    /// referenced. Only called when the snapshot loaded successfully; an empty `items` from a
-    /// failed load would otherwise look like every existing blob is orphaned.
+    /// Once per launch, after the snapshot loads and before sync or capture can add anything.
+    /// Only called on a successful load — an empty `items` from a failed one would make every
+    /// existing blob look orphaned.
     private func sweepOrphanBlobs() {
         let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) }.map(\.filename))
         let removedCount = blobStore.sweepOrphans(referenced: referenced)

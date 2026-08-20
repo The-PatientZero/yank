@@ -492,10 +492,9 @@ final class ClipboardController {
     }
 }
 
-/// Detects an iCloud account switch ahead of constructing a fresh sync service, so a
-/// checkpoint (change token, push receipts) left over from the previous account doesn't
-/// suppress uploading the library into the new account's empty zone or aim pulls at a zone
-/// that no longer answers.
+/// Detects an iCloud account switch ahead of constructing a fresh sync service, so the
+/// previous account's checkpoints are reset first (see
+/// `CloudKitSyncService.resetPersistedState` for why they must not carry across).
 enum CloudKitAccountChangeGuard {
     /// Compares the resolved account identity against the one persisted under `defaultsKey`,
     /// resetting `containerIdentifier`'s sync checkpoints when they differ. A first run (no

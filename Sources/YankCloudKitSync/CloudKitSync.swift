@@ -112,11 +112,10 @@ public final class CloudKitSyncService {
     }
 
     /// Discards every persisted sync checkpoint for a container: change token, push receipts,
-    /// legacy watermark, quarantine, and quarantine epoch. For an iCloud account change —
-    /// receipts and tokens describe the *previous* account's zone, and carrying them across
-    /// would suppress uploading the library into the new account and aim pulls at a zone
-    /// that no longer answers. Call before constructing a fresh service; the next `start()`
-    /// then replays everything from scratch, which is safe by design.
+    /// legacy watermark, quarantine, and its epoch. For an iCloud account change — the
+    /// checkpoints describe the previous account's zone, and carrying them across would
+    /// suppress uploading the library into the new one. Call before constructing a fresh
+    /// service; the next `start()` replays everything from scratch.
     public static func resetPersistedState(
         containerIdentifier: String,
         defaults: UserDefaults = .standard
@@ -229,9 +228,8 @@ public final class CloudKitSyncService {
             guard shouldReport(error, generation: generation) else {
                 return .failed(message: message)
             }
-            // Even a failed bring-up keeps listening for local edits: their scheduled pushes
-            // (with the bounded retry chain) are what publish work made while the transport
-            // was down, instead of leaving the device silent until the next relaunch.
+            // Keep listening even though bring-up failed: local edits must still schedule
+            // pushes once the transport recovers.
             try? startObservingLocalChanges(generation: generation)
             try? startObservingSettingsChanges(generation: generation)
             syncLog.error("start failed: \(message, privacy: .public)")
@@ -603,9 +601,8 @@ public final class CloudKitSyncService {
     private struct QuarantineState {
         var entries: [String: CloudKitPullQuarantineEntry]
         var didChange = false
-        /// A record failed while the list was full, so it could not be tracked. The pull must
-        /// hold the change token in that case — advancing past an untracked skip would lose the
-        /// record on this device with no recovery path.
+        /// A record failed while the list was full and could not be tracked; the pull must
+        /// hold the change token, or the record would be skipped with no recovery path.
         var didOverflow = false
 
         mutating func clear(_ recordName: String) {
@@ -988,14 +985,11 @@ public final class CloudKitSyncService {
         }
     }
 
-    /// Builds the push records for locally deleted clips. A tombstone saves through the
-    /// server's own copy when one exists: under `.changedKeys`, only assignments on a fetched
-    /// record mark keys changed, and that is what actually erases the clip's text and asset
-    /// from the zone — a freshly constructed record would set `deletedAt` but leave the full
-    /// content readable in the user's database indefinitely. A record the server never had
-    /// (or permanently lost) has nothing to erase and pushes the minimal tombstone directly;
-    /// one the server merely failed to hand over right now is left for the next push, so a
-    /// transient fetch gap can never downgrade the erase into a content-preserving save.
+    /// A tombstone saves through the server's own copy when one exists: only assignments on
+    /// a fetched record mark keys changed under `.changedKeys`, which is what erases the
+    /// clip's content and asset from the zone. A record the server never had pushes the
+    /// minimal tombstone directly; one it merely failed to hand over is left for the next
+    /// push, so a transient gap cannot downgrade the erase into a content-preserving save.
     private func prepareTombstonePushRecords(
         _ tombstones: [ClipboardItem],
         generation: UInt64
@@ -1069,10 +1063,9 @@ public final class CloudKitSyncService {
         return .publish
     }
 
-    /// Stamps compare at millisecond granularity: CloudKit does not persist a `Date`'s full
-    /// sub-millisecond precision, so a round-tripped copy of the local stamp must still read
-    /// as a tie — otherwise every reconcile would republish an identical record and wake all
-    /// devices with the resulting change-feed entry.
+    /// CloudKit does not persist sub-millisecond `Date` precision, so a round-tripped copy of
+    /// the local stamp must still compare as a tie — otherwise every reconcile would
+    /// republish an identical record.
     private nonisolated static func millisecondStamp(_ date: Date) -> Int64 {
         Int64((date.timeIntervalSinceReferenceDate * 1_000).rounded())
     }
@@ -1341,12 +1334,10 @@ public final class CloudKitSyncService {
     }
 
     /// Seeds a receipt for every item whose reconciled winner is exactly what the server just
-    /// handed over — the zone already holds that version, so the follow-up push must not echo
-    /// the record (and its asset) straight back at it. Any other winner loses its receipt
-    /// instead: a newer local version, or a same-stamp merge that grafted local fields the
-    /// server copy lacks (AI enrichment), must be re-published — the receipt still matched the
-    /// local stamp, so without the drop the zone would keep the stale copy indefinitely.
-    /// Repair items always re-push, so they are never seeded.
+    /// handed over, so the follow-up push does not echo the record (and its asset) back at
+    /// the zone. Any other winner — a newer local copy, or a same-stamp merge that grafted
+    /// local fields — loses its receipt so the next push re-publishes it. Repair items always
+    /// re-push and are never seeded.
     nonisolated static func pullReceiptChanges(
         remote: [ClipboardItem],
         reconciled: [ClipboardItem],
@@ -1440,16 +1431,14 @@ public final class CloudKitSyncService {
         return (try? CloudKitPullQuarantineCodec.decode(data)) ?? [:]
     }
 
-    /// The app version, so an upgrade grants quarantined records a fresh set of resolution
-    /// attempts — a record this build cannot read may be perfectly readable by the next one,
-    /// and without the reset it would stay skipped forever once it exhausted its attempts.
+    /// The app version: an upgrade grants quarantined records fresh resolution attempts,
+    /// since a record this build cannot read may be readable by the next.
     nonisolated static var defaultResolutionEpoch: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     }
 
-    /// Zeroes every entry's attempt count when the resolution epoch changed, keeping the
-    /// entries (and their reasons) so recovery re-attempts them. The epoch marker is only
-    /// advanced once the reset counts are durable — a failed write retries on the next launch.
+    /// Zeroes attempt counts when the epoch changed, keeping entries and reasons. The marker
+    /// only advances once the reset counts are durable, so a failed write retries next launch.
     private static func reQuarantineForEpoch(
         _ entries: [String: CloudKitPullQuarantineEntry],
         epoch: String,

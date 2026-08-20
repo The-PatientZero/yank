@@ -130,11 +130,10 @@ final class ClipboardStore {
         if applyRetentionAndLimit(now: Date()) { persist() }
     }
 
-    /// One-shot sweep for blob files a reconcile's deferred delete never reached — a crash
-    /// between the durable history flush and the actual file delete leaves the file behind
-    /// with nothing left to re-derive it from. Runs synchronously inside `init`, before the
-    /// watcher or sync exist to write a blob, so a capture in flight can never be mistaken
-    /// for an orphan.
+    /// One-shot sweep for blob files a reconcile's deferred delete never reached (a crash
+    /// between the durable flush and the file delete leaves them behind for good). Runs
+    /// inside `init`, before the watcher or sync can write a blob, so an in-flight capture
+    /// can never look like an orphan.
     private func sweepOrphanedBlobsAtLaunch() {
         guard let present = blobStore.allBlobReferences() else { return }
         let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })

@@ -107,9 +107,8 @@ final class SettingsManager {
     /// Copies whose trimmed length is below this are never captured (0 = off).
     var minCaptureLength: Int = 0
 
-    /// Auto-delete unprotected items older than this many days (0 = keep forever). Lives in
-    /// the synced record so one retention policy governs every device — a per-device window
-    /// would tombstone freshly synced clips and delete them account-wide.
+    /// Auto-delete window in days (0 = keep forever). Synced: expiry mints tombstones that
+    /// propagate, so the window must be one account-wide choice.
     var retentionDays: Int { syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays }
 
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
@@ -285,8 +284,7 @@ final class SettingsManager {
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }
 
-    /// A user-driven retention change. Same announcement path as the history limit: the
-    /// value rides the shared synced-settings record.
+    /// A user-driven retention change, announced like the history limit.
     func setRetentionDays(_ value: Int) {
         guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
         save()

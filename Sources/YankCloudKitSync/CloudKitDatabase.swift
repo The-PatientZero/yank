@@ -103,10 +103,9 @@ extension CKDatabase: CloudKitDatabase {
         do {
             _ = try await save(subscription)
         } catch let saveError as CKError where saveError.code == .serverRejectedRequest {
-            // Usually "subscription already exists", but the same code covers genuine
-            // rejections — and swallowing one of those would leave the device convinced it
-            // receives pushes when it never will. Only a fetch proving the subscription is
-            // actually in place makes the save error safe to ignore.
+            // Usually "already exists", but the same code covers genuine rejections. Only a
+            // fetch proving the subscription is in place makes the error safe to swallow —
+            // otherwise the device silently loses push delivery.
             do {
                 _ = try await self.subscription(for: subscriptionID)
             } catch {

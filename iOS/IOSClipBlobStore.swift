@@ -120,10 +120,9 @@ struct IOSClipBlobStore {
     // MARK: - Launch sweep
 
     /// Deletes every regular file directly in the blobs directory whose name isn't in
-    /// `referenced`. A crash between a durable write and its deferred blob deletion, or
-    /// between a staged remote-pull write and its promoting rename, otherwise leaks the file
-    /// forever. An unreadable directory listing is a silent no-op — retrying won't fix it, and
-    /// launch shouldn't fail over stray files.
+    /// `referenced` — a crash between a durable write and its deferred blob deletion (or a
+    /// staged pull write and its rename) otherwise leaks the file forever. An unreadable
+    /// listing is a silent no-op.
     /// - Returns: the number of files removed.
     @discardableResult
     func sweepOrphans(referenced: Set<String>) -> Int {
