@@ -207,7 +207,7 @@ extension PasteController {
         }
     }
 
-    /// Write prepared clip content to a pasteboard. Rich clips (#11) replay every archived
+    /// Write prepared clip content to a pasteboard. Rich clips replay every archived
     /// representation verbatim; otherwise the primary text/image is written.
     @discardableResult
     static func writePreparedContents(
