@@ -428,6 +428,28 @@ final class ClipBlobStore {
         }
     }
 
+    /// Every blob file actually present across the owned directories, or `nil` if any
+    /// directory listing failed (permissions, odd volume) — callers should skip a sweep
+    /// entirely rather than delete from a partial listing.
+    func allBlobReferences() -> Set<ClipboardBlobReference>? {
+        var result: Set<ClipboardBlobReference> = []
+        for kind in [SyncBlobKind.image, .text, .rich] {
+            guard let filenames = try? fileManager.contentsOfDirectory(atPath: directory(for: kind).path) else {
+                return nil
+            }
+            let referenceKind: ClipboardBlobReference.Kind
+            switch kind {
+            case .image: referenceKind = .image
+            case .text: referenceKind = .text
+            case .rich: referenceKind = .rich
+            }
+            for filename in filenames {
+                result.insert(ClipboardBlobReference(kind: referenceKind, filename: filename))
+            }
+        }
+        return result
+    }
+
     func deleteSyncedBlob(_ reference: SyncBlobReference) {
         let directory = directory(for: reference.kind)
         guard let url = reference.containedURL(in: directory) else { return }

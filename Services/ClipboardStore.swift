@@ -120,6 +120,7 @@ final class ClipboardStore {
         }
         loadSnapshot()
         pruneExpired()
+        sweepOrphanedBlobsAtLaunch()
         hasLoaded = true
     }
 
@@ -127,6 +128,20 @@ final class ClipboardStore {
     /// (launch, `captureSettings` change) bypass the capture-path time gate.
     func pruneExpired() {
         if applyRetentionAndLimit(now: Date()) { persist() }
+    }
+
+    /// One-shot sweep for blob files a reconcile's deferred delete never reached — a crash
+    /// between the durable history flush and the actual file delete leaves the file behind
+    /// with nothing left to re-derive it from. Runs synchronously inside `init`, before the
+    /// watcher or sync exist to write a blob, so a capture in flight can never be mistaken
+    /// for an orphan.
+    private func sweepOrphanedBlobsAtLaunch() {
+        guard let present = blobStore.allBlobReferences() else { return }
+        let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
+        let orphaned = present.subtracting(referenced)
+        guard !orphaned.isEmpty else { return }
+        blobStore.deleteBlobReferences(Array(orphaned))
+        Log.store.info("Removed \(orphaned.count) orphaned blob file(s) at launch.")
     }
 
     // MARK: - Public API
