@@ -153,6 +153,7 @@ final class ClipStore: SyncableStore {
         protectExistingHistoryFiles()
         load()
         if !historyWritesDisabled {
+            sweepOrphanBlobs()
             publishKeyboardProjection()
         }
     }
@@ -749,6 +750,18 @@ final class ClipStore: SyncableStore {
             storageUnavailable = true
             historyWritesDisabled = true
             clipStoreLog.error("Failed to load iOS history snapshot: \(error.localizedDescription)")
+        }
+    }
+
+    /// Once per launch, right after the snapshot loads and before sync or foreground capture
+    /// can add anything — so `items` is the complete and only source of truth for what's still
+    /// referenced. Only called when the snapshot loaded successfully; an empty `items` from a
+    /// failed load would otherwise look like every existing blob is orphaned.
+    private func sweepOrphanBlobs() {
+        let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) }.map(\.filename))
+        let removedCount = blobStore.sweepOrphans(referenced: referenced)
+        if removedCount > 0 {
+            clipStoreLog.info("Removed \(removedCount) orphaned iOS blob file(s) at launch.")
         }
     }
 

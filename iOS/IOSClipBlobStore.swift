@@ -116,4 +116,31 @@ struct IOSClipBlobStore {
             try? FileManager.default.removeItem(at: url)
         }
     }
+
+    // MARK: - Launch sweep
+
+    /// Deletes every regular file directly in the blobs directory whose name isn't in
+    /// `referenced`. A crash between a durable write and its deferred blob deletion, or
+    /// between a staged remote-pull write and its promoting rename, otherwise leaks the file
+    /// forever. An unreadable directory listing is a silent no-op — retrying won't fix it, and
+    /// launch shouldn't fail over stray files.
+    /// - Returns: the number of files removed.
+    @discardableResult
+    func sweepOrphans(referenced: Set<String>) -> Int {
+        guard let directory,
+              let entries = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+              ) else { return 0 }
+        var removedCount = 0
+        for url in entries where !referenced.contains(url.lastPathComponent) {
+            let isRegularFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile
+            guard isRegularFile == true else { continue }
+            if (try? FileManager.default.removeItem(at: url)) != nil {
+                removedCount += 1
+            }
+        }
+        return removedCount
+    }
 }
