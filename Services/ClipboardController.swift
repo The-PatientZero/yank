@@ -30,9 +30,25 @@ final class ClipboardController {
     /// Owned here because the sync service holds it weakly, the same way it holds the store.
     private let settingsSyncBridge: SettingsSyncBridge
     private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
-    private var cloudRemoteChangeTask: (id: UUID, task: Task<Void, Never>)?
+    /// Bounded backoff for a failed `start()` (offline at login, CloudKit throttle). Once
+    /// exhausted, recovery falls to the wake/periodic pulls below.
+    private let cloudSyncStartRetry = BackoffRetryScheduler(delays: ClipboardController.cloudSyncStartRetryDelays)
+    /// Coalesces a CloudKit silent push with the wake/periodic catch-up triggers below into at
+    /// most one follow-up pull when they arrive while a pull is already in flight.
+    private lazy var remoteChangeTrigger = CoalescingTrigger { [weak self] in
+        _ = await self?.pullRemoteChange()
+    }
     private var observerTokens: [NSObjectProtocol] = []
+    /// `NSWorkspace.shared.notificationCenter` is a distinct center from `NotificationCenter.default`,
+    /// so its token is tracked and removed separately from `observerTokens`.
+    private var wakeObserverToken: NSObjectProtocol?
+    private var periodicRemotePullTask: Task<Void, Never>?
     private var pasteSequenceCoordinator: PasteSequenceCoordinator?
+
+    private static let cloudSyncStartRetryDelays: [Duration] = [.seconds(30), .seconds(120), .seconds(600)]
+    /// Backstop re-pull while sync is up, covering a silent push dropped during sleep or
+    /// throttled delivery — silent pushes are best-effort, never guaranteed.
+    private static let periodicRemotePullInterval: Duration = .seconds(3600)
 
     private var store: ClipboardStore { dependencies.store }
 
@@ -196,20 +212,11 @@ final class ClipboardController {
 
     // MARK: - Forwarded from the composition root
 
-    /// Handle a CloudKit silent push delivered to the app delegate.
+    /// Handle a CloudKit silent push delivered to the app delegate, or a wake/periodic
+    /// catch-up trigger. A trigger arriving mid-pull is coalesced into one follow-up pull
+    /// rather than dropped — the in-flight pull may predate the record that triggered it.
     func handleRemoteChange() {
-        guard cloudRemoteChangeTask == nil else { return }
-        let taskID = UUID()
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let service = self.cloudSync
-            _ = await self.pullRemoteChange()
-            guard !Task.isCancelled,
-                  self.cloudRemoteChangeTask?.id == taskID,
-                  service == nil || self.cloudSync === service else { return }
-            self.cloudRemoteChangeTask = nil
-        }
-        cloudRemoteChangeTask = (taskID, task)
+        remoteChangeTrigger.trigger()
     }
 
     private func pullRemoteChange() async -> Bool {
@@ -260,6 +267,11 @@ final class ClipboardController {
         )
         cloudSync = sync
         NSApp.registerForRemoteNotifications()
+        startCloudSync(sync)
+        startCatchUpTriggers()
+    }
+
+    private func startCloudSync(_ sync: CloudKitSyncService, retryAttempt: Int = 0) {
         let taskID = UUID()
         let task = Task { @MainActor [weak self, weak sync] in
             guard let sync else { return }
@@ -271,17 +283,52 @@ final class ClipboardController {
             self.cloudSyncStartTask = nil
             if case .failed(let message) = result {
                 Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
+                self.cloudSyncStartRetry.scheduleNext(afterAttempt: retryAttempt) { [weak self, weak sync] in
+                    // A retry is a no-op once the service is torn down or replaced.
+                    guard let self, let sync, self.cloudSync === sync else { return }
+                    self.startCloudSync(sync, retryAttempt: retryAttempt + 1)
+                }
             }
         }
         cloudSyncStartTask = (taskID, task)
+    }
+
+    /// Wake and periodic pulls cover what silent pushes miss: they're best-effort and dropped
+    /// while the Mac sleeps, and this app runs for weeks between relaunches.
+    private func startCatchUpTriggers() {
+        guard wakeObserverToken == nil else { return }
+        wakeObserverToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleRemoteChange() }
+        }
+        periodicRemotePullTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.periodicRemotePullInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.handleRemoteChange()
+            }
+        }
+    }
+
+    private func stopCatchUpTriggers() {
+        if let wakeObserverToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserverToken)
+            self.wakeObserverToken = nil
+        }
+        periodicRemotePullTask?.cancel()
+        periodicRemotePullTask = nil
     }
 
     private func tearDownCloudSync(reason: SyncStatus.Reason? = nil) {
         cloudSync?.stop()
         cloudSyncStartTask?.task.cancel()
         cloudSyncStartTask = nil
-        cloudRemoteChangeTask?.task.cancel()
-        cloudRemoteChangeTask = nil
+        cloudSyncStartRetry.cancel()
+        remoteChangeTrigger.cancel()
+        stopCatchUpTriggers()
         cloudSync = nil
         NSApp.unregisterForRemoteNotifications()
         if let reason {
@@ -411,5 +458,79 @@ final class ClipboardController {
             pasteSequenceCoordinator?.discard()
             store.clear()
         }
+    }
+}
+
+/// Runs an async operation on trigger, coalescing any trigger that arrives while one is
+/// already in flight into exactly one follow-up run — a trigger is remembered, never dropped,
+/// but a burst never queues more than one extra run after the current one finishes.
+@MainActor
+final class CoalescingTrigger {
+    private var active: (id: UUID, task: Task<Void, Never>)?
+    private var pending = false
+    private let operation: () async -> Void
+
+    init(operation: @escaping () async -> Void) {
+        self.operation = operation
+    }
+
+    func trigger() {
+        guard active == nil else {
+            pending = true
+            return
+        }
+        run()
+    }
+
+    private func run() {
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            await self?.operation()
+            guard let self, !Task.isCancelled, self.active?.id == taskID else { return }
+            self.active = nil
+            if self.pending {
+                self.pending = false
+                self.run()
+            }
+        }
+        active = (taskID, task)
+    }
+
+    /// Cancels any in-flight run and drops a remembered trigger without starting it.
+    func cancel() {
+        active?.task.cancel()
+        active = nil
+        pending = false
+    }
+}
+
+/// Schedules a bounded-backoff retry, single-flight: a new schedule call replaces any pending
+/// one. Exhausting `delays` is a normal terminal state — the caller decides what recovers from
+/// there.
+@MainActor
+final class BackoffRetryScheduler {
+    private let delays: [Duration]
+    private var pendingRetry: Task<Void, Never>?
+
+    init(delays: [Duration]) {
+        self.delays = delays
+    }
+
+    /// Schedules `action` after `delays[afterAttempt]`, or no-ops once the schedule is exhausted.
+    func scheduleNext(afterAttempt attempt: Int, action: @escaping () -> Void) {
+        guard attempt < delays.count else { return }
+        pendingRetry?.cancel()
+        let delay = delays[attempt]
+        pendingRetry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.pendingRetry = nil
+            action()
+        }
+    }
+
+    func cancel() {
+        pendingRetry?.cancel()
+        pendingRetry = nil
     }
 }
