@@ -8,6 +8,8 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-21
+
 ### Added
 
 - Synced the auto-delete retention window across devices through the shared settings record, so one device's shorter window no longer deletes clips account-wide by surprise — the policy is now a single, deliberate choice.
