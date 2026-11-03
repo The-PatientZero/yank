@@ -95,6 +95,59 @@ extension HistoryContentView {
         scheduleUndoWindowCommit()
     }
 
+    // MARK: - Menu and hover-strip actions
+
+    /// Pin, Bookmark and Add Tag act on the clicked clip only. Paste, Copy and Delete act on the
+    /// whole selection when the clicked clip is part of a multi-selection, otherwise on the
+    /// clicked clip. None of them changes the selection except Add Tag.
+    func clipActions(for item: ClipboardItem) -> ClipActions {
+        ClipActions(
+            paste: { pasteFromMenu(item) },
+            copy: { copyFromMenu(item) },
+            togglePin: { store.togglePin(for: item) },
+            toggleBookmark: { store.toggleBookmark(for: item) },
+            addTag: { addTag(to: item) },
+            delete: { deleteFromMenu(item) }
+        )
+    }
+
+    private func isPartOfMultiSelection(_ item: ClipboardItem) -> Bool {
+        selectedIDs.count > 1 && selectedIDs.contains(item.id)
+    }
+
+    private func pasteFromMenu(_ item: ClipboardItem) {
+        if isPartOfMultiSelection(item) {
+            onPasteMultiple(selectedItems)
+        } else {
+            pasteWithPulse(item)
+        }
+    }
+
+    private func copyFromMenu(_ item: ClipboardItem) {
+        if isPartOfMultiSelection(item) {
+            copyFocusedClips()
+        } else {
+            onCopyToClipboard(item)
+            confirmCopy()
+        }
+    }
+
+    private func deleteFromMenu(_ item: ClipboardItem) {
+        if isPartOfMultiSelection(item) {
+            store.deleteItems(selectedItems)
+        } else {
+            store.delete(item)
+        }
+        scheduleUndoWindowCommit()
+        // A soft delete does not bump the store's change token, so repair the selection here.
+        updateSelection { $0.reconcile(with: filteredItems) }
+    }
+
+    func addTag(to item: ClipboardItem) {
+        selectSingle(item.id)
+        beginFocusedTagInput()
+    }
+
     /// Restores the pending delete, if any. Returns whether there was one to restore.
     @discardableResult
     func undoPendingDelete() -> Bool {
