@@ -369,7 +369,13 @@ final class ClipStore: SyncableStore {
             for entry in entries {
                 do {
                     var didImport = false
-                    if !items.contains(where: { $0.id == entry.id }) {
+                    // The durable record also covers a handoff whose clip was merged by
+                    // deduplication or deleted, which leaves no item with the entry's ID.
+                    let entryID = entry.id
+                    let alreadyProcessed = try await Task.detached(priority: .utility) {
+                        try inbox.isProcessed(entryID)
+                    }.value
+                    if !alreadyProcessed, !items.contains(where: { $0.id == entry.id }) {
                         try await importShareCapture(entry, from: inbox)
                         didImport = true
                     }
@@ -378,6 +384,11 @@ final class ClipStore: SyncableStore {
                     // seeing the ID in memory alone is not proof that it reached disk.
                     persist(notify: didImport)
                     try flushPendingWrites()
+                    if !alreadyProcessed {
+                        try await Task.detached(priority: .utility) {
+                            try inbox.markProcessed(entryID)
+                        }.value
+                    }
                     try await Task.detached(priority: .utility) {
                         try inbox.remove(entry)
                     }.value
