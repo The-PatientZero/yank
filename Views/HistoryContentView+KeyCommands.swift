@@ -68,6 +68,8 @@ extension HistoryContentView {
         } else if selectedIDs.count > 1 {
             // Collapse multi-selection back to the focused clip before the next Escape dismisses.
             if let id = selectedID { selectSingle(id) }
+        } else if !searchText.isEmpty {
+            searchText = ""
         } else {
             onDismiss()
         }
@@ -93,10 +95,14 @@ extension HistoryContentView {
         scheduleUndoWindowCommit()
     }
 
-    func undoPendingDelete() {
+    /// Restores the pending delete, if any. Returns whether there was one to restore.
+    @discardableResult
+    func undoPendingDelete() -> Bool {
+        guard store.pendingDeletion != nil else { return false }
         pendingDeleteCommitTask?.cancel()
         pendingDeleteCommitTask = nil
         store.undoPendingDelete()
+        return true
     }
 
     func undoMessage(count: Int) -> String {

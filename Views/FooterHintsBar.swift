@@ -28,7 +28,7 @@ struct FooterHintsBar: View {
                         .accessibilityHint("Opens System Settings to grant Accessibility access.")
                 } else {
                     keyHint("esc", "deselect")
-                    keyHint("⌫", "delete")
+                    keyHint("⌘⌫", "delete")
                 }
             } else {
                 if axUntrusted {
@@ -61,7 +61,7 @@ struct FooterHintsBar: View {
                         keyHint("⌘Z", "undo delete")
                     } else {
                         keyHint("⌘C", "copy")
-                        keyHint("⌫", "delete")
+                        keyHint("⌘⌫", "delete")
                     }
                 }
             }
@@ -95,7 +95,7 @@ struct FooterHintsBar: View {
             if axUntrusted {
                 return "Return copies \(selectionCount) items. Accessibility access is needed for auto-paste. Open System Settings to grant access."
             }
-            return "Return pastes \(selectionCount) items. Escape to deselect. Delete to remove."
+            return "Return pastes \(selectionCount) items. Escape to deselect. Command Delete to remove."
         }
         if axUntrusted {
             return "Return copies the clip. Accessibility access is needed for auto-paste. Open System Settings to grant access."
@@ -105,7 +105,12 @@ struct FooterHintsBar: View {
             "Command 1 through 9 for instant paste"
         ]
         if quickLookAvailable { parts.append("Space to peek") }
-        if hasPendingUndo { parts.append("Command Z to undo delete") }
+        if hasPendingUndo {
+            parts.append("Command Z to undo delete")
+        } else {
+            parts.append("Command C to copy")
+            parts.append("Command Delete to remove")
+        }
         if focusedItemHasOCR { parts.append("Option Return to paste as text") }
         return parts.joined(separator: ". ")
     }

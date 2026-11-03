@@ -229,7 +229,7 @@ struct HistoryContentView: View {
             if let pending = store.pendingDeletion {
                 UndoDeleteBanner(
                     message: undoMessage(count: pending.items.count),
-                    onUndo: undoPendingDelete
+                    onUndo: { undoPendingDelete() }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
