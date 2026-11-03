@@ -2,9 +2,11 @@ import AppKit
 
 private final class ActionableYankPanel: NSPanel {
     var onCancel: (() -> Void)?
+    /// False for the passive status card, which must never take keyboard focus from the user's app.
+    var acceptsKeyFocus = true
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeKey: Bool { acceptsKeyFocus }
+    override var canBecomeMain: Bool { acceptsKeyFocus }
 
     override func cancelOperation(_ sender: Any?) {
         guard let onCancel else {
@@ -26,6 +28,9 @@ private final class ActionableYankPanel: NSPanel {
 enum YankPanelMode {
     case transient
     case dialog
+    /// A status card that never becomes key, floats over full-screen apps and sits at the bottom
+    /// centre of the screen holding `anchorApp`'s frontmost window (else the main screen).
+    case passive(anchorApp: NSRunningApplication?)
 }
 
 enum YankPanelTextAlignment {
@@ -128,11 +133,17 @@ enum YankPanelFactory {
         mode: YankPanelMode = .transient
     ) -> (panel: NSPanel, content: NSVisualEffectView) {
         let styleMask: NSWindow.StyleMask
+        let isDialog: Bool
         switch mode {
         case .transient:
             styleMask = [.borderless]
+            isDialog = false
         case .dialog:
             styleMask = [.titled, .closable, .fullSizeContentView]
+            isDialog = true
+        case .passive:
+            styleMask = [.borderless, .nonactivatingPanel]
+            isDialog = false
         }
         let panel = ActionableYankPanel(
             contentRect: NSRect(origin: .zero, size: size),
@@ -144,13 +155,21 @@ enum YankPanelFactory {
         panel.setAccessibilityTitle(title)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.level = mode == .dialog ? .modalPanel : .floating
+        panel.level = isDialog ? .modalPanel : .floating
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.hasShadow = true
-        panel.isMovableByWindowBackground = true
-        panel.center()
-        if mode == .dialog {
+        if case let .passive(anchorApp) = mode {
+            panel.acceptsKeyFocus = false
+            panel.isFloatingPanel = true
+            panel.becomesKeyOnlyIfNeeded = true
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+            panel.setFrameOrigin(passiveOrigin(for: size, anchorApp: anchorApp))
+        } else {
+            panel.isMovableByWindowBackground = true
+            panel.center()
+        }
+        if isDialog {
             panel.titleVisibility = .hidden
             panel.titlebarAppearsTransparent = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
@@ -179,7 +198,42 @@ enum YankPanelFactory {
     }
 
     static func show(_ panel: NSPanel) {
-        panel.makeKeyAndOrderFront(nil)
+        if (panel as? ActionableYankPanel)?.acceptsKeyFocus == false {
+            panel.orderFrontRegardless()
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Distance between a passive card and the bottom edge of the visible screen area.
+    private static let passiveBottomInset: CGFloat = 48
+
+    private static func passiveOrigin(for size: NSSize, anchorApp: NSRunningApplication?) -> NSPoint {
+        let visibleFrame = screen(holding: anchorApp)?.visibleFrame ?? .zero
+        return NSPoint(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.minY + passiveBottomInset
+        )
+    }
+
+    /// The screen showing the app's frontmost on-screen window, else the main screen.
+    private static func screen(holding app: NSRunningApplication?) -> NSScreen? {
+        if let app,
+           let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]],
+           let bounds = windows.first(where: {
+               ($0[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier
+                   && ($0[kCGWindowLayer as String] as? Int) == 0
+           }).flatMap({ $0[kCGWindowBounds as String] as? NSDictionary }),
+           let rect = CGRect(dictionaryRepresentation: bounds) {
+            // Window bounds use a top-left origin on the primary display; flip into AppKit space.
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            let center = NSPoint(x: rect.midX, y: primaryHeight - rect.midY)
+            if let match = NSScreen.screens.first(where: { $0.frame.contains(center) }) {
+                return match
+            }
+        }
+        return NSScreen.main ?? NSScreen.screens.first
     }
 
     static func fadeIn(_ window: NSWindow) {

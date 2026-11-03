@@ -61,7 +61,7 @@ private final class LivePasteSequenceRuntime: PasteSequenceRuntime {
     }
 
     func requestAccessibilityPermission() {
-        AccessibilityPermission.requestPrompt()
+        dependencies.axPermission.promptIfFirstTime()
     }
 
     func setSequenceCollectionActive(_ active: Bool) {

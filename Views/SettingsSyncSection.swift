@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Sync card section — the iCloud opt-in toggle plus the live status and accessibility rows.
+// Sync card section — the iCloud opt-in toggle plus the live status rows.
 extension SettingsView {
     var syncDescription: String {
         guard let store, case .localOnly(.notProvisioned) = store.syncStatus else {
@@ -29,10 +29,6 @@ extension SettingsView {
                 if case .localOnly = store.syncStatus {} else if let encryption = store.encryptionStatus {
                     encryptionStatusRow(encryption)
                 }
-            }
-
-            if let axPermission {
-                axPermissionRow(axPermission)
             }
         }
     }
@@ -118,27 +114,6 @@ extension SettingsView {
                 .disabled(isSyncing)
             }
             .controlSize(.small)
-        }
-    }
-
-    @ViewBuilder
-    func axPermissionRow(_ axPermission: AccessibilityPermission) -> some View {
-        if !axPermission.isTrusted {
-            HStack(spacing: Space.sm) {
-                Image(systemName: "lock.fill").foregroundColor(.yankDanger)
-                    .font(.system(size: TypeScale.caption))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(AccessibilityPermission.Copy.accessNeeded)
-                        .font(.system(size: TypeScale.caption, weight: .medium))
-                        .foregroundColor(.yankDanger)
-                    Button(AccessibilityPermission.Copy.openSettings) {
-                        axPermission.openSettingsAndAwaitGrant()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: TypeScale.micro))
-                    .foregroundColor(AppTheme.active.foreground)
-                }
-            }
         }
     }
 }

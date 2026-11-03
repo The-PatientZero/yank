@@ -35,15 +35,35 @@ final class AccessibilityPermission {
         isTrusted = AXIsProcessTrusted()
     }
 
-    /// Opens the Accessibility pane and polls for the grant — the distributed notification can be
-    /// missed, so this is the reliable fallback. Re-checks once a second for up to 60s, then stops;
-    /// no permanent timer runs unless the user is actively granting.
-    @MainActor
-    func openSettingsAndAwaitGrant() {
-        Self.openSettings()
+    /// The one "grant access" action every button in the app runs. The first time ever it shows the
+    /// macOS dialog (which also adds Yank to the Accessibility list); after that it opens the
+    /// Accessibility pane directly. Either way it then watches for the grant.
+    func grantAccess() {
+        if Self.hasShownPrompt {
+            Self.openSettings()
+        } else {
+            Self.markPromptShown()
+            Self.requestPrompt()
+        }
+        awaitGrant()
+    }
+
+    /// For flows that cannot offer a button (Paste Sequence): shows the macOS dialog once ever and
+    /// does nothing on later calls, so a repeated start never reopens it.
+    func promptIfFirstTime() {
+        guard !Self.hasShownPrompt else { return }
+        Self.markPromptShown()
+        Self.requestPrompt()
+        awaitGrant()
+    }
+
+    /// Polls for the grant — the distributed notification can be missed, so this is the reliable
+    /// fallback. Re-checks once a second for up to `grantPollSeconds`, then stops; no permanent
+    /// timer runs unless the user is actively granting.
+    private func awaitGrant() {
         pollTask?.cancel()
         pollTask = Task { @MainActor [weak self] in
-            for _ in 0..<60 {
+            for _ in 0..<Self.grantPollSeconds {
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { return }
                 self?.refresh()
@@ -52,7 +72,20 @@ final class AccessibilityPermission {
         }
     }
 
-    nonisolated static func requestPrompt() {
+    private static let grantPollSeconds = 60
+
+    /// Local one-time flag (never synced): whether the macOS Accessibility dialog was already shown.
+    private static let promptShownKey = "yankAccessibilityPromptShown"
+
+    private static var hasShownPrompt: Bool {
+        UserDefaults.standard.bool(forKey: promptShownKey)
+    }
+
+    private static func markPromptShown() {
+        UserDefaults.standard.set(true, forKey: promptShownKey)
+    }
+
+    private static func requestPrompt() {
         let key = kAXTrustedCheckOptionPrompt.takeRetainedValue() as String
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
@@ -60,10 +93,9 @@ final class AccessibilityPermission {
     /// Posted by the system when Accessibility (and related) authorization changes.
     private static let apiChangedNotification = Notification.Name("com.apple.accessibility.api")
 
-    static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+    private static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 
-    @MainActor
-    static func openSettings() {
+    private static func openSettings() {
         NSWorkspace.shared.open(settingsURL)
     }
 
