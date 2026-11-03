@@ -618,6 +618,10 @@ struct YankApp: App {
     @State private var syncController: IOSCloudSyncController
     @State private var foregroundCaptureDisclosureSession =
         IOSForegroundCaptureDisclosureSession()
+    @State private var historyOpenRequest = 0
+    /// SwiftUI reports a return from the background as `.background`, `.inactive`, `.active`,
+    /// so the handler remembers the visit instead of comparing with the previous phase.
+    @State private var wasInBackground = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -644,7 +648,8 @@ struct YankApp: App {
                 store: store,
                 settings: settings,
                 iCloudSignedOut: syncController.iCloudSignedOut,
-                onRetrySync: { await syncController.start(force: true) }
+                onRetrySync: { await syncController.start(force: true) },
+                openRequest: historyOpenRequest
             )
                 .sheet(isPresented: Binding(
                     get: {
@@ -684,10 +689,18 @@ struct YankApp: App {
                             try await store.flushPendingWritesBeforeSuspension()
                         }
                     }
+                    if newPhase == .background {
+                        wasInBackground = true
+                    }
                     if newPhase == .active {
+                        let returnedFromBackground = wasInBackground
+                        wasInBackground = false
                         Task {
                             await refreshForeground()
                             refreshSpotlightIndex()
+                            if returnedFromBackground {
+                                historyOpenRequest &+= 1
+                            }
                         }
                     }
                 }
