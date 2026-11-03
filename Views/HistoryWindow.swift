@@ -99,15 +99,6 @@ enum HistoryWindowFramePersistencePolicy {
             return false
         }
     }
-
-    static func placementAfterUserFrame(_ current: HistoryWindowPlacement) -> HistoryWindowPlacement {
-        switch current {
-        case .lastPosition:
-            return current
-        case .menuBarIcon, .center, .topRight:
-            return .lastPosition
-        }
-    }
 }
 
 @MainActor
@@ -243,10 +234,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             isWindowVisible: window?.isVisible == true
         ) else { return }
         persistFrame()
-        guard settings.historyWindowPlacement != .lastPosition else { return }
-        settings.historyWindowPlacement = HistoryWindowFramePersistencePolicy
-            .placementAfterUserFrame(settings.historyWindowPlacement)
-        settings.save()
     }
 
     override func close() {

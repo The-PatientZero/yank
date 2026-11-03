@@ -170,10 +170,6 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
               window?.isVisible == true,
               let frame = window?.frame else { return }
         UserDefaults.standard.set(NSStringFromRect(frame), forKey: Self.frameDefaultsKey)
-
-        guard settings.quickPickerPlacement != .lastPosition else { return }
-        settings.quickPickerPlacement = .lastPosition
-        settings.save()
     }
 
     private func openFullHistory() {
