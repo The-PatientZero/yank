@@ -56,6 +56,11 @@ final class ClipboardStore {
     /// failed sync retry, so the last durable snapshot never points at deleted content.
     @ObservationIgnored var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
 
+    /// Bumped whenever the watcher's consecutive-repeat suppression must start over: a delete is
+    /// enqueued, history is cleared, or a capture was not saved. The watcher compares it with the
+    /// value it recorded, so a user who deletes a clip and copies the same text again keeps the copy.
+    @ObservationIgnored private(set) var captureResetRevision = 0
+
     var pendingDeletion: PendingDeletion? {
         didSet { filterCache.invalidate() }
     }
@@ -144,13 +149,18 @@ final class ClipboardStore {
 
     // MARK: - Public API
 
+    /// Returns whether the capture was saved (or merged into an existing clip). `false` means
+    /// nothing durable changed, so the caller must not treat the content as applied.
+    @discardableResult
     func add(
         _ item: ClipboardItem,
         richArchive: PasteboardArchive? = nil,
         observedAt: Date? = nil
-    ) {
+    ) -> Bool {
         var stamped = stampOrigin(on: item)
-        guard !refreshDuplicateIfPresent(stamped, observedAt: observedAt) else { return }
+        guard !refreshDuplicateIfPresent(stamped, observedAt: observedAt) else {
+            return reportCaptureResult(saved: !historyWritesDisabled)
+        }
 
         // Persist the full pasteboard archive only now that we know the item is being
         // inserted (not deduped) — so a rejected copy never orphans a rich file.
@@ -158,20 +168,23 @@ final class ClipboardStore {
             stamped.richFilename = filename
         }
         insert(stamped, observedAt: observedAt)
+        return reportCaptureResult(saved: !historyWritesDisabled)
     }
 
     /// Capture-specific insertion boundary. Duplicate resolution runs on the main actor before any
     /// filesystem work; encoding/writes then run on a utility executor and cancellation removes
     /// every newly written file. The caller's serial capture queue keeps final mutations FIFO.
+    /// Returns whether the capture was saved (or merged into an existing clip).
+    @discardableResult
     func addCaptured(
         _ item: ClipboardItem,
         primaryBlob: ClipboardCapturePrimaryBlob?,
         richArchive: PasteboardArchive?,
         observedAt: Date? = nil
-    ) async {
+    ) async -> Bool {
         var stamped = stampOrigin(on: item)
         if primaryBlob == nil, refreshDuplicateIfPresent(stamped, observedAt: observedAt) {
-            return
+            return reportCaptureResult(saved: !historyWritesDisabled)
         }
 
         if primaryBlob != nil || richArchive != nil {
@@ -179,16 +192,27 @@ final class ClipboardStore {
                 primary: primaryBlob,
                 richArchive: richArchive
             ) else {
-                return
+                return reportCaptureResult(saved: false)
             }
             guard !Task.isCancelled else {
                 await blobStore.discardCaptureBlobs(persisted)
-                return
+                return reportCaptureResult(saved: false)
             }
             stamped = applying(persisted, to: stamped)
         }
 
         insert(stamped, observedAt: observedAt)
+        return reportCaptureResult(saved: !historyWritesDisabled)
+    }
+
+    private func reportCaptureResult(saved: Bool) -> Bool {
+        if !saved { captureResetRevision += 1 }
+        return saved
+    }
+
+    /// Restarts the watcher's consecutive-repeat suppression (delete enqueued, history cleared).
+    func resetCaptureSuppression() {
+        captureResetRevision += 1
     }
 
     private func stampOrigin(on item: ClipboardItem) -> ClipboardItem {
@@ -201,16 +225,17 @@ final class ClipboardStore {
         // Collapse only complete, plain, byte-identical inline text. Refresh the newest
         // matching capture while retaining its stable identity and annotations; older
         // pre-existing duplicates remain untouched for forward-compatible history handling.
-        guard let existing = items
-            .filter({ TextCaptureIdentity.matches($0, item) })
-            .max(by: { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }) else {
+        // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
+        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
+        guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
+            for: item,
+            in: items,
+            excluding: pendingIDs
+        ) else {
             return false
         }
         _ = ClipboardMutations.refreshDuplicateCapture(
-            existingID: existing.id,
+            existingID: existingID,
             with: item,
             in: &items
         )

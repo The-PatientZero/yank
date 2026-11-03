@@ -372,7 +372,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
             for entry in entries {
                 do {
                     var didImport = false
-                    if !items.contains(where: { $0.id == entry.id }) {
+                    // The durable record also covers a handoff whose clip was merged by
+                    // deduplication or deleted, which leaves no item with the entry's ID.
+                    let entryID = entry.id
+                    let alreadyProcessed = try await Task.detached(priority: .utility) {
+                        try inbox.isProcessed(entryID)
+                    }.value
+                    if !alreadyProcessed, !items.contains(where: { $0.id == entry.id }) {
                         try await importShareCapture(entry, from: inbox)
                         didImport = true
                     }
@@ -381,6 +387,11 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
                     // seeing the ID in memory alone is not proof that it reached disk.
                     persist(notify: didImport)
                     try flushPendingWrites()
+                    if !alreadyProcessed {
+                        try await Task.detached(priority: .utility) {
+                            try inbox.markProcessed(entryID)
+                        }.value
+                    }
                     try await Task.detached(priority: .utility) {
                         try inbox.remove(entry)
                     }.value
@@ -497,19 +508,19 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     /// Resolve a new local inline-text capture against existing eligible records. Sync itself
     /// remains UUID-based; this is invoked only from explicit local capture/ingestion paths.
     private func refreshDuplicateCapture(with incoming: ClipboardItem) -> UUID? {
-        let existing = items
-            .filter { TextCaptureIdentity.matches($0, incoming) }
-            .max { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
-        guard let existing,
+        // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
+        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
+        guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
+            for: incoming,
+            in: items,
+            excluding: pendingIDs
+        ),
               ClipboardMutations.refreshDuplicateCapture(
-            existingID: existing.id,
-            with: incoming,
-            in: &items
+                  existingID: existingID,
+                  with: incoming,
+                  in: &items
               ) else { return nil }
-        return existing.id
+        return existingID
     }
 
     /// Mark an item most-recently-used (e.g. after copying it to the pasteboard).
