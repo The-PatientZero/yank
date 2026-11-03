@@ -181,7 +181,7 @@ struct HistoryContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in showSettings = false }
     }
 
-    private func setSettings(_ on: Bool) {
+    func setSettings(_ on: Bool) {
         withAnimation(YankMotion.navigation(reduceMotion)) { showSettings = on }
     }
 

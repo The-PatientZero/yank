@@ -24,7 +24,9 @@ extension HistoryContentView {
             onLeft: { moveTiledFocusHorizontally(by: -1) },
             onRight: { moveTiledFocusHorizontally(by: 1) },
             onUndo: undoPendingDelete,
-            onFocusSearch: { isSearchFocused = true }
+            onFocusSearch: { isSearchFocused = true },
+            onOpenSettings: openSettingsFromKeyboard,
+            onSetViewMode: setViewModeFromKeyboard
         )
     }
 
@@ -259,6 +261,20 @@ extension HistoryContentView {
         guard searchText.isEmpty, !detail.showTagInput, selectedItem != nil else { return false }
         withAnimation(YankMotion.present(reduceMotion)) { showQuickLook.toggle() }
         return true
+    }
+
+    /// Settings and layout keys stay quiet while the peek or the tag field owns the keyboard.
+    private var keyboardOwnedByOverlay: Bool { showQuickLook || detail.showTagInput }
+
+    func openSettingsFromKeyboard() {
+        guard !keyboardOwnedByOverlay else { return }
+        setSettings(true)
+    }
+
+    func setViewModeFromKeyboard(_ index: Int) {
+        let modes = ClipViewMode.platformCases
+        guard !keyboardOwnedByOverlay, modes.indices.contains(index) else { return }
+        settings.setViewMode(modes[index])
     }
 
     func moveTiledFocusHorizontally(by delta: Int) -> Bool {
