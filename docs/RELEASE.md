@@ -7,12 +7,35 @@ Releases are cut by pushing a version tag; GitHub Actions does the rest. Prefer
 ```bash
 # 1. Move CHANGELOG.md Unreleased notes into a dated version section.
 # 2. Bump MARKETING_VERSION in project.yml (the workflow refuses a mismatched tag), commit.
-# 3. Verify the release notes section (replace 1.2.3 with the release version):
+# 3. If the release adds CloudKit record fields, promote the schema first (see below).
+# 4. Verify the release notes section (replace 1.2.3 with the release version):
 bash scripts/extract_release_notes.sh v1.2.3
-# 4. Tag and push the same version (preferred form):
+# 5. Tag and push the same version (preferred form):
 git tag v1.2.3
 git push origin v1.2.3
 ```
+
+## CloudKit schema
+
+Debug builds use the CloudKit `Development` environment and Release builds use `Production`
+(see the entitlement note below). CloudKit creates a record field in Development the first
+time a build saves a record that carries it, but a Production container only knows the fields
+that were deployed to it. A Release build that saves a record with a field Production lacks
+fails every save of that record, and sync keeps retrying with a "could not save" status.
+
+Before tagging any release that adds record fields, as a manual step (nothing in CI checks it):
+
+1. Run a Debug build against Development and save a clip that populates every field the
+   release adds. For the encrypted content field `encContent`, any saved live clip creates it;
+   copying a tagged text clip and extracting text from an image exercises every value it holds.
+2. In CloudKit Console, open the container, choose the Development environment, and confirm
+   the new fields are listed under the `ClipboardItem` record type (`encContent` appears as
+   an encrypted bytes field).
+3. Deploy the Development schema to Production from CloudKit Console and confirm the new
+   fields appear there before pushing the tag.
+
+An existing field cannot be turned into an encrypted one, so new encrypted content always gets
+a new field.
 
 The `Release` workflow (`.github/workflows/release.yml`) then:
 

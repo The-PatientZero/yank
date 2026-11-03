@@ -19,6 +19,7 @@ enum CloudKitSyncError: LocalizedError {
     case pushReceiptEncodingFailed
     case pullQuarantineEncodingFailed
     case pullQuarantineOverflow
+    case encryptedDataKeyReset
 
     var errorDescription: String? {
         switch self {
@@ -38,6 +39,8 @@ enum CloudKitSyncError: LocalizedError {
             "Skipped CloudKit records could not be recorded. Sync will safely replay."
         case .pullQuarantineOverflow:
             "Too many skipped CloudKit records are awaiting recovery. Sync will retry."
+        case .encryptedDataKeyReset:
+            "iCloud's encrypted data key was reset. Yank is uploading your clips again."
         }
     }
 }
@@ -68,6 +71,7 @@ public final class CloudKitSyncService {
     private let pushWatermarkKey: String
     private let pushReceiptsKey: String
     private let pullQuarantineKey: String
+    private let encryptedCopyBackfillKey: String
     private let pushDebounceNanoseconds: UInt64
     private let pushRetryDelaysNanoseconds: [UInt64]
     private let beforeReceiptPersistence: (() throws -> Void)?
@@ -83,6 +87,9 @@ public final class CloudKitSyncService {
     /// optimisation — the fetch-first reconcile decides by stamp, never by this flag — so a
     /// change made while sync was down is still published by the next `start()`.
     private var settingsReconciliationPending = false
+    /// Set when any CloudKit surface reports that the user reset their encrypted-data key;
+    /// cleared by `recoverFromEncryptedDataKeyReset`.
+    private var encryptedDataKeyResetPending = false
     private var localChangeObserver: NSObjectProtocol?
     private var settingsChangeObserver: NSObjectProtocol?
     private var scheduledPush: Task<Void, Never>?
@@ -104,10 +111,20 @@ public final class CloudKitSyncService {
         self.init(
             containerIdentifier: containerIdentifier,
             store: store,
-            database: CKContainer(identifier: containerIdentifier).privateCloudDatabase,
+            database: Self.liveDatabase(for: containerIdentifier),
             settingsStore: settingsStore,
             defaults: defaults
         )
+    }
+
+    private static func liveDatabase(for containerIdentifier: String) -> any CloudKitDatabase {
+        let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
+        #if DEBUG
+        if KeyResetInjectingDatabase.isRequested {
+            return KeyResetInjectingDatabase(wrapping: database)
+        }
+        #endif
+        return database
     }
 
     /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch)
@@ -122,6 +139,7 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.pushReceipts.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.encryptedCopyBackfill.\(containerIdentifier)")
     }
 
     /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
@@ -145,6 +163,7 @@ public final class CloudKitSyncService {
         self.pushWatermarkKey = "cloudkit.lastPushedModifiedAt.\(containerIdentifier)"
         self.pushReceiptsKey = "cloudkit.pushReceipts.\(containerIdentifier)"
         self.pullQuarantineKey = "cloudkit.pullQuarantine.\(containerIdentifier)"
+        self.encryptedCopyBackfillKey = "cloudkit.encryptedCopyBackfill.\(containerIdentifier)"
         self.pushDebounceNanoseconds = pushDebounceNanoseconds
         self.pushRetryDelaysNanoseconds = pushRetryDelaysNanoseconds
         self.beforeReceiptPersistence = beforeReceiptPersistence
@@ -212,6 +231,7 @@ public final class CloudKitSyncService {
             // Bring-up always reconciles the settings record, which is what recovers a record
             // an earlier build could not read and one this device never managed to publish.
             settingsReconciliationPending = true
+            try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
             try await pull(generation: generation)
             try requireActive(generation)
             try startObservingLocalChanges(generation: generation)
@@ -469,9 +489,19 @@ public final class CloudKitSyncService {
         do {
             try await pullUsingCurrentToken(generation: generation)
             try requireActive(generation)
+            // A key reset noticed on a record-level failure does not abort the pull; the
+            // recovery runs once the rest of the pull is durable.
+            try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
             return false
         } catch {
             try requireActive(generation)
+            if CloudKitEncryptedDataKeyReset.isReset(error) {
+                noteEncryptedDataKeyReset(during: "pull")
+                try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                try await pullUsingCurrentToken(generation: generation)
+                try requireActive(generation)
+                return true
+            }
             guard Self.isExpiredChangeTokenError(error) else { throw error }
             syncLog.info("CloudKit change token expired; retrying from the beginning.")
             try invalidateAllPushReceipts(generation: generation)
@@ -727,6 +757,9 @@ public final class CloudKitSyncService {
             return
         }
         try requireActive(generation)
+        if fetched.encryptedDataKeyWasReset {
+            noteEncryptedDataKeyReset(during: "quarantine recovery")
+        }
 
         for recordName in fetched.permanentlyMissingRecordNames.sorted() {
             syncLog.info(
@@ -755,6 +788,13 @@ public final class CloudKitSyncService {
     ) throws {
         var retryableCount = 0
         for failure in failures {
+            if CloudKitEncryptedDataKeyReset.isReset(failure.error) {
+                // Quarantined like a permanent failure: the record is re-fetched after the
+                // re-upload has rewritten it.
+                noteEncryptedDataKeyReset(during: "pull")
+                quarantine.record(failure.recordName, reason: failure.error.localizedDescription)
+                continue
+            }
             guard Self.isPermanentServerRecordFailure(failure.error) else {
                 retryableCount += 1
                 continue
@@ -810,6 +850,7 @@ public final class CloudKitSyncService {
     ) async throws -> RemoteItemResolution? {
         try requireActive(generation)
         guard let item = ClipboardCloudMapping.item(from: record) else { return nil }
+        let refreshesEncryptedCopy = Self.logEncryptedRefresh(for: record, itemID: item.id)
         if !item.isDeleted,
            let blob = item.syncBlobReference,
            (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL == nil,
@@ -826,14 +867,32 @@ public final class CloudKitSyncService {
             generation: generation
         ) {
         case .notRequired:
-            return .available(item: item, blob: nil, requiresLocalRepush: false)
+            return .available(item: item, blob: nil, requiresLocalRepush: refreshesEncryptedCopy)
         case .available(let blob, let requiresLocalRepush):
             return .available(
                 item: item,
                 blob: blob,
-                requiresLocalRepush: requiresLocalRepush
+                requiresLocalRepush: requiresLocalRepush || refreshesEncryptedCopy
             )
         }
+    }
+
+    /// Reports whether the record's encrypted copy must be rewritten, and says why. A refresh
+    /// keeps `modifiedAt`, so it never looks like a new edit to another device.
+    private nonisolated static func logEncryptedRefresh(for record: CKRecord, itemID: UUID) -> Bool {
+        guard let reason = ClipboardCloudMapping.encryptedRefreshReason(for: record) else { return false }
+        let id = itemID.uuidString
+        switch reason {
+        case .missing:
+            syncLog.info("clip \(id, privacy: .public) has no encrypted copy; scheduling a refresh")
+        case .unreadable:
+            syncLog.info("clip \(id, privacy: .public) has an unreadable encrypted copy; scheduling a refresh")
+        case .stale:
+            syncLog.info("clip \(id, privacy: .public) has a stale encrypted copy; scheduling a refresh")
+        case .tombstoneHoldsContent:
+            syncLog.info("tombstone \(id, privacy: .public) still carries encrypted content; scheduling an erase")
+        }
+        return true
     }
 
     private nonisolated static func localTombstoneDominates(
@@ -934,7 +993,11 @@ public final class CloudKitSyncService {
         if let clipError { throw clipError }
     }
 
-    private func pushLocalClips(store: SyncableStore, generation: UInt64) async throws {
+    private func pushLocalClips(
+        store: SyncableStore,
+        generation: UInt64,
+        replanAfterKeyReset: Bool = true
+    ) async throws {
         try requireActive(generation)
         let local = store.itemsForSync()
         let isReceiptMigration = pushReceipts == nil
@@ -958,6 +1021,13 @@ public final class CloudKitSyncService {
             itemsToPush.filter(\.isDeleted),
             generation: generation
         )
+        if encryptedDataKeyResetPending {
+            // The server copies are gone, so what was planned from the old receipts is stale.
+            try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+            guard replanAfterKeyReset else { throw CloudKitSyncError.encryptedDataKeyReset }
+            try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
+            return
+        }
         let recordsToSave = prepared.records + tombstoneRecords
         guard !recordsToSave.isEmpty else {
             if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
@@ -970,13 +1040,18 @@ public final class CloudKitSyncService {
         var committedReceipts = existingReceipts
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
-        try await savePreparedRecords(recordsToSave, generation: generation) { batch in
-            let canonicalItemIDs = Set(store.itemsForSync().map(\.id))
-            committedReceipts = committedReceipts.filter { canonicalItemIDs.contains($0.key) }
-            for pushed in batch where canonicalItemIDs.contains(pushed.itemID) {
-                committedReceipts[pushed.itemID] = pushed.modifiedAt
+        do {
+            try await savePreparedRecords(recordsToSave, generation: generation) { batch in
+                let canonicalItemIDs = Set(store.itemsForSync().map(\.id))
+                committedReceipts = committedReceipts.filter { canonicalItemIDs.contains($0.key) }
+                for pushed in batch where canonicalItemIDs.contains(pushed.itemID) {
+                    committedReceipts[pushed.itemID] = pushed.modifiedAt
+                }
+                try persistPushReceipts(committedReceipts, generation: generation)
             }
-            try persistPushReceipts(committedReceipts, generation: generation)
+        } catch CloudKitSyncError.encryptedDataKeyReset where replanAfterKeyReset {
+            // Recovery has already emptied the receipts; one more pass uploads every clip.
+            try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
         }
     }
 
@@ -997,6 +1072,9 @@ public final class CloudKitSyncService {
         for batch in itemsByRecordName.keys.sorted().chunked(into: 100) {
             let fetched = try await database.fetchRecords(for: batch, in: zoneID)
             try requireActive(generation)
+            if fetched.encryptedDataKeyWasReset {
+                noteEncryptedDataKeyReset(during: "tombstone preparation")
+            }
             let serverRecords = Dictionary(
                 fetched.records.map { ($0.recordID.recordName, $0) },
                 uniquingKeysWith: { first, _ in first }
@@ -1150,13 +1228,68 @@ public final class CloudKitSyncService {
         afterBatch: ([PreparedPushRecord]) throws -> Void = { _ in }
     ) async throws {
         for batch in records.chunked(into: 100) {
-            let result = try await database.saveRecords(batch.map(\.record))
+            let result: CloudKitRecordSaveResult
+            do {
+                result = try await database.saveRecords(batch.map(\.record))
+            } catch {
+                try requireActive(generation)
+                if CloudKitEncryptedDataKeyReset.isReset(error) {
+                    noteEncryptedDataKeyReset(during: "push")
+                    try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                    throw CloudKitSyncError.encryptedDataKeyReset
+                }
+                throw error
+            }
             try requireActive(generation)
             guard result.failedRecordNames.isEmpty else {
+                if result.encryptedDataKeyWasReset {
+                    noteEncryptedDataKeyReset(during: "push")
+                    try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                    throw CloudKitSyncError.encryptedDataKeyReset
+                }
                 throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count)
             }
             try afterBatch(batch)
         }
+    }
+
+    // MARK: - Encrypted data key reset
+
+    /// The one place every CloudKit surface reports a reset of the user's encrypted-data key.
+    /// Recovery itself runs at a point where it cannot disturb a half-applied pull or push.
+    private func noteEncryptedDataKeyReset(during phase: String) {
+        syncLog.error("iCloud reported a reset encrypted-data key during \(phase, privacy: .public)")
+        encryptedDataKeyResetPending = true
+    }
+
+    /// The reset removed the zone on the server. Re-create it and forget every acknowledgement and
+    /// the change token, so the push that follows uploads each local clip again with a fresh
+    /// encrypted copy. Local clips are never deleted because of this error.
+    private func recoverFromEncryptedDataKeyResetIfPending(generation: UInt64) async throws {
+        try requireActive(generation)
+        guard encryptedDataKeyResetPending else { return }
+        encryptedDataKeyResetPending = false
+        syncLog.info("recovering from a reset encrypted-data key: re-creating the zone and re-uploading local clips")
+        try invalidateAllPushReceipts(generation: generation)
+        try persistToken(nil, generation: generation)
+        changeToken = nil
+        try await ensureZone()
+        try requireActive(generation)
+    }
+
+    // MARK: - Encrypted copy backfill
+
+    /// Clips synced before this build have no encrypted copy and keep a matching push receipt, so
+    /// nothing would ever re-upload them. Dropping the receipts once makes the regular, batched and
+    /// resumable push upload every clip again. Invalidating before setting the marker means a crash
+    /// between the two repeats the invalidation rather than skipping the backfill.
+    private func scheduleEncryptedCopyBackfillIfNeeded(generation: UInt64) throws {
+        try requireActive(generation)
+        guard !defaults.bool(forKey: encryptedCopyBackfillKey) else { return }
+        syncLog.info("scheduling a one-time upload of encrypted copies for existing clips")
+        try invalidateAllPushReceipts(generation: generation)
+        defaults.set(true, forKey: encryptedCopyBackfillKey)
+        syncLog.info("encrypted copy backfill marker persisted")
     }
 
     nonisolated static func itemsNeedingPush(

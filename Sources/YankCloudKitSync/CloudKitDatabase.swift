@@ -35,10 +35,34 @@ struct CloudKitRecordFailure {
 struct CloudKitFetchedRecords {
     var records: [CKRecord] = []
     var permanentlyMissingRecordNames: Set<String> = []
+    /// At least one record failed because the user reset their encrypted-data key.
+    var encryptedDataKeyWasReset = false
 }
 
 struct CloudKitRecordSaveResult {
     var failedRecordNames: [String] = []
+    /// At least one record failed because the user reset their encrypted-data key.
+    var encryptedDataKeyWasReset = false
+}
+
+/// CloudKit reports a reset of the user's encrypted-data key as a `zoneNotFound` error whose
+/// `userInfo` carries `CKErrorUserDidResetEncryptedDataKey`; there is no error code of its own.
+/// The zone and everything in it is gone on the server, so recovery is re-creating the zone and
+/// uploading from local history.
+enum CloudKitEncryptedDataKeyReset {
+    static func isReset(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == CKError.errorDomain else { return false }
+        if nsError.code == CKError.Code.zoneNotFound.rawValue,
+           (nsError.userInfo[CKErrorUserDidResetEncryptedDataKey] as? NSNumber)?.boolValue == true {
+            return true
+        }
+        guard nsError.code == CKError.Code.partialFailure.rawValue,
+              let itemErrors = nsError.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: any Error] else {
+            return false
+        }
+        return itemErrors.values.contains { isReset($0) }
+    }
 }
 
 /// Outcome of a conditional (`.ifServerRecordUnchanged`) save. `conflict` means the server's
@@ -150,6 +174,8 @@ extension CKDatabase: CloudKitDatabase {
                 fetched.records.append(record)
             case .failure(let error) where Self.isUnknownItemError(error):
                 fetched.permanentlyMissingRecordNames.insert(recordID.recordName)
+            case .failure(let error) where CloudKitEncryptedDataKeyReset.isReset(error):
+                fetched.encryptedDataKeyWasReset = true
             case .failure:
                 // Transient: the record stays quarantined and a later pull re-attempts it.
                 continue
@@ -192,10 +218,17 @@ extension CKDatabase: CloudKitDatabase {
             if case .failure = result { return recordID.recordName }
             return nil
         })
+        let encryptedDataKeyWasReset = results.saveResults.values.contains { result in
+            if case .failure(let error) = result { return CloudKitEncryptedDataKeyReset.isReset(error) }
+            return false
+        }
         let requestedRecordNames = Set(records.map(\.recordID.recordName))
         let returnedRecordNames = Set(results.saveResults.keys.map(\.recordName))
         failedRecordNames.formUnion(requestedRecordNames.subtracting(returnedRecordNames))
-        return CloudKitRecordSaveResult(failedRecordNames: failedRecordNames.sorted())
+        return CloudKitRecordSaveResult(
+            failedRecordNames: failedRecordNames.sorted(),
+            encryptedDataKeyWasReset: encryptedDataKeyWasReset
+        )
     }
 
     func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome {
