@@ -40,6 +40,16 @@ struct HistoryContentView: View {
     @State var searchText = ""
     @State var selectedIndex = 0
     @State var scrollTrigger = false
+    /// Open steps still owed to the next key event after a real open. Regaining key focus
+    /// without a new open leaves it empty, so the selection and scroll position stay put.
+    @State var pendingOpenSteps: Set<OpenStep> = []
+
+    /// Each receiver of the key event consumes only its own step, so handler order never matters.
+    enum OpenStep: Hashable {
+        case selectDefault
+        case scrollStream
+        case scrollSplitRail
+    }
 
     @State var selectedIDs: Set<UUID> = []
     @State var selectionAnchor: UUID?
@@ -281,6 +291,8 @@ struct HistoryContentView: View {
             searchText = ""
             searchTextDebounced = ""
             activeTagFilter = nil
+            // Only the layout on screen consumes its scroll step, so a hidden one cannot go stale.
+            pendingOpenSteps = [.selectDefault, viewMode == .split ? .scrollSplitRail : .scrollStream]
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
             axPermission?.refresh()
@@ -289,9 +301,11 @@ struct HistoryContentView: View {
             showTagAutocomplete = false
             showQuickLook = false
             detail.cancelTagInput()
-            let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
-            scrollTrigger = false
-            updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
+            if pendingOpenSteps.remove(.selectDefault) != nil {
+                let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
+                scrollTrigger = false
+                updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
+            }
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(50))
                 isSearchFocused = true

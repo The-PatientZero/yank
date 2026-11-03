@@ -34,6 +34,7 @@ extension HistoryContentView {
                 scrollTrigger = false
             }
             .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
+                guard pendingOpenSteps.remove(.scrollStream) != nil else { return }
                 scrollToOpeningPosition(using: proxy)
             }
             .onChange(of: viewMode) { _, _ in
@@ -297,6 +298,7 @@ extension HistoryContentView {
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
+                    guard pendingOpenSteps.remove(.scrollSplitRail) != nil else { return }
                     scrollToOpeningPosition(using: proxy)
                 }
             }
