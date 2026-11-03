@@ -22,6 +22,9 @@ struct StatusMenuView: View {
     let onIgnoreNextCopy: () -> Void
     let onFixShortcut: () -> Void
     let onSettings: () -> Void
+    let sync: HubSyncSummary
+    let onSyncNow: () -> Void
+    let onSyncOpenSettings: () -> Void
     let onUpdateAction: (UpdateMenuActionID) -> Void
     let onClear: () -> Void
     let onRestart: () -> Void
@@ -35,7 +38,7 @@ struct StatusMenuView: View {
     enum Row: Int, CaseIterable, Hashable {
         case openQuickPicker, openHistory, pasteSequence, repeatPasteSequence
         case togglePause, ignoreNextCopy
-        case fixShortcut, settings, update, restart, quit, clear
+        case fixShortcut, syncAction, syncNow, settings, update, restart, quit, clear
     }
 
     @FocusState private var focused: Row?
@@ -55,7 +58,13 @@ struct StatusMenuView: View {
             }
             .padding(.horizontal, Space.lg)
             .padding(.top, Space.lg)
-            .padding(.bottom, Space.md)
+            .padding(.bottom, sync.isActive ? Space.xs : Space.md)
+
+            if sync.isActive {
+                syncStatusLine
+                    .padding(.horizontal, Space.lg)
+                    .padding(.bottom, Space.md)
+            }
 
             hairline
             MenuRow(icon: "list.bullet.rectangle.portrait", title: "Quick picker",
@@ -97,6 +106,19 @@ struct StatusMenuView: View {
                         destructive: true,
                         row: .fixShortcut, focused: $focused,
                         pointerIsLastInput: $pointerIsLastInput, action: onFixShortcut)
+            }
+            if sync.isActive {
+                if sync.offersOpenSettings {
+                    MenuRow(icon: "gearshape", title: SyncCopy.openSettingsTitle,
+                            row: .syncAction, focused: $focused,
+                            pointerIsLastInput: $pointerIsLastInput, action: onSyncOpenSettings)
+                }
+                MenuRow(icon: SyncCopy.Symbol.syncing,
+                        title: syncNowTitle,
+                        disabled: sync.isSyncing,
+                        working: sync.isSyncing,
+                        row: .syncNow, focused: $focused,
+                        pointerIsLastInput: $pointerIsLastInput, action: onSyncNow)
             }
             hairline
             MenuRow(icon: "slider.horizontal.3", title: "Settings",
@@ -156,14 +178,18 @@ struct StatusMenuView: View {
         Self.orderedRows(
             canRepeatPasteSequence: isPasteSequenceActive && canRepeatPasteSequence,
             hotkeyUnavailable: hotkeyUnavailable,
-            updateAction: updateMenu.action
+            updateAction: updateMenu.action,
+            syncAction: sync.isActive && sync.offersOpenSettings,
+            syncNow: sync.isActive && !sync.isSyncing
         )
     }
 
     static func orderedRows(
         canRepeatPasteSequence: Bool = false,
         hotkeyUnavailable: Bool,
-        updateAction: UpdateMenuActionID?
+        updateAction: UpdateMenuActionID?,
+        syncAction: Bool = false,
+        syncNow: Bool = false
     ) -> [Row] {
         var rows: [Row] = [.openQuickPicker, .openHistory, .pasteSequence]
         if canRepeatPasteSequence {
@@ -171,11 +197,59 @@ struct StatusMenuView: View {
         }
         rows.append(contentsOf: [.togglePause, .ignoreNextCopy])
         if hotkeyUnavailable { rows.append(.fixShortcut) }
+        if syncAction { rows.append(.syncAction) }
+        if syncNow { rows.append(.syncNow) }
         rows.append(.settings)
         if updateAction != nil { rows.append(.update) }
         rows.append(contentsOf: [.restart, .quit, .clear])
         return rows
     }
+
+    private var syncNowTitle: String {
+        sync.isFailed ? SyncCopy.tryAgain : SyncCopy.syncNow
+    }
+
+    /// The state in plain words, with the time kept live while the menu stays open.
+    private var syncStatusLine: some View {
+        TimelineView(.periodic(from: .now, by: Self.syncClockInterval)) { context in
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                switch sync.status {
+                case .syncing:
+                    Label(SyncCopy.syncingHeadline, systemImage: SyncCopy.Symbol.syncing)
+                        .foregroundColor(.secondary)
+                case .healthy(let lastSynced):
+                    Label(SyncCopy.syncedText(lastSynced: lastSynced, now: context.date),
+                          systemImage: SyncCopy.Symbol.synced)
+                        .foregroundColor(.yankSuccess)
+                case .failed(let message):
+                    Label(SyncCopy.problemHeadline, systemImage: SyncCopy.Symbol.problem)
+                        .foregroundColor(.yankDanger)
+                    Text(message)
+                        .font(.system(size: TypeScale.micro))
+                        .foregroundColor(.yankTextTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let hint = SyncCopy.pathHint(for: sync.failureKind) {
+                        Text(hint)
+                            .font(.system(size: TypeScale.micro))
+                            .foregroundColor(.yankTextTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                case .localOnly:
+                    EmptyView()
+                }
+                if sync.waitingCount > 0 {
+                    Label(SyncCopy.waitingCount(sync.waitingCount), systemImage: SyncCopy.Symbol.problem)
+                        .foregroundColor(.yankDanger)
+                }
+            }
+            .font(.system(size: TypeScale.caption))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// How often the "Synced 5 minutes ago" text is recomputed while the menu is open.
+    private static let syncClockInterval: TimeInterval = 30
 
     private func performUpdateAction() {
         guard let action = updateMenu.action else { return }

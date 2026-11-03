@@ -40,6 +40,7 @@ Before a public iOS build or release candidate, run the physical-device matrix i
 | `iOS/YankApp.swift` | App entry; starts sync and Spotlight indexing when available |
 | `iOS/HistoryView.swift` | Browse/search synced clips, tap to open details, batch actions |
 | `iOS/ClipStore.swift` | iOS store backed by App Group JSON, conforms to `SyncableStore` |
+| `iOS/WaitingClipsView.swift` | Lists clips that cannot upload yet, with keep-on-this-iPhone and delete |
 | `iOS/KeyboardViewController.swift` | Keyboard extension for inserting recent clips |
 | `iOS/ShareViewController.swift` | Share extension for capturing shared text, URLs, and images |
 | `iOS/CaptureClipIntent.swift` | App Intent for Shortcuts, Action Button, and Back Tap flows |

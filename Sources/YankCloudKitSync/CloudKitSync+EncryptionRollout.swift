@@ -131,7 +131,11 @@ extension CloudKitSyncService {
                 }
             }
         }
-        return PreparedPushRecords(records: records, skippedItemIDs: fresh.skippedItemIDs)
+        return PreparedPushRecords(
+            records: records,
+            skippedItemIDs: fresh.skippedItemIDs,
+            skippedClips: fresh.skippedClips
+        )
     }
 
     // MARK: - Upgrade: repair blank clips
@@ -325,7 +329,7 @@ extension CloudKitSyncService {
         )
         let result = try await database.saveRecords([record])
         guard result.failedRecordNames.isEmpty else {
-            throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count)
+            throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count, result.failure)
         }
         if existing == nil {
             syncLog.info("published encryption device record \(deviceID, privacy: .public)")

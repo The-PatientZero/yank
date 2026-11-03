@@ -46,6 +46,12 @@ final class ClipboardStore {
 
     var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
 
+    /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
+    var syncFailureKind: SyncFailureKind?
+
+    /// Clips the last push could not prepare for upload. Read through `visibleWaitingClips`.
+    var waitingClips: [SyncWaitingClip] = []
+
     /// How far the move to end-to-end encrypted clip content has come; nil until sync reports it.
     var encryptionStatus: SyncEncryptionStatus?
 
@@ -404,3 +410,4 @@ final class ClipboardStore {
 
 extension ClipboardStore: SyncableStore {}
 extension ClipboardStore: SyncEncryptionStatusReporting {}
+extension ClipboardStore: SyncIssueReporting {}

@@ -25,6 +25,7 @@ struct HistoryView: View {
     var settings: IOSSettings
     var iCloudSignedOut: Bool = false
     var onRetrySync: (() async -> Void)? = nil
+    var onKeepLocalOnly: (([UUID]) -> Void)? = nil
     /// Bumped by the app each time it returns from the background; resets search, filter and scroll.
     var openRequest = 0
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -159,7 +160,12 @@ struct HistoryView: View {
         .animation(IOSMotion.state(reduceMotion), value: activeTag)
         .animation(IOSMotion.state(reduceMotion), value: openItem?.id)
         .sheet(isPresented: $showSettings) {
-            SettingsView(store: store, settings: settings)
+            SettingsView(
+                store: store,
+                settings: settings,
+                onRetrySync: onRetrySync,
+                onKeepLocalOnly: onKeepLocalOnly
+            )
         }
         .sheet(isPresented: $showShare) { ShareSheet(items: shareItems) }
         .sensoryFeedback(.success, trigger: successPulse)
@@ -288,12 +294,19 @@ struct HistoryView: View {
 
     private var syncPausedStrip: some View {
         HStack(spacing: Space.md) {
-            Label("Sync paused", systemImage: "exclamationmark.icloud")
-                .font(.yank(.caption))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                Label(SyncCopy.problemHeadline, systemImage: "exclamationmark.icloud")
+                    .font(.yank(.caption, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if case .failed(let message) = store.syncStatus {
+                    Text(message)
+                        .font(.yank(.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 0)
             if let onRetrySync {
-                Button("Retry") {
+                Button(SyncCopy.tryAgain) {
                     Task { await onRetrySync() }
                 }
                 .font(.yank(.caption, weight: .semibold))

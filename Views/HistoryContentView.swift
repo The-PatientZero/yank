@@ -164,6 +164,8 @@ struct HistoryContentView: View {
                     store: store,
                     axPermission: axPermission,
                     appStatus: appStatus,
+                    onDeleteClip: { deleteClipWithUndo($0) },
+                    onUndoDelete: { _ = undoPendingDelete() },
                     manager: settings
                 )
                     .transition(screenTransition(edge: .trailing))

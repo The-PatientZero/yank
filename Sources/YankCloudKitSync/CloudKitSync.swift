@@ -13,7 +13,7 @@ let syncLog = Logger(subsystem: "com.thepatientzero.yank", category: "sync")
 enum CloudKitSyncError: LocalizedError {
     case missingBlobAsset(String)
     case partialRecordFailures(Int)
-    case partialRecordSaves(Int)
+    case partialRecordSaves(Int, SyncFailure? = nil)
     case unrecoverableLocalRecords(Int)
     case backfillDidNotConverge(Int)
     case pushReceiptEncodingFailed
@@ -27,7 +27,7 @@ enum CloudKitSyncError: LocalizedError {
             "Synced blob \(filename) is missing from CloudKit. Sync will retry."
         case .partialRecordFailures(let count):
             "CloudKit could not return \(count) changed record(s). Sync will retry."
-        case .partialRecordSaves(let count):
+        case .partialRecordSaves(let count, _):
             "CloudKit could not save \(count) record(s). Sync will retry."
         case .unrecoverableLocalRecords(let count):
             "Backfill stopped before upload because \(count) local record(s) are missing required blob data."
@@ -42,6 +42,13 @@ enum CloudKitSyncError: LocalizedError {
         case .encryptedDataKeyReset:
             "iCloud's encrypted data key was reset. Yank is uploading your clips again."
         }
+    }
+
+    /// What the apps show: the classified cause when a save recorded one, otherwise this
+    /// error's own sentence.
+    var failure: SyncFailure {
+        if case .partialRecordSaves(_, let cause?) = self { return cause }
+        return SyncFailure(kind: .other, detail: errorDescription)
     }
 }
 
@@ -78,6 +85,7 @@ public final class CloudKitSyncService {
     private let pullQuarantineKey: String
     let encryptedCopyBackfillKey: String
     private let historyCoverageKey: String
+    private let localOnlyClipsKey: String
     private let pushDebounceNanoseconds: UInt64
     private let pushRetryDelaysNanoseconds: [UInt64]
     private let beforeReceiptPersistence: (() throws -> Void)?
@@ -104,6 +112,8 @@ public final class CloudKitSyncService {
     private var activePush: (id: UUID, task: Task<Void, Error>)?
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
+    /// The clips the last push that got past preparing could not upload.
+    private var waitingClips: [SyncWaitingClip] = []
 
     // Encryption rollout. `rolloutDeviceID` stays nil until the app opts in, which keeps the
     // service dual-writing and silent about devices (the safe default for SwiftPM users).
@@ -163,6 +173,7 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.encryptedCopyBackfill.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.historyCoverage.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.localOnlyClips.\(containerIdentifier)")
         EncryptionRolloutState.reset(containerIdentifier: containerIdentifier, defaults: defaults)
     }
 
@@ -203,6 +214,7 @@ public final class CloudKitSyncService {
         self.pullQuarantineKey = "cloudkit.pullQuarantine.\(containerIdentifier)"
         self.encryptedCopyBackfillKey = "cloudkit.encryptedCopyBackfill.\(containerIdentifier)"
         self.historyCoverageKey = "cloudkit.historyCoverage.\(containerIdentifier)"
+        self.localOnlyClipsKey = "cloudkit.localOnlyClips.\(containerIdentifier)"
         self.pushDebounceNanoseconds = pushDebounceNanoseconds
         self.pushRetryDelaysNanoseconds = pushRetryDelaysNanoseconds
         self.beforeReceiptPersistence = beforeReceiptPersistence
@@ -258,6 +270,50 @@ public final class CloudKitSyncService {
         store?.markSyncUnavailable(reason: reason)
     }
 
+    /// Records a failure on the store as one plain sentence, keeping CloudKit's own text in the
+    /// log for diagnosis. A store that does not adopt `SyncIssueReporting` gets the same sentence
+    /// through `markSyncFailed(_:)`.
+    @discardableResult
+    private func reportFailure(_ error: any Error, during phase: String) -> SyncFailure {
+        let failure = CloudKitSyncFailureClassifier.classify(error)
+        syncLog.error("\(phase, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        if let reporter = store as? any SyncIssueReporting {
+            reporter.markSyncFailure(failure)
+        } else {
+            store?.markSyncFailed(failure.message)
+        }
+        return failure
+    }
+
+    private func reportWaitingClips(_ clips: [SyncWaitingClip]) {
+        waitingClips = clips
+        (store as? any SyncIssueReporting)?.markClipsWaiting(clips)
+    }
+
+    /// Stops waiting for these clips: they stay on this device and are not uploaded unless they
+    /// are edited. Meant for clips listed as waiting; ids that are not live clips are ignored.
+    public func keepLocalOnly(clipIDs: [UUID]) {
+        guard let store else { return }
+        let requested = Set(clipIDs)
+        let live = store.itemsForSync().filter { requested.contains($0.id) }
+        var kept = CloudKitLocalOnlyClips.load(from: defaults, key: localOnlyClipsKey)
+        kept.keep(live)
+        kept.persist(to: defaults, key: localOnlyClipsKey)
+        guard !isStopped else { return }
+        reportWaitingClips(waitingClips.filter { !requested.contains($0.id) })
+    }
+
+    /// Clips to leave out of an upload because the user chose to keep them on this device.
+    /// Entries for clips that were edited or removed since lapse here.
+    private func itemsNotKeptLocalOnly(_ items: [ClipboardItem], among local: [ClipboardItem]) -> [ClipboardItem] {
+        var kept = CloudKitLocalOnlyClips.load(from: defaults, key: localOnlyClipsKey)
+        guard !kept.isEmpty else { return items }
+        if kept.prune(against: local) {
+            kept.persist(to: defaults, key: localOnlyClipsKey)
+        }
+        return items.filter { !kept.isKept($0) }
+    }
+
     /// One-shot bring-up: ensure zone + push subscription, pull remote, push local.
     @discardableResult
     public func start() async -> CloudKitSyncStartResult {
@@ -289,17 +345,15 @@ public final class CloudKitSyncService {
             store?.markSyncSucceeded(at: Date())
             return .started
         } catch {
-            let message = error.localizedDescription
             guard shouldReport(error, generation: generation) else {
-                return .failed(message: message)
+                return .failed(message: CloudKitSyncFailureClassifier.classify(error).message)
             }
             // Keep listening even though bring-up failed: local edits must still schedule
             // pushes once the transport recovers.
             try? startObservingLocalChanges(generation: generation)
             try? startObservingSettingsChanges(generation: generation)
-            syncLog.error("start failed: \(message, privacy: .public)")
-            store?.markSyncFailed(message)
-            return .failed(message: message)
+            let failure = reportFailure(error, during: "start")
+            return .failed(message: failure.message)
         }
     }
 
@@ -324,9 +378,10 @@ public final class CloudKitSyncService {
         let localRecordNames = localItems.map { $0.id.uuidString }
         let before = try await fetchRecordPresence(for: localRecordNames, generation: generation)
         try requireActive(generation)
-        let missingItems = localItems.filter {
-            before.missingRecordNames.contains($0.id.uuidString)
-        }
+        let missingItems = itemsNotKeptLocalOnly(
+            localItems.filter { before.missingRecordNames.contains($0.id.uuidString) },
+            among: localItems
+        )
         let prepared = Self.preparePushRecords(missingItems, in: zoneID, policy: plainContentPolicy) { item in
             item.isDeleted ? nil : existingBlobURL(for: item)
         }
@@ -424,10 +479,8 @@ public final class CloudKitSyncService {
             store?.markSyncSucceeded(at: Date())
             return true
         } catch {
-            let message = error.localizedDescription
             guard shouldReport(error, generation: generation) else { return false }
-            syncLog.error("remote pull failed: \(message, privacy: .public)")
-            store?.markSyncFailed(message)
+            reportFailure(error, during: "remote pull")
             return false
         }
     }
@@ -449,9 +502,7 @@ public final class CloudKitSyncService {
                 self.store?.markSyncSucceeded(at: Date())
             } catch {
                 guard let self, self.shouldReport(error, generation: generation) else { return }
-                let message = error.localizedDescription
-                syncLog.error("local push failed: \(message, privacy: .public)")
-                self.store?.markSyncFailed(message)
+                self.reportFailure(error, during: "local push")
                 self.schedulePushRetry(after: error, generation: generation)
             }
         }
@@ -485,9 +536,7 @@ public final class CloudKitSyncService {
                 self.store?.markSyncSucceeded(at: Date())
             } catch {
                 guard let self, self.shouldReport(error, generation: generation) else { return }
-                let message = error.localizedDescription
-                syncLog.error("local push retry failed: \(message, privacy: .public)")
-                self.store?.markSyncFailed(message)
+                self.reportFailure(error, during: "local push retry")
                 self.schedulePushRetry(after: error, generation: generation)
             }
         }
@@ -1058,7 +1107,7 @@ public final class CloudKitSyncService {
         cloudKitErrorCode(of: error) == .changeTokenExpired
     }
 
-    private nonisolated static func cloudKitErrorCode(of error: any Error) -> CKError.Code? {
+    nonisolated static func cloudKitErrorCode(of error: any Error) -> CKError.Code? {
         if let cloudKitError = error as? CKError {
             return cloudKitError.code
         }
@@ -1158,6 +1207,7 @@ public final class CloudKitSyncService {
             // was removed; uploading it would overwrite the good encrypted copy for every device.
             itemsToPush = itemsToPush.filter { !isBlankReceivedTextClip($0) }
         }
+        itemsToPush = itemsNotKeptLocalOnly(itemsToPush, among: local)
         let currentItemIDs = Set(local.map(\.id))
         let garbageCollectedReceipts = existingReceipts.filter { currentItemIDs.contains($0.key) }
 
@@ -1172,6 +1222,11 @@ public final class CloudKitSyncService {
         // later push replays it once the local state is repaired.
         for skippedID in prepared.skippedItemIDs {
             syncLog.error("skipping clip with invalid sync blob metadata: \(skippedID.uuidString, privacy: .public)")
+        }
+        // Reported on every push that gets this far, including with nothing waiting, which is
+        // how the list clears. A stopped or replaced service must not write a stale list.
+        if canMutate(generation) {
+            reportWaitingClips(prepared.skippedClips)
         }
         let tombstoneRecords = try await prepareTombstonePushRecords(
             itemsToPush.filter(\.isDeleted),
@@ -1410,7 +1465,7 @@ public final class CloudKitSyncService {
                     try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
                     throw CloudKitSyncError.encryptedDataKeyReset
                 }
-                throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count)
+                throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count, result.failure)
             }
             try afterBatch(batch)
         }
@@ -1472,6 +1527,8 @@ public final class CloudKitSyncService {
     struct PreparedPushRecords {
         let records: [PreparedPushRecord]
         let skippedItemIDs: [UUID]
+        /// The same clips as `skippedItemIDs`, with why each one cannot be uploaded.
+        var skippedClips: [SyncWaitingClip] = []
     }
 
     nonisolated static func preparePushRecords(
@@ -1482,12 +1539,14 @@ public final class CloudKitSyncService {
     ) -> PreparedPushRecords {
         var records: [PreparedPushRecord] = []
         var skippedItemIDs: [UUID] = []
+        var skippedClips: [SyncWaitingClip] = []
         records.reserveCapacity(items.count)
 
         for item in items {
             let itemBlobURL = item.isDeleted ? nil : blobURL(item)
             if !item.isDeleted, item.syncBlobReference != nil, itemBlobURL == nil {
                 skippedItemIDs.append(item.id)
+                skippedClips.append(SyncWaitingClip(id: item.id, reason: .contentFileMissing))
                 continue
             }
             guard let record = ClipboardCloudMapping.record(
@@ -1497,12 +1556,13 @@ public final class CloudKitSyncService {
                 policy: policy
             ) else {
                 skippedItemIDs.append(item.id)
+                skippedClips.append(SyncWaitingClip(id: item.id, reason: .contentInvalid))
                 continue
             }
             records.append(PreparedPushRecord(itemID: item.id, record: record, modifiedAt: item.modifiedAt))
         }
 
-        return PreparedPushRecords(records: records, skippedItemIDs: skippedItemIDs)
+        return PreparedPushRecords(records: records, skippedItemIDs: skippedItemIDs, skippedClips: skippedClips)
     }
 
     func existingBlobURL(for item: ClipboardItem) -> URL? {

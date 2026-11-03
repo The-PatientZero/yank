@@ -16,6 +16,9 @@ struct SettingsView: View {
     var store: ClipboardStore? = nil
     var axPermission: AccessibilityPermission? = nil
     var appStatus: AppStatus? = nil
+    /// Deletes a clip with the history window's undo window; Settings has no banner of its own.
+    var onDeleteClip: ((ClipboardItem) -> Void)? = nil
+    var onUndoDelete: (() -> Void)? = nil
 
     var manager: SettingsManager = .shared
     @State var isRecording = false
