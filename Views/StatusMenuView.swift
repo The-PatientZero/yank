@@ -39,6 +39,9 @@ struct StatusMenuView: View {
     }
 
     @FocusState private var focused: Row?
+    /// True while the pointer, not the keyboard, last drove the menu. The focus ring is hidden
+    /// then, so the hovered row is the only cue and the initially focused row stays quiet.
+    @State private var pointerIsLastInput = false
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
@@ -57,49 +60,60 @@ struct StatusMenuView: View {
             hairline
             MenuRow(icon: "list.bullet.rectangle.portrait", title: "Quick picker",
                     trailing: shortcutOpenTarget == .quickPicker ? shortcut : "",
-                    row: .openQuickPicker, focused: $focused, action: onOpenQuickPicker)
+                    row: .openQuickPicker, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onOpenQuickPicker)
             MenuRow(icon: "tray.full", title: "Full history",
                     trailing: shortcutOpenTarget == .fullHistory ? shortcut : "",
-                    row: .openHistory, focused: $focused, action: onOpenHistory)
+                    row: .openHistory, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onOpenHistory)
             MenuRow(icon: isPasteSequenceActive ? "xmark.circle" : "list.number",
                     title: isPasteSequenceActive ? "Cancel Paste Sequence" : "Start Paste Sequence",
                     trailing: isPasteSequenceActive ? "\(pasteSequenceItemCount)" : "",
                     active: isPasteSequenceActive,
-                    row: .pasteSequence, focused: $focused, action: onTogglePasteSequence)
+                    row: .pasteSequence, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onTogglePasteSequence)
             if isPasteSequenceActive && canRepeatPasteSequence {
                 MenuRow(
                     icon: "arrow.counterclockwise",
                     title: "Repeat Previous",
                     row: .repeatPasteSequence,
                     focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput,
                     action: onRepeatPasteSequence
                 )
             }
             MenuRow(icon: isPaused ? "play.circle" : "pause.circle",
                     title: isPaused ? "Resume capture" : "Pause capture",
-                    row: .togglePause, focused: $focused, action: onTogglePause)
+                    row: .togglePause, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onTogglePause)
             MenuRow(icon: ignoreNextCopyArmed ? "eye.slash.fill" : "eye.slash",
                     title: ignoreNextCopyArmed ? "Ignoring next copy" : "Ignore next copy",
                     trailing: ignoreNextCopyArmed ? "✓" : "", active: ignoreNextCopyArmed,
-                    row: .ignoreNextCopy, focused: $focused, action: onIgnoreNextCopy)
+                    row: .ignoreNextCopy, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onIgnoreNextCopy)
             if hotkeyUnavailable {
                 MenuRow(icon: "exclamationmark.triangle.fill",
                         title: "Keyboard shortcut unavailable — set a new one in Settings",
                         destructive: true,
-                        row: .fixShortcut, focused: $focused, action: onFixShortcut)
+                        row: .fixShortcut, focused: $focused,
+                        pointerIsLastInput: $pointerIsLastInput, action: onFixShortcut)
             }
             hairline
             MenuRow(icon: "slider.horizontal.3", title: "Settings",
-                    row: .settings, focused: $focused, action: onSettings)
+                    row: .settings, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onSettings)
             updateRow
             hairline
             MenuRow(icon: "arrow.clockwise", title: "Restart Yank",
-                    row: .restart, focused: $focused, action: onRestart)
+                    row: .restart, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onRestart)
             MenuRow(icon: "power", title: "Quit Yank", trailing: "⌘Q",
-                    row: .quit, focused: $focused, action: onQuit)
+                    row: .quit, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onQuit)
             hairline
             MenuRow(icon: "trash", title: "Permanently clear all history", destructive: true,
-                    row: .clear, focused: $focused, action: onClear)
+                    row: .clear, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onClear)
         }
         .padding(.bottom, Space.sm)
         .frame(width: Layout.panelWidth)
@@ -107,12 +121,15 @@ struct StatusMenuView: View {
         .tint(AppTheme.active.foreground)
         // The popover is the key window, so onMoveCommand's responder-chain routing reaches the focused row.
         .onMoveCommand { direction in
+            pointerIsLastInput = false
             switch direction {
             case .up:   focused = step(from: focused, by: -1)
             case .down: focused = step(from: focused, by: +1)
             default:    break
             }
         }
+        // Tab (Full Keyboard Access) moves focus without a move command; keyboard focus shows the ring.
+        .onChange(of: focused) { pointerIsLastInput = false }
         // Land focus on the first row so ↑↓/Return work the moment the menu opens.
         .onAppear { focused = orderedRows.first ?? .openHistory }
     }
@@ -176,6 +193,7 @@ struct StatusMenuView: View {
                 accessibilityHint: updateMenu.accessibilityHint,
                 row: .update,
                 focused: $focused,
+                pointerIsLastInput: $pointerIsLastInput,
                 action: performUpdateAction)
     }
 
@@ -200,6 +218,7 @@ private struct MenuRow: View {
     var accessibilityHint: String = ""
     let row: StatusMenuView.Row
     @FocusState.Binding var focused: StatusMenuView.Row?
+    @Binding var pointerIsLastInput: Bool
     let action: () -> Void
 
     @State private var isHovered = false
@@ -250,8 +269,13 @@ private struct MenuRow: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .focusable(!disabled)
+        // The row draws its own focus ring (`rowFill`); the system ring would double it.
+        .focusEffectDisabled()
         .focused($focused, equals: row)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering { pointerIsLastInput = true }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityHint(accessibilityHint)
         // A pressed state for pointer taps, since `.plain` gives no built-in press cue.
@@ -276,11 +300,12 @@ private struct MenuRow: View {
     @ViewBuilder private var rowFill: some View {
         if disabled {
             Color.clear
-        } else if focused == row {
-            // Keyboard focus needs its own visual cue, distinct from hover, for non-pointer users.
+        } else if focused == row && !pointerIsLastInput {
+            // Keyboard focus needs its own visual cue, distinct from hover, for non-pointer users:
+            // a full-strength accent ring (WCAG 1.4.11 asks 3:1) that hover does not have.
             AppTheme.active.selectionFill
-                .overlay(Rectangle().strokeBorder(AppTheme.active.foreground.opacity(0.5),
-                                                  lineWidth: Hairline.width))
+                .overlay(Rectangle().strokeBorder(AppTheme.active.foreground,
+                                                  lineWidth: Stroke.focusRing))
         } else if isHovered {
             AppTheme.active.selectionFill
         } else {
