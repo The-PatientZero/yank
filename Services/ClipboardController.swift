@@ -64,7 +64,7 @@ final class ClipboardController {
         }
     ) {
         self.dependencies = dependencies
-        self.settingsSyncBridge = SettingsSyncBridge(settings: dependencies.settings)
+        self.settingsSyncBridge = SettingsSyncBridge(settings: dependencies.settings, store: dependencies.store)
         self.accountIdentityProvider = accountIdentityProvider
     }
 
