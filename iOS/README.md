@@ -8,6 +8,8 @@ Paste from Other Apps permission; undecided and explicit-only modes do not inspe
 The Share extension and Save Clipboard App Intent capture only content the user explicitly sends.
 The keyboard is read-only: it inserts a bounded projection of clips already saved by the host app
 and never captures the current clipboard. Concealed and transient generations are not captured.
+When a scene resigns active the app draws a plain cover window above everything else, so the
+app-switcher snapshot holds no clip content.
 
 ## Build
 

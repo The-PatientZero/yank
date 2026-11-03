@@ -123,6 +123,7 @@ targets:
       - iOS/ClipDetailView.swift
       - iOS/ClipPeekView.swift
       - iOS/EmptyStateView.swift
+      - iOS/IOSPrivacyCover.swift
       - iOS/ShareSheet.swift
       - iOS/CaptureClipIntent.swift
       - Shared/SpotlightIndexer.swift

@@ -88,6 +88,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
     private static let cloudContainerID = "iCloud.com.thepatientzero.yank"
     private let syncEnabledProvider: @MainActor () -> Bool
     private let historyFlushCoordinator = IOSHistoryBackgroundFlushCoordinator()
+    private let privacyCover = IOSPrivacyCover()
     /// Wired by the scene once the sync controller exists. A silent push can land before that
     /// happens (launch straight into a background fetch), so assigning the handler drains the
     /// latch below instead of losing that notification until the next trigger.
@@ -117,6 +118,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        privacyCover.startObserving()
         if syncEnabledProvider()
             && CloudContainerProvisioning.isProvisioned(for: Self.cloudContainerID) {
             application.registerForRemoteNotifications()
