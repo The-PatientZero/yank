@@ -37,6 +37,12 @@ enum HistorySnapshotTransaction {
         let fileProtectionRawValue: String?
     }
 
+    /// Every clip, readable or not, is a JSON object with a UUID `id`. Validation requires only
+    /// that, so a history that carries preserved elements still counts as recoverable.
+    private struct ElementWithID: Decodable {
+        let id: UUID
+    }
+
     private struct ValidatedEnvelope {
         let historyData: Data
         let tombstonesData: Data
@@ -53,6 +59,7 @@ enum HistorySnapshotTransaction {
 
     static func makeEnvelopeData(
         items: [ClipboardItem],
+        preservedElements: [HeldHistoryElement] = [],
         tombstones: [UUID: Date],
         writeOptions: Data.WritingOptions,
         filePermissions: Int?,
@@ -64,13 +71,47 @@ enum HistorySnapshotTransaction {
         let envelope = Envelope(
             version: currentVersion,
             transactionID: UUID(),
-            historyData: try JSONEncoder().encode(items),
+            historyData: try encodeHistory(items: items, preservedElements: preservedElements),
             tombstonesData: tombstonesData,
             writeOptionsRawValue: writeOptions.union(.atomic).rawValue,
             filePermissions: filePermissions,
             fileProtectionRawValue: fileProtection?.rawValue
         )
         return try JSONEncoder().encode(envelope)
+    }
+
+    /// Encodes the history list. Preserved elements are spliced in as their original bytes, each
+    /// before the first clip that is older than it (at the end when it has no timestamp), so a
+    /// clip that becomes readable again shows up where its timestamp puts it.
+    private static func encodeHistory(
+        items: [ClipboardItem],
+        preservedElements: [HeldHistoryElement]
+    ) throws -> Data {
+        guard !preservedElements.isEmpty else { return try JSONEncoder().encode(items) }
+
+        var preservedByIndex: [Int: [Data]] = [:]
+        for element in preservedElements {
+            let index = element.timestamp.flatMap { timestamp in
+                items.firstIndex { $0.timestamp < timestamp }
+            } ?? items.count
+            preservedByIndex[index, default: []].append(element.data)
+        }
+
+        var elements: [Data] = []
+        for index in 0...items.count {
+            elements.append(contentsOf: preservedByIndex[index] ?? [])
+            if index < items.count {
+                elements.append(try JSONEncoder().encode(items[index]))
+            }
+        }
+
+        var output = Data("[".utf8)
+        for (position, element) in elements.enumerated() {
+            if position > 0 { output.append(UInt8(ascii: ",")) }
+            output.append(element)
+        }
+        output.append(UInt8(ascii: "]"))
+        return output
     }
 
     static func stage(
@@ -164,7 +205,7 @@ enum HistorySnapshotTransaction {
               writeOptions.isSubset(of: supportedOptions),
               permissionsArePrivate(envelope.filePermissions),
               protectionIsSupported(envelope.fileProtectionRawValue),
-              (try? JSONDecoder().decode([ClipboardItem].self, from: envelope.historyData)) != nil,
+              (try? JSONDecoder().decode([ElementWithID].self, from: envelope.historyData)) != nil,
               (try? TombstoneCodec.decodeStrict(envelope.tombstonesData)) != nil else {
             throw HistorySnapshotTransactionError.invalidEnvelope
         }

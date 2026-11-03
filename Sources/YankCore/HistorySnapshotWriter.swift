@@ -123,6 +123,7 @@ final class HistorySnapshotWriter {
     @discardableResult
     func scheduleSave(
         items: [ClipboardItem],
+        preservedElements: [HeldHistoryElement] = [],
         tombstones: [UUID: Date],
         keyboardProjectionURL: URL? = nil,
         afterSuccessfulWrite: (@Sendable () -> Void)? = nil,
@@ -136,6 +137,7 @@ final class HistorySnapshotWriter {
             id: writeID,
             operation: makeWriteOperation(
                 items: items,
+                preservedElements: preservedElements,
                 tombstones: tombstones,
                 keyboardProjectionURL: keyboardProjectionURL,
                 afterSuccessfulWrite: afterSuccessfulWrite,
@@ -178,6 +180,7 @@ final class HistorySnapshotWriter {
 
     private func makeWriteOperation(
         items: [ClipboardItem],
+        preservedElements: [HeldHistoryElement],
         tombstones: [UUID: Date],
         keyboardProjectionURL: URL?,
         afterSuccessfulWrite: (@Sendable () -> Void)?,
@@ -202,6 +205,7 @@ final class HistorySnapshotWriter {
 
                 let envelopeData = try HistorySnapshotTransaction.makeEnvelopeData(
                     items: items,
+                    preservedElements: preservedElements,
                     tombstones: tombstones,
                     writeOptions: writeOptions,
                     filePermissions: filePermissions,
