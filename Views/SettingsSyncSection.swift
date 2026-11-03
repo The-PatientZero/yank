@@ -99,7 +99,7 @@ extension SettingsView {
                         .font(.system(size: TypeScale.caption, weight: .medium))
                         .foregroundColor(.yankDanger)
                     Button(AccessibilityPermission.Copy.openSettings) {
-                        axPermission.openSettingsAndAwaitGrant()
+                        axPermission.grantAccess()
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: TypeScale.micro))

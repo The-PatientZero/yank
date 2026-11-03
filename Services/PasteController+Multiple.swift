@@ -39,8 +39,9 @@ extension PasteController {
             }
 
             let content = await prepareMultipleContents(of: items, store: store)
-            if axPermission?.isTrusted == false {
-                copyForManualPaste(content, context: context)
+            axPermission?.refresh()
+            if let axPermission, !axPermission.isTrusted {
+                copyForManualPaste(content, context: context, axPermission: axPermission)
                 return
             }
             dispatchMultiple(content, context: context)
@@ -64,9 +65,9 @@ extension PasteController {
         ) else { return }
         context.store.moveToTop(context.items)
 
-        if axPermission?.isTrusted == false {
-            AccessibilityPermission.requestPrompt()
-            showAccessibilityHUD()
+        axPermission?.refresh()
+        if let axPermission, !axPermission.isTrusted {
+            showAccessibilityHUD(axPermission, previousApp: context.previousApp)
             return
         }
 
@@ -76,7 +77,8 @@ extension PasteController {
 
     private static func copyForManualPaste(
         _ content: PreparedMultipleContent,
-        context: MultiplePasteContext
+        context: MultiplePasteContext,
+        axPermission: AccessibilityPermission
     ) {
         guard deferredWriteCoordinator.claim(context.intent, for: context.pasteboard) else {
             removeTempFiles(for: content.imageURLs)
@@ -89,8 +91,7 @@ extension PasteController {
         ) != nil else { return }
 
         context.store.moveToTop(context.items)
-        AccessibilityPermission.requestPrompt()
-        showAccessibilityHUD()
+        showAccessibilityHUD(axPermission, previousApp: context.previousApp)
     }
 
     private static func dispatchMultiple(

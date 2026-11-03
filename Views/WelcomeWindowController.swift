@@ -155,7 +155,7 @@ private struct WelcomeView: View {
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Grant in System Settings →") {
-                        AccessibilityPermission.requestPrompt()
+                        axPermission.grantAccess()
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: TypeScale.caption, weight: .medium))

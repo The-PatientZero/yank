@@ -229,7 +229,7 @@ struct HistoryContentView: View {
                 focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.ocrText != nil,
                 quickLookAvailable: searchText.isEmpty && !detail.showTagInput && selectedItem != nil,
                 axUntrusted: axUntrusted,
-                onGrantAccess: { axPermission?.openSettingsAndAwaitGrant() }
+                onGrantAccess: { axPermission?.grantAccess() }
             )
 
             if let pending = store.pendingDeletion {
