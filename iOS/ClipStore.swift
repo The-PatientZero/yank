@@ -80,6 +80,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
 
     @ObservationIgnored private var historyWritesDisabled = false
     @ObservationIgnored private let appGroupContext: AppGroupContext?
+    /// Keeps history storage out of device backups unless the user opted in; nil without an App Group.
+    @ObservationIgnored private let backupExclusion: BackupExclusion?
     @ObservationIgnored private var isDrainingShareInbox = false
     @ObservationIgnored private var pendingForegroundTextCapture: PendingForegroundTextCapture?
     @ObservationIgnored private var latestHistoryWriteReceipt: HistorySnapshotWriteReceipt?
@@ -98,6 +100,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     }()
 
     nonisolated static let appGroup = AppGroupContext.identifier
+    /// `UserDefaults.standard` flag set at launch when the history file was missing (a fresh or
+    /// restored device) and cleared once the iCloud download position has been dropped. Durable,
+    /// so a launch that finds sync off or iCloud signed out still refills when sync next starts.
+    nonisolated static let pullPositionRestartPendingKey = "yank.pullPositionRestartPending"
     nonisolated private static let historyWriteOptions: Data.WritingOptions = [
         .atomic,
         .completeFileProtectionUntilFirstUserAuthentication
@@ -121,6 +127,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
 
     init(context: AppGroupContext? = AppGroupContext.live()) {
         self.appGroupContext = context
+        self.backupExclusion = context.map(BackupExclusion.init(context:))
         self.blobStore = IOSClipBlobStore(directory: context?.blobsURL)
         guard let context else {
             storageUnavailable = true
@@ -149,6 +156,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
         }
         protectExistingHistoryFiles()
         load()
+        reconcileBackupExclusionInBackground()
         if !historyWritesDisabled {
             sweepOrphanBlobs()
             publishKeyboardProjection()
@@ -753,15 +761,49 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
             historyWritesDisabled = true
             return
         }
+        // Checked before loading, because the loader replays an interrupted write and a write
+        // creates the file. A pending write means the history was here, not restored without it.
+        let fileManager = FileManager.default
+        let historyFileExisted = fileManager.fileExists(atPath: historyURL.path)
+            || fileManager.fileExists(
+                atPath: HistorySnapshotTransaction.transactionURL(for: historyURL).path
+            )
         switch HistorySnapshotLoader.load(historyURL: historyURL, tombstonesURL: tombstonesURL) {
         case .success(let snapshot):
             items = snapshot.items
             tombstones = snapshot.tombstones
+            if !historyFileExisted {
+                markPullPositionRestartPending()
+            }
         case .failure(let error):
             storageUnavailable = true
             historyWritesDisabled = true
             clipStoreLog.error("Failed to load iOS history snapshot: \(error.localizedDescription)")
         }
+    }
+
+    /// A missing history file means a fresh install or a device restored from a backup that left
+    /// history out. The sync position in the always-backed-up preferences may then claim that
+    /// everything was already downloaded, so record that it must be dropped before sync starts,
+    /// and write the empty snapshot so the file exists from now on and this fires only once.
+    private func markPullPositionRestartPending() {
+        UserDefaults.standard.set(true, forKey: Self.pullPositionRestartPendingKey)
+        persist(notify: false)
+    }
+
+    /// Re-applies the backup choice off the main actor, because it creates folders and writes
+    /// file attributes. `BackupExclusion.reconcile()` reads the setting itself when it runs.
+    func reconcileBackupExclusionInBackground() {
+        guard let backupExclusion else { return }
+        Task.detached(priority: .utility) {
+            backupExclusion.reconcile()
+        }
+    }
+
+    /// Hook for the writer queue: files replaced by a write lose their exclusion flag.
+    private var reconcileBackupExclusionAfterWrite: (@Sendable () -> Void)? {
+        guard let backupExclusion else { return nil }
+        return { backupExclusion.reconcile() }
     }
 
     /// Once per launch, after the snapshot loads and before sync or capture can add anything.
@@ -789,6 +831,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
             items: items,
             tombstones: tombstones,
             keyboardProjectionURL: projectionURL,
+            afterSuccessfulWrite: reconcileBackupExclusionAfterWrite,
             onKeyboardProjectionError: { error in
                 clipStoreLog.error("Failed to publish keyboard history: \(error.localizedDescription)")
             }
@@ -835,7 +878,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
                 Task { @MainActor [weak self] in
                     self?.storageUnavailable = true
                 }
-            }
+            },
+            afterWrite: reconcileBackupExclusionAfterWrite
         )
     }
 }

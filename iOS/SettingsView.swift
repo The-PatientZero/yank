@@ -314,10 +314,13 @@ struct SettingsView: View {
             } message: {
                 Text("Removes every clip from this device. With sync on, the clearance propagates to your other devices.")
             }
+            Toggle(isOn: $settings.includeHistoryInBackups) {
+                Label("Include History in Device Backups", systemImage: "externaldrive.badge.icloud")
+            }
         } header: {
             Text("Data")
         } footer: {
-            Text("\(store.items.count) clips on this device.")
+            Text("\(store.items.count) clips on this device. \(SyncCopy.backupFooter(syncEnabled: settings.syncEnabled))")
         }
     }
 
