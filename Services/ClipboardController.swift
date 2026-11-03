@@ -34,6 +34,11 @@ final class ClipboardController {
     private let accountIdentityProvider: () async throws -> String
     private var cloudSyncConfigureTask: (id: UUID, task: Task<Void, Never>)?
     private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
+    /// Whether the current service has completed a full bring-up. Until it has, "Sync now"
+    /// repeats the bring-up; afterwards it only pulls and pushes.
+    private var cloudSyncDidStart = false
+    /// Set by "Sync now" so the next pull reports "Syncing…" itself.
+    private var manualSyncRequested = false
     /// Bounded backoff for a failed `start()` (offline at login, CloudKit throttle). Once
     /// exhausted, recovery falls to the wake/periodic pulls below.
     private let cloudSyncStartRetry = BackoffRetryScheduler(delays: ClipboardController.cloudSyncStartRetryDelays)
@@ -126,6 +131,32 @@ final class ClipboardController {
                                                    object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     self?.configureCloudSync()
+                }
+            }
+        )
+
+        observerTokens.append(
+            NotificationCenter.default.addObserver(forName: .yankSyncNowRequested,
+                                                   object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.syncNow()
+                }
+            }
+        )
+        observerTokens.append(
+            NotificationCenter.default.addObserver(forName: .yankKeepClipsLocalRequested,
+                                                   object: nil, queue: .main) { [weak self] note in
+                let clipIDs = note.userInfo?[SyncNotificationKey.clipIDs] as? [UUID] ?? []
+                Task { @MainActor in
+                    self?.keepClipsLocalOnly(clipIDs)
+                }
+            }
+        )
+        observerTokens.append(
+            NotificationCenter.default.addObserver(forName: .yankSyncStatusChanged,
+                                                   object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateTooltip()
                 }
             }
         )
@@ -234,7 +265,40 @@ final class ClipboardController {
             configureCloudSync()
             return false
         }
-        return await cloudSync.handleRemoteChange()
+        guard manualSyncRequested else { return await cloudSync.handleRemoteChange() }
+        manualSyncRequested = false
+        let previousStatus = store.syncStatus
+        let previousFailureKind = store.syncFailureKind
+        store.markSyncStarted()
+        let succeeded = await cloudSync.handleRemoteChange()
+        // A service stopped mid-pull reports nothing; leave the status as it was before the click.
+        if store.syncStatus == .syncing {
+            store.restoreSyncState(previousStatus, failureKind: previousFailureKind)
+        }
+        return succeeded
+    }
+
+    /// "Sync now" from Settings or the menu. A service that never finished starting repeats its
+    /// bring-up; one that did only pulls and pushes (through the coalescing trigger, so quick
+    /// repeated clicks run one follow-up at most).
+    private func syncNow() {
+        guard dependencies.settings.syncEnabled else { return }
+        guard let cloudSync else {
+            configureCloudSync()
+            return
+        }
+        guard cloudSyncStartTask == nil else { return }
+        guard cloudSyncDidStart else {
+            cloudSyncStartRetry.cancel()
+            startCloudSync(cloudSync)
+            return
+        }
+        manualSyncRequested = true
+        remoteChangeTrigger.trigger()
+    }
+
+    private func keepClipsLocalOnly(_ clipIDs: [UUID]) {
+        cloudSync?.keepLocalOnly(clipIDs: clipIDs)
     }
 
     /// Surface Settings (the recovery path when the menu-bar icon is hidden).
@@ -292,6 +356,7 @@ final class ClipboardController {
             )
             sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: self.store)
             self.cloudSync = sync
+            self.cloudSyncDidStart = false
             NSApp.registerForRemoteNotifications()
             self.startCloudSync(sync)
             self.startCatchUpTriggers()
@@ -309,6 +374,7 @@ final class ClipboardController {
                   self.cloudSyncStartTask?.id == taskID,
                   self.cloudSync === sync else { return }
             self.cloudSyncStartTask = nil
+            if case .started = result { self.cloudSyncDidStart = true }
             if case .failed(let message) = result {
                 Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
                 self.cloudSyncStartRetry.scheduleNext(afterAttempt: retryAttempt) { [weak self, weak sync] in
@@ -358,8 +424,10 @@ final class ClipboardController {
         cloudSyncStartTask = nil
         cloudSyncStartRetry.cancel()
         remoteChangeTrigger.cancel()
+        manualSyncRequested = false
         stopCatchUpTriggers()
         cloudSync = nil
+        cloudSyncDidStart = false
         NSApp.unregisterForRemoteNotifications()
         if let reason {
             store.markSyncUnavailable(reason: reason)
@@ -431,10 +499,22 @@ final class ClipboardController {
         let settings = dependencies.settings
         let shortcut = "\(settings.hotkeyModifiers.displayString)\(keyCodeNames[settings.hotkeyKeyCode] ?? "?")"
         let action = pasteSequenceCoordinator?.isActive == true ? "Paste next" : "Yank"
-        dependencies.hub.setTooltip("\(action) — \(shortcut)\nRight-click for options")
+        dependencies.hub.setTooltip(
+            headline: "\(action) — \(shortcut)",
+            syncProblem: syncSummary.problemLine,
+            hint: "Right-click for options"
+        )
     }
 
     // MARK: - Hub command panel
+
+    private var syncSummary: HubSyncSummary {
+        HubSyncSummary(
+            status: store.syncStatus,
+            failureKind: store.syncFailureKind,
+            waitingCount: store.visibleWaitingClips.count
+        )
+    }
 
     /// Snapshot the clipboard's current state into the panel the hub renders on right-click.
     private func makePrimaryPanel() -> HubPrimaryPanel {
@@ -450,6 +530,7 @@ final class ClipboardController {
             isPasteSequenceActive: pasteSequenceCoordinator?.isActive ?? false,
             pasteSequenceItemCount: pasteSequenceCoordinator?.itemCount ?? 0,
             canRepeatPasteSequence: pasteSequenceCoordinator?.canRepeatPrevious ?? false,
+            sync: syncSummary,
             onOpenQuickPicker: { [weak self] in self?.showQuickPickerWindow(afterDebugPointerSettle: true) },
             onOpenHistory: { [weak self] in self?.showHistoryWindow() },
             onTogglePasteSequence: { [weak self] in self?.pasteSequenceCoordinator?.toggle() },
@@ -460,6 +541,8 @@ final class ClipboardController {
             onIgnoreNextCopy: { [weak self] in self?.clipboardWatcher?.ignoreNextCopy() },
             onFixShortcut: { [weak self] in self?.openSettings() },
             onSettings: { [weak self] in self?.openSettings() },
+            onSyncNow: { [weak self] in self?.syncNow() },
+            onSyncOpenSettings: { SyncSystemSettings.openAppleIDPane() },
             onClear: { [weak self] in self?.clearHistory() }
         )
     }
