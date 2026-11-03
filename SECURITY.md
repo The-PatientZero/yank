@@ -50,7 +50,7 @@ The macOS Developer ID build is intentionally unsandboxed because continuous cli
 
 ### Update Trust Model
 
-The `releases.json` manifest is fetched from the pinned public HTTPS release host and is not separately signed. The manifest is not the trust anchor: each staged app must match the expected SHA-256, bundle ID/version, Developer ID team requirement, and Gatekeeper assessment before install. A tampered manifest can only select a different asset, which then fails staging. The updater also keeps a monotonic version floor — it will not "update" below the highest version ever installed on the machine — so a tampered manifest cannot re-offer a signed-but-older build. A detached manifest signature remains optional future defense-in-depth.
+The `releases.json` manifest is fetched from the pinned public HTTPS release host and is not separately signed. The manifest is not the trust anchor: each staged app must match the expected SHA-256, bundle ID/version, Developer ID team requirement, and Gatekeeper assessment before install. A tampered manifest can only select a different asset, which then fails staging; the updater also refuses any asset link outside the project's own `releases/download/` path on `github.com`, checks the final host before saving anything, and stops an archive download that exceeds 128 MiB. The updater also keeps a monotonic version floor — it will not "update" below the highest version ever installed on the machine — so a tampered manifest cannot re-offer a signed-but-older build. A detached manifest signature remains optional future defense-in-depth.
 
 ### Local Storage
 
