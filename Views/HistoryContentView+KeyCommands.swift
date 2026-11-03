@@ -61,10 +61,11 @@ extension HistoryContentView {
     }
 
     func handleEscapeCommand() {
-        if showQuickLook {
-            dismissQuickLook()
-        } else if detail.showTagInput {
+        if detail.showTagInput {
+            // The field's close handler also closes a peek that was opened only for tagging.
             detail.cancelTagInput()
+        } else if showQuickLook {
+            dismissQuickLook()
         } else if selectedIDs.count > 1 {
             // Collapse multi-selection back to the focused clip before the next Escape dismisses.
             if let id = selectedID { selectSingle(id) }
@@ -143,9 +144,16 @@ extension HistoryContentView {
         updateSelection { $0.reconcile(with: filteredItems) }
     }
 
+    /// Collapses the selection to `item` and shows its tag field: in the detail pane in Split,
+    /// otherwise in the peek card, which closes again together with the field.
     func addTag(to item: ClipboardItem) {
         selectSingle(item.id)
-        beginFocusedTagInput()
+        pendingTagInput = item.id
+        tagRequestToken &+= 1
+        if viewMode != .split, !showQuickLook {
+            tagPeekOwned = true
+            withAnimation(YankMotion.present(reduceMotion)) { showQuickLook = true }
+        }
     }
 
     /// Restores the pending delete, if any. Returns whether there was one to restore.
@@ -215,7 +223,9 @@ extension HistoryContentView {
     }
 
     func beginFocusedTagInput() {
-        if selectedItem != nil { detail.beginAddTag() }
+        if let item = filteredItems.first(where: { $0.id == selectedID }) ?? selectedItem {
+            addTag(to: item)
+        }
     }
 
     @discardableResult

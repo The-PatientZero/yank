@@ -41,8 +41,11 @@ final class ClipDetailModel {
     }
 
     /// Load the preview for the newly focused item (resets transient state first).
-    func load(_ item: ClipboardItem?) async {
+    /// `beginTagInput` opens the tag field in the same step as the reset, before any await, so
+    /// the field exists on the first frame and a slow load can never open it for another clip.
+    func load(_ item: ClipboardItem?, beginTagInput: Bool = false) async {
         reset()
+        showTagInput = beginTagInput
         guard let item = item else { return }
         itemSize = store.itemSize(for: item)
         switch item.type {
