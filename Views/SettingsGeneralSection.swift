@@ -3,6 +3,10 @@ import SwiftUI
 extension SettingsView {
     var generalSection: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
+            if let axPermission, !axPermission.isTrusted {
+                axPermissionRow(axPermission)
+                Divider().overlay(Color.yankHairline)
+            }
             VStack(alignment: .leading, spacing: 0) {
                 toggleRow("Launch at login", "Yank starts quietly when you log in.", isOn: Binding(
                     get: { manager.launchAtLogin },
@@ -250,6 +254,24 @@ extension SettingsView {
             .buttonStyle(.plain)
             .font(.system(size: TypeScale.micro))
             .foregroundColor(AppTheme.active.foreground)
+        }
+    }
+
+    func axPermissionRow(_ axPermission: AccessibilityPermission) -> some View {
+        HStack(spacing: Space.sm) {
+            Image(systemName: "lock.fill").foregroundColor(.yankDanger)
+                .font(.system(size: TypeScale.caption))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(AccessibilityPermission.Copy.accessNeeded)
+                    .font(.system(size: TypeScale.caption, weight: .medium))
+                    .foregroundColor(.yankDanger)
+                Button(AccessibilityPermission.Copy.openSettings) {
+                    axPermission.grantAccess()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: TypeScale.micro))
+                .foregroundColor(AppTheme.active.foreground)
+            }
         }
     }
 

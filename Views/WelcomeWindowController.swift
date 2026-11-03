@@ -16,7 +16,6 @@ final class WelcomeWindowController: NSWindowController {
         window.title = "Welcome to Yank"
         window.isReleasedWhenClosed = false
         window.center()
-        window.level = .floating
         super.init(window: window)
         window.contentView = NSHostingView(
             rootView: WelcomeView(
