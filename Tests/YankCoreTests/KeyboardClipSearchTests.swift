@@ -3,7 +3,7 @@ import Testing
 @testable import YankCore
 
 @Suite struct KeyboardClipSearchTests {
-    @Test func insertableItemsKeepOnlyLiveTextClips() {
+    @Test func listableItemsKeepOnlyLiveTextClips() {
         let text = ClipboardItem(id: clipID(1), type: .text, textContent: "Alpha")
         let image = ClipboardItem(id: clipID(2), type: .image, imageFilename: "image.png")
         let deleted = ClipboardItem(
@@ -13,7 +13,7 @@ import Testing
             deletedAt: Date(timeIntervalSinceReferenceDate: 1)
         )
 
-        let insertable = KeyboardClipSearch.insertableItems(from: [text, image, deleted])
+        let insertable = KeyboardClipSearch.listableItems(from: [text, image, deleted])
 
         #expect(insertable.map(\.id) == [clipID(1)])
     }

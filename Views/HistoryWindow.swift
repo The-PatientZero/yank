@@ -109,6 +109,8 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private let appStatus: AppStatus
     private let anchorFrameProvider: @MainActor () -> NSRect?
     private var previousApp: NSRunningApplication?
+    /// True while Paste as Text loads a clip's full text, so a repeated key press pastes once.
+    private var isLoadingPasteText = false
     private var didBecomeKeyObserver: NSObjectProtocol?
 
     /// Guards the summon-dismiss animation so a `resignKey` (or a paste-triggered close)
@@ -391,13 +393,18 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func pasteItemAsText(_ item: ClipboardItem) {
-        guard let text = item.ocrText ?? item.textContent, !text.isEmpty else { return }
-        let appToRestore = previousApp
-        let ax = axPermission
-        let delay = pasteDelay
-        close()
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            PasteController.pasteText(text, axPermission: ax, previousApp: appToRestore)
+        guard !isLoadingPasteText else { return }
+        isLoadingPasteText = true
+        Task {
+            defer { isLoadingPasteText = false }
+            guard let text = await store.pasteAsTextContent(for: item) else { return }
+            let appToRestore = previousApp
+            let ax = axPermission
+            let delay = pasteDelay
+            close()
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                PasteController.pasteText(text, axPermission: ax, previousApp: appToRestore)
+            }
         }
     }
 

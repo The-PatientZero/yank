@@ -68,7 +68,8 @@ extension ClipStore {
         mutate { ClipboardMutations.removeTag(tag, id: item.id, in: &$0) }
     }
 
-    func setOCRText(_ text: String, for item: ClipboardItem) {
+    func setOCRText(_ text: String?, for item: ClipboardItem) {
+        guard let text, ClipboardItem.isUsableOCRText(text) else { return }
         mutate { ClipboardMutations.setOCRText(text, id: item.id, in: &$0) }
     }
 

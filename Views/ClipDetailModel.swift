@@ -22,12 +22,19 @@ final class ClipDetailModel {
     var previewImage: NSImage?
     var chunkedText = ChunkedTextState()
     var isExtractingText = false
+    /// The clip whose last extraction found no usable text; cleared when focus moves or a new run starts.
+    private(set) var noTextFoundItemID: UUID?
     var itemSize: Int?
     var showTagInput = false
     var tagInputText = ""
 
     private let store: ClipboardStore
     private let previewMaxPixel = 1_200
+    /// Identifies the extraction run whose result may still update the UI; `reset()` invalidates it.
+    private var activeExtractionRun: UUID?
+
+    /// Shown (and announced) when text recognition returns nothing, including when it failed.
+    static let noTextFoundMessage = "Couldn't read any text from this image."
 
     init(store: ClipboardStore) { self.store = store }
 
@@ -35,6 +42,8 @@ final class ClipDetailModel {
         previewImage = nil
         chunkedText = ChunkedTextState()
         isExtractingText = false
+        noTextFoundItemID = nil
+        activeExtractionRun = nil
         itemSize = nil
         showTagInput = false
         tagInputText = ""
@@ -104,10 +113,25 @@ final class ClipDetailModel {
     func extractText(from item: ClipboardItem) async {
         // Convert on the main actor so only the Sendable CGImage crosses to the OCR task.
         guard let cgImage = previewImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        let run = UUID()
+        activeExtractionRun = run
         isExtractingText = true
-        let text = await OCRService.shared.recognizeText(from: cgImage) ?? "No text found in this image."
+        noTextFoundItemID = nil
+        let text = await OCRService.shared.recognizeText(from: cgImage)
+        // Usable text is stored for the clip it was read from even if focus has moved on.
         store.setOCRText(text, for: item)
+        // Focus moving to another clip reset this state already; a late result must not restore it.
+        guard activeExtractionRun == run else { return }
+        activeExtractionRun = nil
         isExtractingText = false
+        if text.map(ClipboardItem.isUsableOCRText) != true {
+            noTextFoundItemID = item.id
+            NSAccessibility.post(
+                element: NSApp as Any,
+                notification: .announcementRequested,
+                userInfo: [.announcement: Self.noTextFoundMessage, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        }
     }
 
     func saveImageToDisk(_ item: ClipboardItem) {

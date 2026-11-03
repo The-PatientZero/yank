@@ -226,7 +226,7 @@ struct HistoryContentView: View {
                 selectionCount: selectedIDs.count,
                 clickToPaste: singleClickPastesInCurrentLayout,
                 hasPendingUndo: store.pendingDeletion != nil,
-                focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.ocrText != nil,
+                focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.recognizedText != nil,
                 quickLookAvailable: searchText.isEmpty && !detail.showTagInput && selectedItem != nil,
                 axUntrusted: axUntrusted,
                 onGrantAccess: { axPermission?.openSettingsAndAwaitGrant() }
