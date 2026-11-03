@@ -17,8 +17,9 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public let id: UUID
     /// Primary content kind used for display, storage, and sync blob routing.
     public let type: ClipboardItemType
-    /// Capture timestamp used for chronological ordering and sectioning.
-    public let timestamp: Date
+    /// Time the clip was last copied or reused, used for chronological ordering, sectioning and retention.
+    /// Only YankCore mutations change it, when a clip is captured again or reused from history.
+    public internal(set) var timestamp: Date
     /// Display name of the app observed during capture, if known.
     public let sourceApp: String?
 

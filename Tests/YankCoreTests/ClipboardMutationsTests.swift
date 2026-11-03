@@ -65,13 +65,16 @@ import Foundation
         #expect(moved)
         #expect(items.map(\.id) == [clipID(3), clipID(1), clipID(2)])
         #expect(items[0].modifiedAt == now)
+        #expect(items[0].timestamp == now)
     }
 
-    @Test func moveToTopOnFrontItemIsNoOp() {
+    @Test func moveToTopOnFrontItemStillRefreshesIt() {
         var items = [item(1), item(2)]
         let moved = ClipboardMutations.moveToTop(clipID(1), in: &items, now: now)
-        #expect(!(moved))
+        #expect(moved)
         #expect(items.map(\.id) == [clipID(1), clipID(2)])
+        #expect(items[0].timestamp == now)
+        #expect(items[0].modifiedAt == now)
     }
 
     @Test func moveSelectionToTopPreservesSelectionOrderAndMutatesOnce() {
@@ -84,16 +87,20 @@ import Foundation
         #expect(items[0].modifiedAt == now)
         #expect(items[1].modifiedAt == now)
         #expect(items[2].modifiedAt == Date(timeIntervalSinceReferenceDate: 100))
+        #expect(items[0].timestamp > items[1].timestamp)
+        #expect(items[1].timestamp > items[2].timestamp)
     }
 
-    @Test func moveSelectionToTopNoOpsWhenOrderAlreadyMatches() {
+    @Test func moveSelectionToTopStillRefreshesWhenOrderAlreadyMatches() {
         var items = [item(1, mod: 100), item(2, mod: 100), item(3, mod: 100)]
 
         let moved = ClipboardMutations.moveToTop([clipID(1), clipID(2)], in: &items, now: now)
 
-        #expect(!moved)
+        #expect(moved)
         #expect(items.map(\.id) == [clipID(1), clipID(2), clipID(3)])
-        #expect(items[0].modifiedAt == Date(timeIntervalSinceReferenceDate: 100))
+        #expect(items[0].modifiedAt == now)
+        #expect(items[0].timestamp == now)
+        #expect(items[1].timestamp < items[0].timestamp)
     }
 
     @Test("Duplicate refresh preserves identity and annotations while adopting the new capture")

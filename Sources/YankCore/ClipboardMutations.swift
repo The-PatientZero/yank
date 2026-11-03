@@ -38,20 +38,27 @@ enum ClipboardMutations {
         update(&items, id: id, now: now) { $0.tags.removeAll { $0 == tag } }
     }
 
-    /// Floats the item to the front (most-recent). Returns whether the order changed,
-    /// so callers can skip a needless persist when it was already on top.
+    /// Spacing between the capture times of clips reused together, so their relative order survives
+    /// a re-sort by capture time.
+    private static let reuseTimestampStep: TimeInterval = 0.01
+
+    /// Reuses a clip: floats it to the front and makes `now` its capture time, so it stays the
+    /// newest clip through sync, sectioning and retention. Reusing the frontmost clip still refreshes
+    /// it. Returns false only when the clip does not exist.
     @discardableResult
     static func moveToTop(_ id: UUID, in items: inout [ClipboardItem], now: Date = Date()) -> Bool {
-        guard let index = items.firstIndex(where: { $0.id == id }), index != 0 else { return false }
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return false }
         var moved = items.remove(at: index)
+        moved.timestamp = now
         moved.modifiedAt = now
         items.insert(moved, at: 0)
         return true
     }
 
-    /// Floats an ordered selection to the front in one mutation: the caller's order first, then
-    /// every other clip in its existing order. Returns false when the order is already identical,
-    /// so stores can skip needless persistence, notifications, and sync churn.
+    /// Reuses an ordered selection in one mutation: the caller's order first, then every other clip
+    /// in its existing order. The first clip gets `now` as its capture time and each following clip
+    /// a slightly earlier one, so the selection keeps its relative order after a re-sort. Returns
+    /// false only when none of the ids exists.
     @discardableResult
     static func moveToTop(_ idsInOrder: [UUID], in items: inout [ClipboardItem], now: Date = Date()) -> Bool {
         guard !idsInOrder.isEmpty else { return false }
@@ -62,21 +69,16 @@ enum ClipboardMutations {
         selected.reserveCapacity(idsInOrder.count)
 
         for id in idsInOrder where seen.insert(id).inserted {
-            if let item = byID[id] {
+            if var item = byID[id] {
+                item.timestamp = now.addingTimeInterval(-Double(selected.count) * reuseTimestampStep)
+                item.modifiedAt = now
                 selected.append(item)
             }
         }
         guard !selected.isEmpty else { return false }
 
         let selectedIDs = Set(selected.map(\.id))
-        let nextIDs = selected.map(\.id) + items.lazy.filter { !selectedIDs.contains($0.id) }.map(\.id)
-        guard nextIDs != items.map(\.id) else { return false }
-
-        var next = selected + items.filter { !selectedIDs.contains($0.id) }
-        for index in next.indices where selectedIDs.contains(next[index].id) {
-            next[index].modifiedAt = now
-        }
-        items = next
+        items = selected + items.filter { !selectedIDs.contains($0.id) }
         return true
     }
 
