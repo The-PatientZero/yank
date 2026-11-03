@@ -54,7 +54,9 @@ The `releases.json` manifest is fetched from the pinned public HTTPS release hos
 
 ### Local Storage
 
-macOS clipboard history (`~/Library/Application Support/Yank/`) is **access-controlled, not encrypted by Yank**: files are written with owner-only POSIX permissions and excluded from backups. Confidentiality at rest relies on the operating system (FileVault) and the user account boundary. Because the Developer ID build is unsandboxed, another process running as the same user could read these files — FileVault and the OS account boundary are the protections, not app-level encryption. On iOS, the shared App-Group container uses the `completeUntilFirstUserAuthentication` data-protection class.
+macOS clipboard history (`~/Library/Application Support/Yank/`) is **access-controlled, not encrypted by Yank**: files are written with owner-only POSIX permissions and Yank excludes them from backups. Confidentiality at rest relies on the operating system (FileVault) and the user account boundary. Because the Developer ID build is unsandboxed, another process running as the same user could read these files — FileVault and the OS account boundary are the protections, not app-level encryption. On iOS, the shared App-Group container uses the `completeUntilFirstUserAuthentication` data-protection class, and Yank does not mark its iOS storage as excluded from backups.
+
+When iCloud sync is enabled, Yank does not add end-to-end encryption to any clip content today. Clip text, tags, OCR text, and the other synced fields are ordinary CloudKit fields in the user's private database; images and large text are CloudKit assets, which Apple's CloudKit documentation says CloudKit encrypts by default. See the [Privacy Policy](PRIVACY.md) for the full list of synced fields.
 
 ### Clipboard Privacy
 
