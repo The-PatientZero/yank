@@ -100,13 +100,18 @@ struct ClipRowView: View {
         return AnyShapeStyle(Color.yankHairline)
     }
 
+    /// Metadata ink: the selected variant when a selection or highlight fill sits behind the text.
+    private var metadataColor: Color {
+        isSelected || isHighlighted ? .yankTextTertiarySelected : .yankTextTertiary
+    }
+
     @ViewBuilder private var metadata: some View {
         if stacksMetadata {
             HStack(spacing: Space.xs) {
                 RichContentBadge(state: item.richContentState, font: .yank(.caption))
                 Text(item.relativeAge)
                     .font(.yank(.caption))
-                    .foregroundStyle(Color.yankTextTertiary)
+                    .foregroundStyle(metadataColor)
                 ClipStatusBadge(item: item, font: .yank(.caption))
             }
         } else {
@@ -115,7 +120,7 @@ struct ClipRowView: View {
                     RichContentBadge(state: item.richContentState, font: .yank(.caption))
                     Text(item.relativeAge)
                         .font(.yank(.caption))
-                        .foregroundStyle(Color.yankTextTertiary)
+                        .foregroundStyle(metadataColor)
                 }
                 ClipStatusBadge(item: item, font: .yank(.caption))
             }

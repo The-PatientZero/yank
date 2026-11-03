@@ -160,17 +160,22 @@ struct ClipTile: View {
 
     // MARK: - Footer
 
+    /// Metadata ink: the selected variant when a selection fill sits behind the text.
+    private var metadataColor: Color {
+        isPrimarySelection || isMultiSelected ? .yankTextTertiarySelected : .yankTextTertiary
+    }
+
     private var footer: some View {
         HStack(spacing: Space.xs) {
             Text(kind.label)
                 .font(.system(size: TypeScale.micro, weight: .medium))
-                .foregroundColor(.yankTextTertiary)
+                .foregroundColor(metadataColor)
             RichContentBadge(state: item.richContentState)
             Spacer(minLength: 0)
             ClipStatusBadge(item: item)
             Text(item.relativeAge)
                 .font(.system(size: TypeScale.micro))
-                .foregroundColor(.yankTextTertiary)
+                .foregroundColor(metadataColor)
         }
     }
 

@@ -326,13 +326,13 @@ private struct QuickPickerRow: View {
                     Text(item.relativeAge)
                 }
                 .font(.system(size: TypeScale.micro))
-                .foregroundColor(.yankTextTertiary)
+                .foregroundColor(isSelected ? .yankTextTertiarySelected : .yankTextTertiary)
 
                 let suggested = item.aiTags.filter { !item.tags.contains($0) }.prefix(2)
                 if !suggested.isEmpty {
                     HStack(spacing: Space.xs) {
                         ForEach(Array(suggested), id: \.self) { tag in
-                            AITagChip(label: tag)
+                            AITagChip(label: tag, onSelection: isSelected)
                         }
                     }
                 }
