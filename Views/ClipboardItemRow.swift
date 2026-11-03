@@ -29,6 +29,12 @@ struct ClipboardItemRow: View {
         return Color.clear
     }
 
+    /// Metadata ink: the selected variant when a selection fill sits behind the text, so the
+    /// small text stays AA-legible; hover keeps the quiet tertiary ink.
+    private var metadataColor: Color {
+        isPrimarySelection || isMultiSelected ? .yankTextTertiarySelected : .yankTextTertiary
+    }
+
     /// Secondary line: the full URL for links, the address/number for email/phone,
     /// otherwise the source app. Derivation is shared with the iOS row via `ClipKind`.
     private var secondaryDetail: String? { kind.secondaryDetail(sourceApp: item.sourceApp) }
@@ -43,7 +49,7 @@ struct ClipboardItemRow: View {
                 if let detail = secondaryDetail {
                     Text(detail)
                         .font(.system(size: TypeScale.micro))
-                        .foregroundColor(.yankTextTertiary)
+                        .foregroundColor(metadataColor)
                         .lineLimit(1)
                         .truncationMode(kind.isLink ? .middle : .tail)
                 }
@@ -68,7 +74,7 @@ struct ClipboardItemRow: View {
                     RichContentBadge(state: item.richContentState)
                     Text(item.relativeAge)
                         .font(.system(size: TypeScale.micro))
-                        .foregroundColor(.yankTextTertiary)
+                        .foregroundColor(metadataColor)
                         .help(item.timestamp.formatted(date: .abbreviated, time: .shortened))
                 }
 

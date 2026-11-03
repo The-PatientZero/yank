@@ -77,9 +77,14 @@ extension Color {
     static let yankBookmark = yankDynamic(light: YankInk.bookmark.light, dark: YankInk.bookmark.dark)
     /// "Large" badge background; pairs with white text (AA in both appearances).
     static let yankOversize = yankDynamic(light: YankInk.oversize.light, dark: YankInk.oversize.dark)
-    /// Tertiary text for quiet metadata/keyboard hints — tuned to ~5:1 contrast so small text
-    /// (10–11pt) stays AA-safe, unlike `.secondary` + opacity.
+    /// Tertiary text for quiet metadata/keyboard hints — verified AA-safe on paper and raised
+    /// only, unlike `.secondary` + opacity. Text on a selection fill uses
+    /// `yankTextTertiarySelected` instead.
     static let yankTextTertiary = yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
+    /// Tertiary text on a selection fill (selected row/tile, size pill) — darker in light
+    /// and lighter in dark so small text stays AA-safe on the tinted background.
+    static let yankTextTertiarySelected = yankDynamic(
+        light: YankInk.textTertiarySelected.light, dark: YankInk.textTertiarySelected.dark)
     /// Code / preview body text — AA-legible ink for monospaced previews and long excerpts;
     /// kept semantic (not `.primary` + opacity) so dark mode contrast holds.
     static let yankCodeText = yankDynamic(light: YankInk.codeText.light, dark: YankInk.codeText.dark)

@@ -121,7 +121,7 @@ struct ClipDetailView: View {
 
                     Text(model.itemSize.map { model.formattedBytes($0) } ?? "—")
                         .font(.system(size: TypeScale.micro))
-                        .foregroundColor(.yankTextTertiary)
+                        .foregroundColor(.yankTextTertiarySelected)
                 }
                 .font(.system(size: TypeScale.caption, weight: .medium))
                 .padding(.horizontal, Space.md)
