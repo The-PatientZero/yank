@@ -194,6 +194,11 @@ extension HistoryContentView {
             // Drag representations are derived per clip kind (text/URL/image); the preview
             // reuses the tile so the drag image matches what's on screen.
             .onDrag({ dragProvider(for: item) }, preview: { dragPreview(for: item) })
+            // After `.onDrag` so pressing a strip button cannot start a drag-out. Split already
+            // has the same buttons in its detail pane.
+            .clipHoverActions(for: item, actions: clipActions(for: item),
+                              alignment: viewMode.isTiled ? .bottomTrailing : .trailing,
+                              isEnabled: viewMode != .split)
             .animation(YankMotion.quick(reduceMotion), value: listHasKeyboardFocus)
             // Mouse-tracking and the global key monitor bypass VoiceOver entirely, so every
             // pointer- or hotkey-only action gets an explicit accessibilityAction here (paste
@@ -223,9 +228,13 @@ extension HistoryContentView {
             .accessibilityAction(named: item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
                 store.toggleBookmark(for: item)
             }
+            .accessibilityAction(named: "Add Tag") {
+                addTag(to: item)
+            }
             .accessibilityAction(named: "Delete") {
                 deleteClipWithUndo(item)
             }
+            .contextMenu { ClipContextMenu(item: item, actions: clipActions(for: item)) }
     }
 
     /// Whether the stream's keyboard-focus ring should show at full strength — see the

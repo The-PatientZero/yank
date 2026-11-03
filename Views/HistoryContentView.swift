@@ -64,6 +64,12 @@ struct HistoryContentView: View {
 
     // Space bar peeks the focused clip.
     @State var showQuickLook = false
+    /// The clip an Add Tag request is waiting to open the tag field for; consumed by the detail load.
+    @State var pendingTagInput: UUID?
+    /// Bumped on every Add Tag request so the detail load re-runs even when nothing else changed.
+    @State var tagRequestToken = 0
+    /// The peek was opened only to show the tag field, so it closes together with the field.
+    @State var tagPeekOwned = false
 
     @State var searchTextDebounced = ""
     @State private var searchDebounceTask: Task<Void, Never>?
@@ -175,7 +181,7 @@ struct HistoryContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in showSettings = false }
     }
 
-    private func setSettings(_ on: Bool) {
+    func setSettings(_ on: Bool) {
         withAnimation(YankMotion.navigation(reduceMotion)) { showSettings = on }
     }
 
@@ -229,7 +235,7 @@ struct HistoryContentView: View {
             if let pending = store.pendingDeletion {
                 UndoDeleteBanner(
                     message: undoMessage(count: pending.items.count),
-                    onUndo: undoPendingDelete
+                    onUndo: { undoPendingDelete() }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -308,6 +314,8 @@ struct HistoryContentView: View {
             store.commitPendingDeleteIfNeeded()
             showTagAutocomplete = false
             showQuickLook = false
+            tagPeekOwned = false
+            pendingTagInput = nil
             detail.cancelTagInput()
             if pendingOpenSteps.remove(.selectDefault) != nil {
                 let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
@@ -320,7 +328,21 @@ struct HistoryContentView: View {
             }
         }
         .task(id: detailLoadKey) {
-            if showQuickLook || viewMode == .split { await detail.load(selectedItem) }
+            let tagRequest = pendingTagInput
+            pendingTagInput = nil
+            guard showQuickLook || viewMode == .split else { return }
+            let item = selectedItem
+            await detail.load(item, beginTagInput: tagRequest != nil && tagRequest == item?.id)
+        }
+        .onChange(of: detail.showTagInput) { _, isOpen in
+            // Every way of closing the field (Return, Esc, Cancel, a suggestion) ends here, so a
+            // peek opened only for tagging goes with it and focus always returns to the search field.
+            guard !isOpen else { return }
+            if tagPeekOwned {
+                dismissQuickLook()
+            } else {
+                isSearchFocused = true
+            }
         }
         .background(GlobalKeyMonitor(handlers: keyboardHandlers))
         .tint(AppTheme.from(id: themeID).foreground)
@@ -339,7 +361,7 @@ struct HistoryContentView: View {
         let quickLook = showQuickLook ? "1" : "0"
         let mode = viewMode.rawValue
         let selection = selectedItem?.id.uuidString ?? ""
-        return quickLook + "-" + mode + "-" + selection
+        return quickLook + "-" + mode + "-" + selection + "-" + String(tagRequestToken)
     }
 
     private var quickLookTransition: AnyTransition {
@@ -350,7 +372,13 @@ struct HistoryContentView: View {
         reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity)
     }
 
+    /// The single way the peek closes: the scrim, the close button, Esc and the tag flow all
+    /// come through here, so the tag field never outlives the peek and search regains focus.
     func dismissQuickLook() {
+        detail.cancelTagInput()
+        pendingTagInput = nil
+        tagPeekOwned = false
+        isSearchFocused = true
         withAnimation(YankMotion.present(reduceMotion)) { showQuickLook = false }
     }
 

@@ -44,6 +44,10 @@ struct ClipDetailView: View {
                 tagSection(for: item)
             }
         }
+        .onAppear {
+            // A tag request can set the flag before this view exists, so `onChange` never sees it.
+            if model.showTagInput { Task { @MainActor in isTagInputFocused = true } }
+        }
         .onChange(of: model.showTagInput) { _, newValue in
             if newValue {
                 Task { @MainActor in isTagInputFocused = true }
