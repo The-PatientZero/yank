@@ -12,6 +12,8 @@ extension ClipboardStore {
 
     private func softDelete(_ toDelete: [ClipboardItem]) {
         commitPendingDeleteIfNeeded()
+        // At enqueue, not at commit: a copy made inside the undo window must not be dropped.
+        resetCaptureSuppression()
         pendingDeletion = PendingDeletion(items: toDelete, enqueuedAt: Date())
         Feedback.emit(.delete)
     }
@@ -87,6 +89,7 @@ extension ClipboardStore {
     }
 
     func clear() {
+        resetCaptureSuppression()
         let result = ClipboardMutations.removeItems(ids: Set(items.map(\.id)), from: items)
         blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)

@@ -25,7 +25,8 @@ final class ClipboardWatcher {
     /// Some apps re-assert pasteboard ownership with byte-identical content (lazy-promise
     /// re-declares, activation rewrites), bumping `changeCount` without a user copy; durable
     /// dedup misses those for rich/image/file captures, so drop repeats of the last-applied content.
-    private var lastContentFingerprint: ClipboardContentFingerprint?
+    /// Plain text is dropped only inside a short window, so deliberate repeat copies still count.
+    private var repeatGuard = ClipboardRepeatGuard()
 
     /// Reports eligible text occurrences before durable-history deduplication.
     var onEligibleTextCopy: ((Int, String, Date) -> Void)?
@@ -329,12 +330,27 @@ private extension ClipboardWatcher {
     private func apply(_ capture: PreparedClipboardCapture) async {
         guard !Task.isCancelled else { return }
 
+        let resetRevision = store.captureResetRevision
+
         switch capture {
         case .fileText(let summary, let fingerprint, let sourceApp, let observedAt):
-            guard markContentFingerprintIfNew(fingerprint) else { return }
-            store.add(
+            guard !isRepeat(
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision,
+                usesWindow: false
+            ) else { return }
+            let saved = store.add(
                 ClipboardItem.text(summary, sourceApp: sourceApp),
                 observedAt: observedAt
+            )
+            recordApplied(
+                saved,
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision
             )
 
         case .text(
@@ -346,24 +362,52 @@ private extension ClipboardWatcher {
             let generation,
             let observedAt
         ):
-            guard markContentFingerprintIfNew(fingerprint) else { return }
+            var isPlainInline = false
+            if case .inline = plan.storage { isPlainInline = archive == nil }
+            guard !isRepeat(
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision,
+                usesWindow: isPlainInline
+            ) else { return }
             onEligibleTextCopy?(generation, originalText, observedAt)
-            await applyTextCapture(
+            let saved = await applyTextCapture(
                 plan,
                 richArchive: archive,
                 sourceApp: sourceApp,
                 observedAt: observedAt
             )
+            recordApplied(
+                saved,
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision
+            )
 
         case .image(let pngData, let fingerprint, let archive, let sourceApp, let observedAt):
-            guard markContentFingerprintIfNew(fingerprint) else { return }
+            guard !isRepeat(
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision,
+                usesWindow: false
+            ) else { return }
             var item = ClipboardItem(type: .image, sourceApp: sourceApp)
             item.hasRichContent = archive != nil
-            await store.addCaptured(
+            let saved = await store.addCaptured(
                 item,
                 primaryBlob: .image(pngData),
                 richArchive: archive,
                 observedAt: observedAt
+            )
+            recordApplied(
+                saved,
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision
             )
 
         case .unsupported:
@@ -371,10 +415,37 @@ private extension ClipboardWatcher {
         }
     }
 
-    private func markContentFingerprintIfNew(_ fingerprint: ClipboardContentFingerprint) -> Bool {
-        guard fingerprint != lastContentFingerprint else { return false }
-        lastContentFingerprint = fingerprint
-        return true
+    private func isRepeat(
+        _ fingerprint: ClipboardContentFingerprint,
+        sourceApp: String?,
+        observedAt: Date,
+        resetRevision: Int,
+        usesWindow: Bool
+    ) -> Bool {
+        repeatGuard.isRepeat(
+            fingerprint,
+            sourceApp: sourceApp,
+            observedAt: observedAt,
+            resetRevision: resetRevision,
+            usesWindow: usesWindow
+        )
+    }
+
+    /// A capture that was not saved leaves nothing to suppress, so a retry is never dropped.
+    private func recordApplied(
+        _ saved: Bool,
+        _ fingerprint: ClipboardContentFingerprint,
+        sourceApp: String?,
+        observedAt: Date,
+        resetRevision: Int
+    ) {
+        guard saved else { return }
+        repeatGuard.recordApplied(
+            fingerprint,
+            sourceApp: sourceApp,
+            observedAt: observedAt,
+            resetRevision: resetRevision
+        )
     }
 
     private func applyTextCapture(
@@ -382,13 +453,13 @@ private extension ClipboardWatcher {
         richArchive: PasteboardArchive?,
         sourceApp: String?,
         observedAt: Date
-    ) async {
+    ) async -> Bool {
         let isRich = richArchive != nil
         switch plan.storage {
         case .inline(let content):
             var item = ClipboardItem.text(content, sourceApp: sourceApp)
             item.hasRichContent = isRich
-            await store.addCaptured(
+            return await store.addCaptured(
                 item,
                 primaryBlob: nil,
                 richArchive: richArchive,
@@ -403,7 +474,7 @@ private extension ClipboardWatcher {
                 searchIndex: searchIndex
             )
             item.hasRichContent = isRich
-            await store.addCaptured(
+            return await store.addCaptured(
                 item,
                 primaryBlob: .text(fullText),
                 richArchive: richArchive,
@@ -416,7 +487,7 @@ private extension ClipboardWatcher {
                 sourceApp: sourceApp
             )
             item.hasRichContent = isRich
-            await store.addCaptured(
+            return await store.addCaptured(
                 item,
                 primaryBlob: nil,
                 richArchive: richArchive,
