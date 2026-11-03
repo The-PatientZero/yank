@@ -77,6 +77,7 @@ public final class CloudKitSyncService {
     private let pushReceiptsKey: String
     private let pullQuarantineKey: String
     let encryptedCopyBackfillKey: String
+    private let historyCoverageKey: String
     private let pushDebounceNanoseconds: UInt64
     private let pushRetryDelaysNanoseconds: [UInt64]
     private let beforeReceiptPersistence: (() throws -> Void)?
@@ -148,7 +149,7 @@ public final class CloudKitSyncService {
         #endif
     }
 
-    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch)
+    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch, history coverage)
     /// for a container. They describe the previous iCloud account's zone, and keeping them would
     /// suppress re-uploading the library into a new one. Call before constructing a fresh service.
     public static func resetPersistedState(
@@ -161,6 +162,7 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.encryptedCopyBackfill.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.historyCoverage.\(containerIdentifier)")
         EncryptionRolloutState.reset(containerIdentifier: containerIdentifier, defaults: defaults)
     }
 
@@ -187,6 +189,7 @@ public final class CloudKitSyncService {
         self.pushReceiptsKey = "cloudkit.pushReceipts.\(containerIdentifier)"
         self.pullQuarantineKey = "cloudkit.pullQuarantine.\(containerIdentifier)"
         self.encryptedCopyBackfillKey = "cloudkit.encryptedCopyBackfill.\(containerIdentifier)"
+        self.historyCoverageKey = "cloudkit.historyCoverage.\(containerIdentifier)"
         self.pushDebounceNanoseconds = pushDebounceNanoseconds
         self.pushRetryDelaysNanoseconds = pushRetryDelaysNanoseconds
         self.beforeReceiptPersistence = beforeReceiptPersistence
@@ -268,6 +271,8 @@ public final class CloudKitSyncService {
             try startObservingSettingsChanges(generation: generation)
             try await pushLocal(generation: generation)
             try requireActive(generation)
+            // The push may have adopted a newer settings record the pull did not carry.
+            try await backfillIfHistoryLimitRose(generation: generation)
             store?.markSyncSucceeded(at: Date())
             return .started
         } catch {
@@ -376,6 +381,11 @@ public final class CloudKitSyncService {
                     try self.requireActive(generation)
                     self.settingsReconciliationPending = true
                     try self.schedulePush(generation: generation)
+                    // A lowered limit trims this device at once and is recorded; a raised one
+                    // refetches the clips that trimming dropped, even when the zone has no news.
+                    if self.historyLimitRoseAboveCoverage() {
+                        await self.handleRemoteChange()
+                    }
                 } catch {
                     // Same as the local-change observer above: ignore it.
                 }
@@ -396,6 +406,8 @@ public final class CloudKitSyncService {
             // local state is what lets an ordinary remote change repair a missing CKAsset.
             try await pushLocal(generation: generation)
             try requireActive(generation)
+            // The push may have adopted a newer settings record the pull did not carry.
+            try await backfillIfHistoryLimitRose(generation: generation)
             store?.markSyncSucceeded(at: Date())
             return true
         } catch {
@@ -517,6 +529,64 @@ public final class CloudKitSyncService {
     /// Returns true when an expired token was recovered and callers should reconsider local state.
     @discardableResult
     private func pull(generation: UInt64) async throws -> Bool {
+        let recoveredToken = try await pullRecoveringFromTokenLoss(generation: generation)
+        try await backfillIfHistoryLimitRose(generation: generation)
+        return recoveredToken
+    }
+
+    /// The history limit the settings store applies right now, or `nil` when there is no
+    /// settings store or its preferences cannot be read.
+    private var effectiveHistoryLimit: Int? {
+        settingsStore?.syncedSettings?.historyLimit.rawValue
+    }
+
+    /// The lowest history limit this device has applied since its change token last started
+    /// from nothing; the clips above it were trimmed here and are still in iCloud. A device from
+    /// a build that predates the marker is assumed to have been trimmed to the default limit,
+    /// which repairs devices that were already affected. `nil` while there is no token to
+    /// describe, because the next pull starts from nothing and records the limit itself.
+    private func historyCoverage() -> Int? {
+        if let stored = defaults.object(forKey: historyCoverageKey) as? Int { return stored }
+        return changeToken == nil ? nil : HistoryLimit.essential.rawValue
+    }
+
+    /// Records a limit this device has just applied. Never raises the marker: it only falls when
+    /// the device trims further, and a pull that starts from nothing resets it explicitly.
+    private func lowerHistoryCoverage(to limit: Int) {
+        guard let coverage = historyCoverage(), limit < coverage else { return }
+        defaults.set(limit, forKey: historyCoverageKey)
+    }
+
+    /// Lowers the marker to the effective limit, then reports whether the limit sits above what
+    /// this device was last trimmed to.
+    private func historyLimitRoseAboveCoverage() -> Bool {
+        guard let limit = effectiveHistoryLimit else { return false }
+        lowerHistoryCoverage(to: limit)
+        guard let coverage = historyCoverage() else { return false }
+        return limit > coverage
+    }
+
+    /// Fetches the zone again from the start once the history limit exceeds what this device was
+    /// last trimmed to, so clips an earlier, lower limit dropped come back up to the new limit.
+    /// Trimming never tombstones, so they are still in iCloud. Push receipts are kept: the
+    /// refetch re-seeds them for the winners it re-delivers, and a full re-upload is not wanted.
+    /// The restarted pull records the limit it applied, so this cannot repeat.
+    private func backfillIfHistoryLimitRose(generation: UInt64) async throws {
+        try requireActive(generation)
+        guard historyLimitRoseAboveCoverage(),
+              let limit = effectiveHistoryLimit,
+              let coverage = historyCoverage() else { return }
+        syncLog.info(
+            "history limit rose from \(coverage, privacy: .public) to \(limit, privacy: .public); refetching the zone from the start"
+        )
+        try persistToken(nil, generation: generation)
+        changeToken = nil
+        try await pullUsingCurrentToken(generation: generation)
+        try requireActive(generation)
+        syncLog.info("history backfill finished under limit \(limit, privacy: .public)")
+    }
+
+    private func pullRecoveringFromTokenLoss(generation: UInt64) async throws -> Bool {
         do {
             try await pullUsingCurrentToken(generation: generation)
             try requireActive(generation)
@@ -552,6 +622,7 @@ public final class CloudKitSyncService {
         var accumulation = PullAccumulation()
         var quarantine = QuarantineState(entries: pullQuarantine)
         var token = changeToken
+        let startedFromNothing = token == nil
         var moreComing = true
         do {
             // Re-attempt earlier skipped records first, so a recovered one lands in the same
@@ -591,6 +662,19 @@ public final class CloudKitSyncService {
                 moreComing = changes.moreComing
             }
             try requireActive(generation)
+            // Before the snapshot and the apply, so the cap below is the adopted limit rather
+            // than this device's old one. Nothing suspends between here and the apply. Adoption is
+            // idempotent against the local stamp, so replaying this pull after a later failure
+            // re-decides the same way.
+            if let remoteSettings = accumulation.remoteSettings {
+                if applySettingsFromChangeFeed(remoteSettings) {
+                    syncLog.info(
+                        "adopted synced history limit \(remoteSettings.historyLimit.rawValue, privacy: .public) before applying \(accumulation.remote.count, privacy: .public) pulled clip(s)"
+                    )
+                }
+                try requireActive(generation)
+            }
+            let appliedLimit = effectiveHistoryLimit
             let local = store.itemsForSync()
             for bypassed in accumulation.bypassedMissingAssets {
                 guard Self.localTombstoneDominates(
@@ -612,13 +696,6 @@ public final class CloudKitSyncService {
             try store.applyReconciledDurably(reconciled)
             try requireActive(generation)
             deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
-            // After the clips land, so a tightened remote limit trims the merged set rather than
-            // the pre-merge one. Adoption is idempotent against the local stamp, so replaying
-            // this pull after a later failure re-decides the same way.
-            if let remoteSettings = accumulation.remoteSettings {
-                applySettingsFromChangeFeed(remoteSettings)
-                try requireActive(generation)
-            }
             let receiptChanges = Self.pullReceiptChanges(
                 remote: accumulation.remote,
                 reconciled: reconciled,
@@ -643,6 +720,13 @@ public final class CloudKitSyncService {
             // record that was skipped.
             if quarantine.didChange {
                 try persistPullQuarantine(quarantine.entries, generation: generation)
+            }
+            if let appliedLimit {
+                if startedFromNothing {
+                    defaults.set(appliedLimit, forKey: historyCoverageKey)
+                } else {
+                    lowerHistoryCoverage(to: appliedLimit)
+                }
             }
             try persistToken(token, generation: generation)
             changeToken = token
@@ -1263,10 +1347,13 @@ public final class CloudKitSyncService {
     /// Live fast path for a settings record in the change feed — lands another device's choice
     /// without waiting for launch. Purely an accelerator; the fetch-first reconcile guarantees
     /// convergence, so an unreadable record here is simply ignored.
-    private func applySettingsFromChangeFeed(_ remote: SyncedSettings) {
-        guard let settingsStore, let local = settingsStore.syncedSettings else { return }
-        guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return }
+    /// Returns whether the record was newer than the local choice and so was adopted.
+    @discardableResult
+    private func applySettingsFromChangeFeed(_ remote: SyncedSettings) -> Bool {
+        guard let settingsStore, let local = settingsStore.syncedSettings else { return false }
+        guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return false }
         settingsStore.applySyncedSettings(remote)
+        return true
     }
 
     private nonisolated static let maximumSettingsSaveAttempts = 2
