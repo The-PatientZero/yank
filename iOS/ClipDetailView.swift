@@ -12,6 +12,7 @@ struct ClipDetailView: View {
     @State private var model: ClipDetailContentModel
     @State private var localOCR: String?
     @State private var isExtracting = false
+    @State private var foundNoText = false
     @State private var newTag = ""
     @State private var copied = false
     @State private var tagSuggestions: [String] = []
@@ -27,7 +28,7 @@ struct ClipDetailView: View {
 
     /// Re-read from the store so pin/bookmark/tag toggles reflect immediately.
     private var current: ClipboardItem { store.items.first { $0.id == item.id } ?? item }
-    private var ocrText: String? { current.ocrText ?? localOCR }
+    private var ocrText: String? { current.recognizedText ?? localOCR }
     private var canExtract: Bool { current.type == .image && model.previewImage != nil && ocrText == nil }
 
     var body: some View {
@@ -38,7 +39,11 @@ struct ClipDetailView: View {
                 if current.richContentState != .none {
                     richContentNote
                 }
-                if let ocr = ocrText { ocrSection(ocr) }
+                if let ocr = ocrText {
+                    ocrSection(ocr)
+                } else if foundNoText {
+                    noTextFoundNote
+                }
                 tagSection
             }
             .padding(Space.lg)
@@ -51,6 +56,7 @@ struct ClipDetailView: View {
         .animation(IOSMotion.state(reduceMotion), value: copied)
         .animation(IOSMotion.state(reduceMotion), value: isExtracting)
         .animation(IOSMotion.state(reduceMotion), value: ocrText)
+        .animation(IOSMotion.state(reduceMotion), value: foundNoText)
         .animation(IOSMotion.present(reduceMotion), value: model.previewImage != nil)
         .task(id: item.id) { await model.load(current) }
     }
@@ -146,6 +152,17 @@ struct ClipDetailView: View {
             }
         }
     }
+
+    /// Shown when text recognition returned nothing (including when it failed); the extraction
+    /// action stays available for another try.
+    private var noTextFoundNote: some View {
+        Text(Self.noTextFoundMessage)
+            .font(.yank(.caption))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static let noTextFoundMessage = "Couldn't read any text from this image."
 
     private var truncationNote: some View {
         Label(
@@ -311,10 +328,14 @@ struct ClipDetailView: View {
         // Convert on the main actor so only the Sendable CGImage crosses to the OCR task.
         guard let cgImage = model.previewImage?.cgImage else { return }
         isExtracting = true
+        foundNoText = false
         defer { isExtracting = false }
-        if let text = await OCRService.shared.recognizeText(from: cgImage) {
+        if let text = await OCRService.shared.recognizeText(from: cgImage), ClipboardItem.isUsableOCRText(text) {
             store.setOCRText(text, for: current)
             withAnimation(IOSMotion.state(reduceMotion)) { localOCR = text }
+        } else {
+            withAnimation(IOSMotion.state(reduceMotion)) { foundNoText = true }
+            UIAccessibility.post(notification: .announcement, argument: Self.noTextFoundMessage)
         }
     }
 }

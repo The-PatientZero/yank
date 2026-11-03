@@ -69,7 +69,8 @@ extension ClipboardStore {
         persist()
     }
 
-    func setOCRText(_ text: String, for item: ClipboardItem) {
+    func setOCRText(_ text: String?, for item: ClipboardItem) {
+        guard let text, ClipboardItem.isUsableOCRText(text) else { return }
         ClipboardMutations.setOCRText(text, id: item.id, in: &items)
         persist()
     }

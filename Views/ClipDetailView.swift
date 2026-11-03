@@ -148,7 +148,7 @@ struct ClipDetailView: View {
                         }
                     }
 
-                    if primary?.type == .image && model.previewImage != nil && primary?.ocrText == nil {
+                    if primary?.type == .image && model.previewImage != nil && primary?.recognizedText == nil {
                         IconButton(systemName: model.isExtractingText ? "ellipsis.circle" : "text.viewfinder",
                                    label: "Extract text from image", help: "Extract Text from Image") {
                             if let item = primary { Task { await model.extractText(from: item) } }
@@ -288,7 +288,7 @@ struct ClipDetailView: View {
                         .controlSize(.small)
                         .padding(.vertical, Space.lg)
                         .accessibilityLabel("Extracting text from image")
-                } else if let ocrText = item.ocrText {
+                } else if let ocrText = item.recognizedText {
                     VStack(alignment: .leading, spacing: 0) {
                         Rectangle()
                             .fill(Color.yankSubtleFill)
@@ -308,6 +308,12 @@ struct ClipDetailView: View {
                         }
                         .padding(.top, Space.lg)
                     }
+                } else if model.noTextFoundItemID == item.id {
+                    Text(ClipDetailModel.noTextFoundMessage)
+                        .font(.system(size: TypeScale.caption))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, Space.lg)
                 }
             }
         }

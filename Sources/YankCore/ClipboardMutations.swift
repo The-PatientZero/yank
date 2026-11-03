@@ -12,7 +12,10 @@ enum ClipboardMutations {
         update(&items, id: id, now: now) { $0.isBookmarked.toggle() }
     }
 
-    static func setOCRText(_ text: String, id: UUID, in items: inout [ClipboardItem], now: Date = Date()) {
+    /// Stores recognized text as is. Nil, blank text and the legacy no-result sentence change
+    /// nothing (no `modifiedAt` bump), so an empty run never becomes stored content.
+    static func setOCRText(_ text: String?, id: UUID, in items: inout [ClipboardItem], now: Date = Date()) {
+        guard let text, ClipboardItem.isUsableOCRText(text) else { return }
         update(&items, id: id, now: now) { $0.ocrText = text }
     }
 
