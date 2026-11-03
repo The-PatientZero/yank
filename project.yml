@@ -117,6 +117,7 @@ targets:
       - iOS/HistoryEmptyStates.swift
       - iOS/HistorySupportViews.swift
       - iOS/SettingsView.swift
+      - iOS/WaitingClipsView.swift
       - iOS/ClipRowView.swift
       - iOS/ClipTileView.swift
       - iOS/ClipThumbnailView.swift

@@ -12,7 +12,7 @@ let clipStoreLog = Logger(subsystem: "com.thepatientzero.yank", category: "store
 /// Group so the keyboard and share extensions read the same data.
 @MainActor
 @Observable
-final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
+final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueReporting {
     private struct PendingForegroundTextCapture {
         let pasteboardGeneration: Int
         let item: ClipboardItem
@@ -53,6 +53,12 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     private(set) var firstSyncState: FirstSyncState = .idle
 
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+
+    /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
+    private(set) var syncFailureKind: SyncFailureKind?
+
+    /// Clips the last push could not prepare for upload.
+    private(set) var waitingClips: [SyncWaitingClip] = []
 
     /// How far the move to end-to-end encrypted clip content has come; nil until sync reports it.
     private(set) var encryptionStatus: SyncEncryptionStatus?
@@ -617,6 +623,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
 
     func markSyncStarted() {
         syncStatus = .syncing
+        syncFailureKind = nil
         if firstSyncState != .settled {
             firstSyncState = .syncing
         }
@@ -624,17 +631,35 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
 
     func markSyncSucceeded(at date: Date) {
         syncStatus = .healthy(lastSynced: date)
+        syncFailureKind = nil
     }
 
+    /// A failure without a known cause: the generic "Try again" action applies.
     func markSyncFailed(_ message: String) {
+        recordSyncFailure(message: message, kind: nil)
+    }
+
+    func markSyncFailure(_ failure: SyncFailure) {
+        recordSyncFailure(message: failure.message, kind: failure.kind)
+    }
+
+    private func recordSyncFailure(message: String, kind: SyncFailureKind?) {
         syncStatus = .failed(message: message)
+        syncFailureKind = kind
         if firstSyncState != .settled {
             firstSyncState = .failed(message: message)
         }
     }
 
+    func markClipsWaiting(_ clips: [SyncWaitingClip]) {
+        guard clips != waitingClips else { return }
+        waitingClips = clips
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         syncStatus = .localOnly(reason: reason)
+        syncFailureKind = nil
+        waitingClips = []
         encryptionStatus = nil
     }
 

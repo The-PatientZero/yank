@@ -155,16 +155,15 @@ struct IOSCloudSyncLifecycleTests {
         #expect(IOSCloudSyncController.accountDecision(for: .available) == .proceed)
         #expect(IOSCloudSyncController.accountDecision(for: .noAccount)
                 == .hardUnavailable(reason: .notAuthenticated))
-        #expect(IOSCloudSyncController.accountDecision(for: .restricted)
-                == .hardUnavailable(reason: .notAuthenticated))
+        #expect(IOSCloudSyncController.accountDecision(for: .restricted) == .restricted)
 
         for status in [CKAccountStatus.temporarilyUnavailable, .couldNotDetermine] {
-            guard case .transient(let message) =
+            guard case .transient(let failure) =
                     IOSCloudSyncController.accountDecision(for: status) else {
                 Issue.record("Expected \(status) to be treated as transient")
                 return
             }
-            #expect(!message.isEmpty)
+            #expect(!failure.message.isEmpty)
         }
     }
 
