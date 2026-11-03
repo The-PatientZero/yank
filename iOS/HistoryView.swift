@@ -25,6 +25,8 @@ struct HistoryView: View {
     var settings: IOSSettings
     var iCloudSignedOut: Bool = false
     var onRetrySync: (() async -> Void)? = nil
+    /// Bumped by the app each time it returns from the background; resets search, filter and scroll.
+    var openRequest = 0
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
@@ -143,6 +145,10 @@ struct HistoryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .modifier(HistorySearchModifier(query: $query, isEnabled: !store.items.isEmpty))
         .onSubmit(of: .search) { applyTagSuggestion() }
+        .onChange(of: openRequest) { _, _ in
+            query = ""
+            activeTag = nil
+        }
         .toolbar { toolbarContent }
         .animation(IOSMotion.state(reduceMotion), value: isSelecting)
         .animation(IOSMotion.state(reduceMotion), value: activeTag)
@@ -247,9 +253,20 @@ struct HistoryView: View {
                     noMatchesState
                 }
             } else {
-                switch settings.viewMode {
-                case .grid, .masonry, .gallery: tiles.transition(contentTransition)
-                default:                        list.transition(contentTransition)
+                ScrollViewReader { proxy in
+                    Group {
+                        switch settings.viewMode {
+                        case .grid, .masonry, .gallery: tiles.transition(contentTransition)
+                        default:                        list.transition(contentTransition)
+                        }
+                    }
+                    .onChange(of: openRequest) { _, _ in
+                        // Wait one turn so the cleared search has been applied to the list.
+                        Task { @MainActor in
+                            guard let newestID = filtered.first?.id else { return }
+                            proxy.scrollTo(newestID, anchor: .top)
+                        }
+                    }
                 }
             }
         }

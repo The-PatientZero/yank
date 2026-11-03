@@ -120,14 +120,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private var previousApp: NSRunningApplication?
     private var didBecomeKeyObserver: NSObjectProtocol?
 
-    /// Timestamp of the last close — used to decide whether to persist search state
-    private var lastClosedAt: Date?
-    /// Shared flag: true if the content view should reset search on the next open
-    var shouldResetOnOpen: Bool = true
-    /// Last selected item UUID — restored when reopening within the threshold
-    var savedSelectedID: UUID?
-    private let searchResetInterval: TimeInterval = 10 * 60
-
     /// Guards the summon-dismiss animation so a `resignKey` (or a paste-triggered close)
     /// mid-fade can't re-enter `close()` and stack a second animation.
     private var isAnimatingClose = false
@@ -135,11 +127,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    }
-
-    private var shouldResetSearch: Bool {
-        guard let lastClosed = lastClosedAt else { return true }
-        return Date().timeIntervalSince(lastClosed) > searchResetInterval
     }
 
     private static let frameDefaultsKey = "HistoryWindowFrame"
@@ -265,7 +252,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     override func close() {
         guard !isAnimatingClose else { return }
         persistUserFrameIfNeeded(for: .close)
-        lastClosedAt = Date()
         guard !reduceMotion, let window, window.isVisible,
               let layer = window.contentView?.layer else {
             super.close()
@@ -353,14 +339,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             store: store,
             axPermission: axPermission,
             settings: settings,
-            shouldResetOnOpen: Binding(
-                get: { [weak self] in self?.shouldResetOnOpen ?? true },
-                set: { [weak self] newValue in self?.shouldResetOnOpen = newValue }
-            ),
-            savedSelectedID: Binding(
-                get: { [weak self] in self?.savedSelectedID },
-                set: { [weak self] newValue in self?.savedSelectedID = newValue }
-            ),
             onCopyToClipboard: { [weak self] item in
                 self?.copyToClipboard(item)
             },
@@ -448,16 +426,31 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     
     override func showWindow(_ sender: Any?) {
         previousApp = NSWorkspace.shared.frontmostApplication
-        shouldResetOnOpen = shouldResetSearch
+        let wasKey = window?.isKeyWindow ?? false
+        let wasClosing = isAnimatingClose
+        // Showing a window that is already key and not closing (Settings from the menu) is no
+        // new open: no key event follows, so queued open steps would go stale and a reset
+        // would wipe the user's search for nothing.
+        let isNewOpen = !wasKey || wasClosing
         isAnimatingClose = false
         window?.contentView?.layer?.removeAnimation(forKey: Self.summonKey)
         isApplyingProgrammaticFrame = true
         applyOpeningFrame()
 
+        // Clear search and tag filter before the window becomes key, so the key handler
+        // then selects and scrolls to the newest clip of the unfiltered list.
+        if isNewOpen {
+            NotificationCenter.default.post(name: .yankHistoryWindowDidShow, object: nil)
+        }
+
         super.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(window?.contentView)
+        // A window still key while fading out gets no key event, so hand it the open one here.
+        if wasKey && isNewOpen {
+            NotificationCenter.default.post(name: .yankWindowDidOpen, object: nil)
+        }
         isApplyingProgrammaticFrame = false
         animateIn()
     }

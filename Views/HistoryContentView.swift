@@ -16,11 +16,6 @@ struct HistoryContentView: View {
     /// `AccessibilityPermission` so the footer hint tracks grants live and stays in step with the
     /// same flag shown in Settings (one source of truth, not a private snapshot).
     private var axUntrusted: Bool { !(axPermission?.isTrusted ?? AXIsProcessTrusted()) }
-    /// Set by the controller when the window has been closed long enough (or first open);
-    /// the view resets search/tag state once, then writes false back.
-    @Binding var shouldResetOnOpen: Bool
-    /// Last selected item UUID, kept on the controller so it survives SwiftUI state resets.
-    @Binding var savedSelectedID: UUID?
     let onCopyToClipboard: (ClipboardItem) -> Void
     let onCopyMultipleToClipboard: ([ClipboardItem]) -> Void
     let onPaste: (ClipboardItem) -> Void
@@ -45,6 +40,18 @@ struct HistoryContentView: View {
     @State var searchText = ""
     @State var selectedIndex = 0
     @State var scrollTrigger = false
+    /// Open steps still owed to the next key event after a real open. Regaining key focus
+    /// without a new open leaves it empty, so the selection and scroll position stay put.
+    /// Starts with the steps for the first open, which can happen before this view listens
+    /// for the "shown" notification.
+    @State var pendingOpenSteps: Set<OpenStep>
+
+    /// Each receiver of the key event consumes only its own step, so handler order never matters.
+    enum OpenStep: Hashable {
+        case selectDefault
+        case scrollStream
+        case scrollSplitRail
+    }
 
     @State var selectedIDs: Set<UUID> = []
     @State var selectionAnchor: UUID?
@@ -76,8 +83,6 @@ struct HistoryContentView: View {
     init(store: ClipboardStore,
          axPermission: AccessibilityPermission? = nil,
          settings: SettingsManager = .shared,
-         shouldResetOnOpen: Binding<Bool>,
-         savedSelectedID: Binding<UUID?>,
          onCopyToClipboard: @escaping (ClipboardItem) -> Void,
          onCopyMultipleToClipboard: @escaping ([ClipboardItem]) -> Void,
          onPaste: @escaping (ClipboardItem) -> Void,
@@ -89,8 +94,6 @@ struct HistoryContentView: View {
         self.store = store
         self.axPermission = axPermission
         self.settings = settings
-        _shouldResetOnOpen = shouldResetOnOpen
-        _savedSelectedID = savedSelectedID
         self.onCopyToClipboard = onCopyToClipboard
         self.onCopyMultipleToClipboard = onCopyMultipleToClipboard
         self.onPaste = onPaste
@@ -100,6 +103,13 @@ struct HistoryContentView: View {
         self.onSettingsActiveChange = onSettingsActiveChange
         self.appStatus = appStatus
         _detail = State(initialValue: ClipDetailModel(store: store))
+        _pendingOpenSteps = State(initialValue: Self.openSteps(for: SettingsManager.shared.viewMode))
+    }
+
+    /// The selection step plus the scroll step of the layout that is on screen, so a hidden
+    /// layout cannot hold a stale step.
+    static func openSteps(for viewMode: ClipViewMode) -> Set<OpenStep> {
+        [.selectDefault, viewMode == .split ? .scrollSplitRail : .scrollStream]
     }
 
     var filteredItems: [ClipboardItem] {
@@ -276,9 +286,6 @@ struct HistoryContentView: View {
         .onChange(of: selectedIndex) { _, newIndex in
             selectedID = filteredItem(at: newIndex)?.id
         }
-        .onChange(of: selectedID) { _, newValue in
-            savedSelectedID = newValue
-        }
         .onChange(of: store.changeToken) { _, _ in
             guard let id = selectedID else { return }
             updateSelection { state in
@@ -289,21 +296,24 @@ struct HistoryContentView: View {
             }
         }
         .onChange(of: masonryKey) { _, _ in rebuildMasonryIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
+            searchText = ""
+            searchTextDebounced = ""
+            activeTagFilter = nil
+            pendingOpenSteps = Self.openSteps(for: viewMode)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
             axPermission?.refresh()
             keepWindowOpen = settings.keepHistoryWindowOpen
             store.commitPendingDeleteIfNeeded()
-            if shouldResetOnOpen {
-                searchText = ""
-                searchTextDebounced = ""
-                activeTagFilter = nil
-            }
             showTagAutocomplete = false
             showQuickLook = false
             detail.cancelTagInput()
-            let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
-            scrollTrigger = false
-            updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
+            if pendingOpenSteps.remove(.selectDefault) != nil {
+                let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
+                scrollTrigger = false
+                updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
+            }
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(50))
                 isSearchFocused = true

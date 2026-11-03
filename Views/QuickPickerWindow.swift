@@ -17,6 +17,11 @@ enum QuickPickerLayout {
 @Observable
 final class QuickPickerPresentationState {
     private(set) var searchFocusRequest = 0
+    private(set) var openRequest = 0
+
+    func requestOpenReset() {
+        openRequest &+= 1
+    }
 
     func requestSearchFocus() {
         searchFocusRequest &+= 1
@@ -153,6 +158,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         super.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        presentationState.requestOpenReset()
         presentationState.requestSearchFocus()
         isApplyingProgrammaticFrame = false
         animateIn()
