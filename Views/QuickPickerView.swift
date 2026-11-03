@@ -148,14 +148,33 @@ struct QuickPickerView: View {
             }
             .onChange(of: selection.focusedID) { _, id in
                 guard let id else { return }
-                if reduceMotion {
-                    proxy.scrollTo(id, anchor: .center)
-                } else {
-                    withAnimation(YankMotion.quick(false)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
-                }
+                scroll(to: id, with: proxy)
             }
+            .onChange(of: presentationState.openRequest) { _, _ in
+                resetForOpen(scrollingWith: proxy)
+            }
+        }
+    }
+
+    private func scroll(to id: UUID, with proxy: ScrollViewProxy) {
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .center)
+        } else {
+            withAnimation(YankMotion.quick(false)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+    }
+
+    /// Starts every open from the same place: empty search, newest unpinned clip selected and in view.
+    private func resetForOpen(scrollingWith proxy: ScrollViewProxy) {
+        searchText = ""
+        smartSearchState.queryDidChange()
+        selection.selectDefault(in: items)
+        guard let id = HistoryOpeningPosition.selectionID(in: items) else { return }
+        // The list is rebuilt for the cleared search; scroll once that pass has run.
+        Task { @MainActor in
+            scroll(to: id, with: proxy)
         }
     }
 
