@@ -40,7 +40,7 @@ enum SyncCopy {
         case .removingReadableCopies:
             return "Removing readable copies of your clips from iCloud."
         case .complete:
-            return "Clip text in iCloud is end-to-end encrypted."
+            return "Clip details such as short text, tags and search data are end-to-end encrypted in iCloud. Images and large text use CloudKit's default encryption."
         case .olderDeviceSeen(let lastSeen):
             return "A device on an older version of Yank cannot show new clips and can put readable copies back. Update Yank on it. Last seen \(encryptionDate(lastSeen))."
         }

@@ -112,8 +112,6 @@ public final class CloudKitSyncService {
     var rolloutReevaluationRequested = false
     var activeRolloutEvaluation: (id: UUID, task: Task<Void, Never>)?
     var activeSweep: (id: UUID, task: Task<Void, Never>)?
-    /// Device records read by the latest evaluation, by device identifier.
-    var knownDeviceStates: [String: CloudKitDeviceRegistry.DeviceState] = [:]
     var loggedBlankClipIDs: Set<UUID> = []
 
     /// Live entry point: binds to the container's private database. `CKContainer(identifier:)`

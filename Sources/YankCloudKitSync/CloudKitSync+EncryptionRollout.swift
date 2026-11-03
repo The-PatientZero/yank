@@ -233,7 +233,6 @@ extension CloudKitSyncService {
         let now = Date()
         let state = rolloutState
         let states = devices.mapValues(\.state)
-        knownDeviceStates = states
         let known = Set(states.keys).union([deviceID])
         state.deviceRecordIDs = Set(states.keys)
 
