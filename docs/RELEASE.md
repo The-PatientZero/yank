@@ -13,7 +13,17 @@ bash scripts/extract_release_notes.sh v1.2.3
 # 5. Tag and push the same version (preferred form):
 git tag v1.2.3
 git push origin v1.2.3
+# 6. Open the run in Actions → Release. Once "Verify release source" passes, the
+#    "release" job waits for review: check the tag, the commit and the version, then approve it.
 ```
+
+The release commit must already be on `main` before you tag it. If it is not, the
+workflow stops at its first job and nothing is built. Approve exactly one run per
+version. A run nobody approves expires after 30 days and leaves a tag with no release;
+see [Protect the release environment](#protect-the-release-environment) for what to do
+with it. To recover a failed run for an existing tag, use Actions → Release → Run
+workflow with the branch set to `main` and the tag name; a dispatch from any other
+branch is rejected.
 
 ## CloudKit schema
 
@@ -39,7 +49,10 @@ a new field.
 
 The `Release` workflow (`.github/workflows/release.yml`) then:
 
-1. Builds, signs, and notarizes the universal DMG via `scripts/build_dmg.sh`, plus the
+0. Checks, without any secret, that the tag is well formed, that its commit is already
+   part of `main`, that it matches `MARKETING_VERSION` and that `CHANGELOG.md` has its
+   section. A failure here costs no approval.
+1. After a reviewer approves the run in the `release` environment, builds, signs, and notarizes the universal DMG via `scripts/build_dmg.sh`, plus the
    stapled-app ZIP + `.sha256` sidecars the in-app updater consumes.
 2. Publishes the GitHub release with all four assets and the matching `CHANGELOG.md` section.
 3. Opens a PR to refresh `releases.json` — the updater's feed — and attempts
@@ -55,19 +68,87 @@ Before publishing a signed macOS artifact, verify its effective entitlements sel
 `Production` and APNs `production`; a signed Debug diagnostic build must select CloudKit
 `Development` and APNs `development`.
 
-## Required repository secrets
+## Required environment secrets (`release`)
+
+These secrets live in the `release` environment, not at repository level, so a job can
+read them only after the environment's reviewer approves the run.
 
 | Secret | Value |
 |---|---|
 | `BUILD_CERTIFICATE_BASE64` | Developer ID Application certificate, exported as `.p12`, base64-encoded |
 | `P12_PASSWORD` | Password of that `.p12` export |
-| `APPLE_TEAM_ID` | Apple Developer Team ID |
 | `APPLE_SIGN_IDENTITY` | e.g. `Developer ID Application: <Name> (<TEAM_ID>)` |
 | `ASC_KEY_B64` | App Store Connect API key (`.p8`), base64-encoded — used for notarization and CI provisioning |
 | `ASC_KEY_ID` | Key ID of that API key |
 | `ASC_ISSUER_ID` | Issuer ID from App Store Connect → Integrations |
 | `MAC_PROVISIONING_PROFILE_B64` | Developer ID provisioning profile (`.provisionprofile`), base64-encoded — created manually in the developer portal (cloud signing cannot create Developer ID profiles) |
 | `TAP_PUSH_TOKEN` | Fine-grained PAT with contents read/write on `homebrew-tap` only |
+
+`ASC_KEY_B64`, `ASC_KEY_ID` and `ASC_ISSUER_ID` are also read by the TestFlight
+cloud-signing step, and an environment secret is invisible to a job in another
+environment. Keep the same three values as `testflight` environment secrets too.
+`APPLE_TEAM_ID` is an identifier, not a credential; it stays a repository secret used by
+both workflows.
+
+## Protect the release environment
+
+The `Release` workflow checks the tag in a first job that has no secrets, and only then
+starts the `release` job, which is bound to the protected `release` environment. The
+workflow file alone cannot be the control, because a tag run uses the workflow file of the
+tagged commit. What holds is:
+
+- **Signing material:** once the secrets exist only in the `release` environment, a
+  modified workflow that does not name the environment cannot read them, and one that
+  does must pass the reviewer. The environment's allowed-refs rule matches the ref name,
+  not where the tagged commit lives, so the reviewer is the check for a tag on a
+  side-branch commit. Look at the commit in the approval prompt.
+- **Published channel:** the GitHub release and the updater-feed pull request use the
+  workflow token, which is not an environment secret. The control there is who can create
+  the tag, so the tag ruleset below is required, together with code-owner review of
+  workflow changes.
+
+While one person is the only maintainer, the approval is a deliberate confirmation step and
+a ref restriction, not two-person control. It does not defend against a compromised owner
+account. A second reviewer is the upgrade path.
+
+One-time repository settings, in this order (each step keeps the previous setup working
+until the last one):
+
+1. Merge the workflow change. This alone is not protective: if the `release` environment
+   does not exist yet, GitHub creates it without reviewers on the first run.
+2. Create the `release` environment (Settings → Environments). Add the owner as required
+   reviewer and leave "Prevent self-review" off while the owner is the only maintainer.
+   Under deployment rules choose "Selected branches and tags" and add the branch `main`
+   and the tags `v[0-9]*` and `[0-9]*`. A tag run has `GITHUB_REF=refs/tags/...` and a
+   recovery dispatch has `refs/heads/main`, so both kinds are needed. If GitHub rejects a
+   tag pattern, widen to `v*` and `*`; the workflow's strict tag check still applies.
+3. Copy the eight secrets from the table above into the `release` environment, and copy
+   `ASC_KEY_B64`, `ASC_KEY_ID` and `ASC_ISSUER_ID` into the `testflight` environment.
+4. Verify: `gh api repos/The-PatientZero/yank/environments/release` shows the reviewer,
+   `gh api repos/The-PatientZero/yank/environments/release/deployment-branch-policies`
+   lists exactly the three rules, `gh secret list --env release` and
+   `gh secret list --env testflight` show the names above, and one approval-gated run
+   (or a TestFlight dispatch for the `testflight` copies) succeeds.
+5. Only then delete the repository-level copies of `BUILD_CERTIFICATE_BASE64`,
+   `P12_PASSWORD`, `APPLE_SIGN_IDENTITY`, `MAC_PROVISIONING_PROFILE_B64`, `TAP_PUSH_TOKEN`,
+   `ASC_KEY_B64`, `ASC_KEY_ID` and `ASC_ISSUER_ID`. Keep `APPLE_TEAM_ID`. Until step 5 the
+   old copies remain as a rollback.
+
+Doing step 3 or step 5 before step 1 breaks the next tag, because the previous job had no
+environment. Deleting the `ASC_*` repository secrets before they exist in `testflight`
+fails the next TestFlight dispatch at its cloud-signing step.
+
+Tag ruleset (Settings → Rules → Rulesets): target tags matching `v*` and `[0-9]*`, restrict
+creation to the owner and block updates, so a tag cannot be moved. Block deletion with the
+owner on the bypass list. That lets the owner remove an unpublished tag whose run was
+rejected or expired; a published tag is still never deleted or moved.
+
+Setting "Workflow permissions" to read-only is good hygiene but not a control: a workflow
+that declares its own `permissions` is not bound by it.
+
+A tag whose run was rejected or expired has no release and installed apps see nothing new.
+Fix the cause and either delete that unpublished tag (owner bypass) and tag again, or
+re-run the workflow with the same tag from `main`.
 
 Local releases still work without CI: put `APP_NAME`, `TEAM_ID`, `SIGN_IDENTITY`, and
 `NOTARY_PROFILE` in `.env` and run `./scripts/build_dmg.sh`, extract notes with
@@ -116,13 +197,15 @@ Add these non-secret environment variables:
 | `TESTFLIGHT_INTERNAL_GROUP_ID` | Opaque ID of the intended internal beta group |
 | `TESTFLIGHT_EXTERNAL_GROUP_ID` | Opaque ID of the external beta group. Only needed if you ever dispatch with `promote_external`; an internal-only run does not read or validate it |
 
-The workflow reuses the repository-level `APPLE_TEAM_ID` secret already used by
-the macOS release workflow; do not duplicate that identifier into the
-environment. The dedicated TestFlight key uses App Manager access. Do not
-broaden it to Admin or reuse the existing Admin release key. App Store Connect
-team keys apply across the team, so the dedicated GitHub environment is the
-credential access boundary. Never reuse the Developer ID certificate or
-notarization credentials for this workflow.
+The workflow reuses the repository-level `APPLE_TEAM_ID` secret shared with the macOS
+release workflow; do not duplicate that identifier into the environment. Its
+cloud-signing export step also reads `ASC_KEY_B64`, `ASC_KEY_ID` and `ASC_ISSUER_ID`
+from this environment: these are the same shared App Store Connect values the macOS
+release uses for notarization, stored as `testflight` environment secrets next to the
+`TESTFLIGHT_*` ones. The dedicated TestFlight key (the `TESTFLIGHT_*` secrets) uses App
+Manager access and stays separate. Do not broaden it to Admin. App Store Connect team
+keys apply across the team, so the dedicated GitHub environment is the credential access
+boundary. Never reuse the Developer ID certificate for this workflow.
 
 To promote:
 
