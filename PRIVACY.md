@@ -109,9 +109,14 @@ application data through your Apple account settings.
 
 ## Security and contact
 
-Yank skips pasteboard entries that source apps mark as concealed or transient and supports
-capture exclusions. These safeguards reduce accidental capture but cannot classify every
-piece of sensitive content, so review clipboard history before sharing a device or backup.
+On a device running this version, Yank skips pasteboard entries that source apps mark as
+concealed, transient or auto-generated, including the older markers used by 1Password and
+some text expanders, and supports capture exclusions. On the Mac, an excluded app also
+covers the last half second, so a very fast switch away from or into it skips the copy. iOS
+cannot see which app wrote the clipboard, so it honours the markers but cannot exclude by
+app. These safeguards reduce accidental capture but cannot classify every piece of
+sensitive content, and a device still running an earlier version may capture such copies
+and sync them, so review clipboard history before sharing a device or backup.
 
 For security vulnerabilities, use the private reporting instructions in
 [`SECURITY.md`](SECURITY.md). For general privacy questions or product support, follow the
