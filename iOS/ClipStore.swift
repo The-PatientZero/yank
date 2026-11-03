@@ -494,19 +494,19 @@ final class ClipStore: SyncableStore {
     /// Resolve a new local inline-text capture against existing eligible records. Sync itself
     /// remains UUID-based; this is invoked only from explicit local capture/ingestion paths.
     private func refreshDuplicateCapture(with incoming: ClipboardItem) -> UUID? {
-        let existing = items
-            .filter { TextCaptureIdentity.matches($0, incoming) }
-            .max { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
-        guard let existing,
+        // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
+        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
+        guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
+            for: incoming,
+            in: items,
+            excluding: pendingIDs
+        ),
               ClipboardMutations.refreshDuplicateCapture(
-            existingID: existing.id,
-            with: incoming,
-            in: &items
+                  existingID: existingID,
+                  with: incoming,
+                  in: &items
               ) else { return nil }
-        return existing.id
+        return existingID
     }
 
     /// Mark an item most-recently-used (e.g. after copying it to the pasteboard).
