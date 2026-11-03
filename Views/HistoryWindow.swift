@@ -426,6 +426,12 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     
     override func showWindow(_ sender: Any?) {
         previousApp = NSWorkspace.shared.frontmostApplication
+        let wasKey = window?.isKeyWindow ?? false
+        let wasClosing = isAnimatingClose
+        // Showing a window that is already key and not closing (Settings from the menu) is no
+        // new open: no key event follows, so queued open steps would go stale and a reset
+        // would wipe the user's search for nothing.
+        let isNewOpen = !wasKey || wasClosing
         isAnimatingClose = false
         window?.contentView?.layer?.removeAnimation(forKey: Self.summonKey)
         isApplyingProgrammaticFrame = true
@@ -433,12 +439,18 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
 
         // Clear search and tag filter before the window becomes key, so the key handler
         // then selects and scrolls to the newest clip of the unfiltered list.
-        NotificationCenter.default.post(name: .yankHistoryWindowDidShow, object: nil)
+        if isNewOpen {
+            NotificationCenter.default.post(name: .yankHistoryWindowDidShow, object: nil)
+        }
 
         super.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(window?.contentView)
+        // A window still key while fading out gets no key event, so hand it the open one here.
+        if wasKey && isNewOpen {
+            NotificationCenter.default.post(name: .yankWindowDidOpen, object: nil)
+        }
         isApplyingProgrammaticFrame = false
         animateIn()
     }

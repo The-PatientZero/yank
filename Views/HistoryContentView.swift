@@ -42,7 +42,9 @@ struct HistoryContentView: View {
     @State var scrollTrigger = false
     /// Open steps still owed to the next key event after a real open. Regaining key focus
     /// without a new open leaves it empty, so the selection and scroll position stay put.
-    @State var pendingOpenSteps: Set<OpenStep> = []
+    /// Starts with the steps for the first open, which can happen before this view listens
+    /// for the "shown" notification.
+    @State var pendingOpenSteps: Set<OpenStep>
 
     /// Each receiver of the key event consumes only its own step, so handler order never matters.
     enum OpenStep: Hashable {
@@ -101,6 +103,13 @@ struct HistoryContentView: View {
         self.onSettingsActiveChange = onSettingsActiveChange
         self.appStatus = appStatus
         _detail = State(initialValue: ClipDetailModel(store: store))
+        _pendingOpenSteps = State(initialValue: Self.openSteps(for: SettingsManager.shared.viewMode))
+    }
+
+    /// The selection step plus the scroll step of the layout that is on screen, so a hidden
+    /// layout cannot hold a stale step.
+    static func openSteps(for viewMode: ClipViewMode) -> Set<OpenStep> {
+        [.selectDefault, viewMode == .split ? .scrollSplitRail : .scrollStream]
     }
 
     var filteredItems: [ClipboardItem] {
@@ -291,8 +300,7 @@ struct HistoryContentView: View {
             searchText = ""
             searchTextDebounced = ""
             activeTagFilter = nil
-            // Only the layout on screen consumes its scroll step, so a hidden one cannot go stale.
-            pendingOpenSteps = [.selectDefault, viewMode == .split ? .scrollSplitRail : .scrollStream]
+            pendingOpenSteps = Self.openSteps(for: viewMode)
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
             axPermission?.refresh()
