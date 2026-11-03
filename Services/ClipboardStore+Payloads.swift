@@ -84,6 +84,24 @@ extension ClipboardStore {
         }
     }
 
+    /// The text "Paste as Text" inserts: an image's recognized text, or a text clip's full text.
+    /// Returns nil when there is nothing to paste, including when a file-backed clip's blob cannot
+    /// be loaded; the stored preview is never used as a stand-in for the full text.
+    func pasteAsTextContent(for item: ClipboardItem) async -> String? {
+        switch item.type {
+        case .image:
+            return item.recognizedText
+        case .text:
+            do {
+                let text = try await ClipboardPayloadLoader.fullText(for: item, blobURL: blobURL(for: item))
+                return text.isEmpty ? nil : text
+            } catch {
+                Log.store.error("Failed to load text for Paste as Text: \(error.localizedDescription)")
+                return nil
+            }
+        }
+    }
+
     func imagePNGDataAsync(for item: ClipboardItem) async -> Data? {
         do {
             return try await ClipboardPayloadLoader.imagePNGData(for: item, blobURL: blobURL(for: item))

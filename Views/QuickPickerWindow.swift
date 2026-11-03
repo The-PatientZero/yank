@@ -51,6 +51,8 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private let onStartPasteSequence: @MainActor () -> Void
     private let presentationState = QuickPickerPresentationState()
     private var previousApp: NSRunningApplication?
+    /// True while Paste as Text loads a clip's full text, so a repeated key press pastes once.
+    private var isLoadingPasteText = false
     private var isApplyingProgrammaticFrame = false
 
     private static let frameDefaultsKey = "QuickPickerWindowFrame"
@@ -210,11 +212,16 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func pasteAsText(_ item: ClipboardItem) {
-        guard let text = item.ocrText ?? item.textContent, !text.isEmpty else { return }
-        let appToRestore = previousApp
-        close()
-        DispatchQueue.main.async {
-            PasteController.pasteText(text, axPermission: self.axPermission, previousApp: appToRestore)
+        guard !isLoadingPasteText else { return }
+        isLoadingPasteText = true
+        Task {
+            defer { isLoadingPasteText = false }
+            guard let text = await store.pasteAsTextContent(for: item) else { return }
+            let appToRestore = previousApp
+            close()
+            DispatchQueue.main.async {
+                PasteController.pasteText(text, axPermission: self.axPermission, previousApp: appToRestore)
+            }
         }
     }
 

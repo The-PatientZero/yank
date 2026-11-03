@@ -66,7 +66,7 @@ struct GlobalKeyMonitor: NSViewRepresentable {
                     handlers.onDown()
                 }
                 return nil
-            case 36: // Enter (⌥↵ pastes an image's text instead)
+            case 36: // Enter (⌥↵ pastes the text of a clip, or an image's recognized text, instead)
                 if event.modifierFlags.contains(.option) {
                     handlers.onPasteAsTextKey()
                 } else {
