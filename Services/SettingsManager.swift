@@ -79,6 +79,8 @@ final class SettingsManager {
     private let aiTaggingEnabledKey = "aiTaggingEnabled"
     private let historyWindowPlacementKey = "historyWindowPlacement"
     private let quickPickerPlacementKey = "quickPickerPlacement"
+    private let historyWindowPlacementNoticeDismissedKey = "historyWindowPlacementNoticeDismissed"
+    private let quickPickerPlacementNoticeDismissedKey = "quickPickerPlacementNoticeDismissed"
     private let shortcutOpenTargetKey = "shortcutOpenTarget"
     private let clickToPasteInQuickViewsKey = "clickToPasteInQuickViews"
     private let hapticFeedbackKey = "hapticFeedback"
@@ -120,9 +122,12 @@ final class SettingsManager {
     /// On-device AI tag suggestions for new text clips. Off by default — opt-in.
     var aiTaggingEnabled: Bool = false
 
-    /// Where the history window opens before the user drags it somewhere custom.
+    /// Where the history window and the quick picker open.
     var historyWindowPlacement: HistoryWindowPlacement = .menuBarIcon
     var quickPickerPlacement: QuickPickerPlacement = .focusedInput
+    /// Set once the user has answered the "Last position" note under the matching placement control.
+    var historyWindowPlacementNoticeDismissed: Bool = false
+    var quickPickerPlacementNoticeDismissed: Bool = false
     var shortcutOpenTarget: ShortcutOpenTarget = .quickPicker
 
     var clickToPasteInQuickViews: Bool = true
@@ -210,6 +215,8 @@ final class SettingsManager {
         self.quickPickerPlacement = QuickPickerPlacementDefaults.initialPlacement(
             storedRawValue: defaults.string(forKey: quickPickerPlacementKey)
         )
+        self.historyWindowPlacementNoticeDismissed = defaults.bool(forKey: historyWindowPlacementNoticeDismissedKey)
+        self.quickPickerPlacementNoticeDismissed = defaults.bool(forKey: quickPickerPlacementNoticeDismissedKey)
         self.shortcutOpenTarget = ShortcutOpenTargetDefaults.initialTarget(
             storedRawValue: defaults.string(forKey: shortcutOpenTargetKey)
         )
@@ -240,6 +247,8 @@ final class SettingsManager {
         defaults.set(aiTaggingEnabled, forKey: aiTaggingEnabledKey)
         defaults.set(historyWindowPlacement.rawValue, forKey: historyWindowPlacementKey)
         defaults.set(quickPickerPlacement.rawValue, forKey: quickPickerPlacementKey)
+        defaults.set(historyWindowPlacementNoticeDismissed, forKey: historyWindowPlacementNoticeDismissedKey)
+        defaults.set(quickPickerPlacementNoticeDismissed, forKey: quickPickerPlacementNoticeDismissedKey)
         defaults.set(shortcutOpenTarget.rawValue, forKey: shortcutOpenTargetKey)
         defaults.set(clickToPasteInQuickViews, forKey: clickToPasteInQuickViewsKey)
         defaults.set(hapticFeedbackEnabled, forKey: hapticFeedbackKey)
