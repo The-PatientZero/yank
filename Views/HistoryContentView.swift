@@ -16,11 +16,6 @@ struct HistoryContentView: View {
     /// `AccessibilityPermission` so the footer hint tracks grants live and stays in step with the
     /// same flag shown in Settings (one source of truth, not a private snapshot).
     private var axUntrusted: Bool { !(axPermission?.isTrusted ?? AXIsProcessTrusted()) }
-    /// Set by the controller when the window has been closed long enough (or first open);
-    /// the view resets search/tag state once, then writes false back.
-    @Binding var shouldResetOnOpen: Bool
-    /// Last selected item UUID, kept on the controller so it survives SwiftUI state resets.
-    @Binding var savedSelectedID: UUID?
     let onCopyToClipboard: (ClipboardItem) -> Void
     let onCopyMultipleToClipboard: ([ClipboardItem]) -> Void
     let onPaste: (ClipboardItem) -> Void
@@ -76,8 +71,6 @@ struct HistoryContentView: View {
     init(store: ClipboardStore,
          axPermission: AccessibilityPermission? = nil,
          settings: SettingsManager = .shared,
-         shouldResetOnOpen: Binding<Bool>,
-         savedSelectedID: Binding<UUID?>,
          onCopyToClipboard: @escaping (ClipboardItem) -> Void,
          onCopyMultipleToClipboard: @escaping ([ClipboardItem]) -> Void,
          onPaste: @escaping (ClipboardItem) -> Void,
@@ -89,8 +82,6 @@ struct HistoryContentView: View {
         self.store = store
         self.axPermission = axPermission
         self.settings = settings
-        _shouldResetOnOpen = shouldResetOnOpen
-        _savedSelectedID = savedSelectedID
         self.onCopyToClipboard = onCopyToClipboard
         self.onCopyMultipleToClipboard = onCopyMultipleToClipboard
         self.onPaste = onPaste
@@ -276,9 +267,6 @@ struct HistoryContentView: View {
         .onChange(of: selectedIndex) { _, newIndex in
             selectedID = filteredItem(at: newIndex)?.id
         }
-        .onChange(of: selectedID) { _, newValue in
-            savedSelectedID = newValue
-        }
         .onChange(of: store.changeToken) { _, _ in
             guard let id = selectedID else { return }
             updateSelection { state in
@@ -289,15 +277,15 @@ struct HistoryContentView: View {
             }
         }
         .onChange(of: masonryKey) { _, _ in rebuildMasonryIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
+            searchText = ""
+            searchTextDebounced = ""
+            activeTagFilter = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
             axPermission?.refresh()
             keepWindowOpen = settings.keepHistoryWindowOpen
             store.commitPendingDeleteIfNeeded()
-            if shouldResetOnOpen {
-                searchText = ""
-                searchTextDebounced = ""
-                activeTagFilter = nil
-            }
             showTagAutocomplete = false
             showQuickLook = false
             detail.cancelTagInput()
