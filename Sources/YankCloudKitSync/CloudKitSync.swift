@@ -63,24 +63,29 @@ public struct CloudKitBackfillResult: Equatable, Sendable {
 /// Conflicts resolve through `ClipboardMerge` (last-writer-wins); deletes propagate via tombstones.
 @MainActor
 public final class CloudKitSyncService {
-    private let database: any CloudKitDatabase
-    private let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+    let database: any CloudKitDatabase
+    let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+    let devicesZoneID = CKRecordZone.ID(
+        zoneName: CloudKitDeviceRegistry.zoneName,
+        ownerName: CKCurrentUserDefaultName
+    )
     private let subscriptionID = "yank-changes"
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
+    let rolloutState: EncryptionRolloutState
     private let tokenKey: String
     private let pushWatermarkKey: String
     private let pushReceiptsKey: String
     private let pullQuarantineKey: String
-    private let encryptedCopyBackfillKey: String
+    let encryptedCopyBackfillKey: String
     private let pushDebounceNanoseconds: UInt64
     private let pushRetryDelaysNanoseconds: [UInt64]
     private let beforeReceiptPersistence: (() throws -> Void)?
     private let afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)?
-    private weak var store: SyncableStore?
+    weak var store: SyncableStore?
     /// Weak like `store`: the composition root owns the settings bridge and outlives the
     /// service, so a strong edge here would keep the app's settings graph alive past `stop()`.
     private weak var settingsStore: (any SyncedSettingsStore)?
-    private var changeToken: CKServerChangeToken?
+    var changeToken: CKServerChangeToken?
     private var pushReceipts: [UUID: Date]?
     private var pullQuarantine: [String: CloudKitPullQuarantineEntry]
     /// Whether the settings record is worth a round trip on the next push. Purely an
@@ -98,6 +103,18 @@ public final class CloudKitSyncService {
     private var activePush: (id: UUID, task: Task<Void, Error>)?
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
+
+    // Encryption rollout. `rolloutDeviceID` stays nil until the app opts in, which keeps the
+    // service dual-writing and silent about devices (the safe default for SwiftPM users).
+    var rolloutDeviceID: String?
+    weak var encryptionStatusReporter: (any SyncEncryptionStatusReporting)?
+    var lastRolloutEvaluation: Date?
+    var rolloutReevaluationRequested = false
+    var activeRolloutEvaluation: (id: UUID, task: Task<Void, Never>)?
+    var activeSweep: (id: UUID, task: Task<Void, Never>)?
+    /// Device records read by the latest evaluation, by device identifier.
+    var knownDeviceStates: [String: CloudKitDeviceRegistry.DeviceState] = [:]
+    var loggedBlankClipIDs: Set<UUID> = []
 
     /// Live entry point: binds to the container's private database. `CKContainer(identifier:)`
     /// hard-traps on a binary not provisioned for the container, so callers must gate on
@@ -120,11 +137,17 @@ public final class CloudKitSyncService {
     private static func liveDatabase(for containerIdentifier: String) -> any CloudKitDatabase {
         let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
         #if DEBUG
+        var wrapped: any CloudKitDatabase = database
         if KeyResetInjectingDatabase.isRequested {
-            return KeyResetInjectingDatabase(wrapping: database)
+            wrapped = KeyResetInjectingDatabase(wrapping: wrapped)
         }
-        #endif
+        if DebugRolloutOverrides.simulateDeviceZoneFailure {
+            wrapped = DeviceZoneFailureInjectingDatabase(wrapping: wrapped)
+        }
+        return wrapped
+        #else
         return database
+        #endif
     }
 
     /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch)
@@ -140,6 +163,7 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.encryptedCopyBackfill.\(containerIdentifier)")
+        EncryptionRolloutState.reset(containerIdentifier: containerIdentifier, defaults: defaults)
     }
 
     /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
@@ -159,6 +183,7 @@ public final class CloudKitSyncService {
         self.store = store
         self.settingsStore = settingsStore
         self.defaults = defaults
+        self.rolloutState = EncryptionRolloutState(defaults: defaults, containerIdentifier: containerIdentifier)
         self.tokenKey = "cloudkit.changeToken.\(containerIdentifier)"
         self.pushWatermarkKey = "cloudkit.lastPushedModifiedAt.\(containerIdentifier)"
         self.pushReceiptsKey = "cloudkit.pushReceipts.\(containerIdentifier)"
@@ -198,6 +223,10 @@ public final class CloudKitSyncService {
         pushRetryAttempt = 0
         activePush?.task.cancel()
         activePush = nil
+        activeRolloutEvaluation?.task.cancel()
+        activeRolloutEvaluation = nil
+        activeSweep?.task.cancel()
+        activeSweep = nil
         if let localChangeObserver {
             NotificationCenter.default.removeObserver(localChangeObserver)
             self.localChangeObserver = nil
@@ -231,9 +260,12 @@ public final class CloudKitSyncService {
             // Bring-up always reconciles the settings record, which is what recovers a record
             // an earlier build could not read and one this device never managed to publish.
             settingsReconciliationPending = true
+            try await prepareBlankRepairIfNeeded(generation: generation)
             try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
             try await pull(generation: generation)
             try requireActive(generation)
+            // Before observers and the first push, so nothing is built in the wrong write mode.
+            try await reconcileEncryptionRollout(generation: generation)
             try startObservingLocalChanges(generation: generation)
             try startObservingSettingsChanges(generation: generation)
             try await pushLocal(generation: generation)
@@ -279,7 +311,7 @@ public final class CloudKitSyncService {
         let missingItems = localItems.filter {
             before.missingRecordNames.contains($0.id.uuidString)
         }
-        let prepared = Self.preparePushRecords(missingItems, in: zoneID) { item in
+        let prepared = Self.preparePushRecords(missingItems, in: zoneID, policy: plainContentPolicy) { item in
             item.isDeleted ? nil : existingBlobURL(for: item)
         }
         guard prepared.skippedItemIDs.isEmpty else {
@@ -361,6 +393,7 @@ public final class CloudKitSyncService {
             try requireActive(generation)
             try await pull(generation: generation)
             try requireActive(generation)
+            try await reconcileEncryptionRollout(generation: generation)
             // Receipt comparison makes this a no-op for a clean pull. Always reconsidering
             // local state is what lets an ordinary remote change repair a missing CKAsset.
             try await pushLocal(generation: generation)
@@ -551,6 +584,7 @@ public final class CloudKitSyncService {
                 for recordName in changes.deletedRecordNames {
                     // A record deleted server-side has nothing left to recover.
                     quarantine.clear(recordName)
+                    forgetErasedVersion(of: recordName)
                     if let id = UUID(uuidString: recordName) {
                         accumulation.remote.append(tombstone(id))
                     }
@@ -568,7 +602,14 @@ public final class CloudKitSyncService {
                     throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
                 }
             }
-            let reconciled = ClipboardMerge.reconcile(local, accumulation.remote)
+            let reconciled = ClipboardMerge.reconcile(
+                Self.droppingHealedBlankItems(
+                    from: local,
+                    remote: accumulation.remote,
+                    healable: accumulation.healableItemIDs
+                ),
+                accumulation.remote
+            )
             try requireActive(generation)
             try store.applyReconciledDurably(reconciled)
             try requireActive(generation)
@@ -583,7 +624,8 @@ public final class CloudKitSyncService {
             let receiptChanges = Self.pullReceiptChanges(
                 remote: accumulation.remote,
                 reconciled: reconciled,
-                repairItemIDs: accumulation.receiptInvalidationItemIDs
+                repairItemIDs: accumulation.receiptInvalidationItemIDs,
+                omittedFields: accumulation.omittedFieldsByItem
             )
             if !receiptChanges.isEmpty {
                 // A push that started before this pull may still commit an older receipt
@@ -598,6 +640,7 @@ public final class CloudKitSyncService {
             guard !quarantine.didOverflow else {
                 throw CloudKitSyncError.pullQuarantineOverflow
             }
+            try await eraseReadableCopies(from: accumulation, generation: generation)
             // Durable before the token: a crash here replays the page instead of losing the
             // record that was skipped.
             if quarantine.didChange {
@@ -614,7 +657,7 @@ public final class CloudKitSyncService {
     }
 
     /// Everything one pull collects before it becomes a single durable apply.
-    private struct PullAccumulation {
+    struct PullAccumulation {
         var remote: [ClipboardItem] = []
         var downloadedBlobs: Set<SyncBlobReference> = []
         var bypassedMissingAssets: [(item: ClipboardItem, blob: SyncBlobReference)] = []
@@ -622,6 +665,15 @@ public final class CloudKitSyncService {
         /// The settings record seen in this pull, if any. Last one wins within a pull — the
         /// record is a singleton, so a later page can only be a newer copy of the same thing.
         var remoteSettings: SyncedSettings?
+        /// Items whose record holds readable content from a current encrypted copy, which can
+        /// replace a blank local copy of the same clip.
+        var healableItemIDs: Set<UUID> = []
+        /// Derived fields a record's encrypted copy left out because the record would not fit.
+        var omittedFieldsByItem: [UUID: Set<String>] = [:]
+        /// Records whose readable copy this device erases once the pull is applied.
+        var readableCopyErasures: [ReadableCopyErasure] = []
+        /// Origins of writers that put readable content back or never learned the encrypted copy.
+        var olderDeviceOrigins: [String] = []
     }
 
     /// In-flight quarantine list for one pull. Only persisted once the pull's records are durable.
@@ -719,6 +771,7 @@ public final class CloudKitSyncService {
                 accumulation.receiptInvalidationItemIDs.insert(item.id)
             }
             accumulation.remote.append(item)
+            noteEncryptedCopyState(of: record, item: item, accumulation: &accumulation)
         case .missingAssetShadowedByLocalTombstone(let item, let blob):
             accumulation.bypassedMissingAssets.append((item, blob))
             accumulation.receiptInvalidationItemIDs.insert(item.id)
@@ -1003,14 +1056,22 @@ public final class CloudKitSyncService {
         let isReceiptMigration = pushReceipts == nil
 
         let existingReceipts = pushReceipts ?? [:]
-        let itemsToPush = Self.itemsNeedingPush(local, receipts: pushReceipts)
+        let policy = plainContentPolicy
+        var itemsToPush = Self.itemsNeedingPush(local, receipts: pushReceipts)
+        if policy == .encryptedOnly {
+            // A blank text clip can only be a copy received from a record whose readable content
+            // was removed; uploading it would overwrite the good encrypted copy for every device.
+            itemsToPush = itemsToPush.filter { !isBlankReceivedTextClip($0) }
+        }
         let currentItemIDs = Set(local.map(\.id))
         let garbageCollectedReceipts = existingReceipts.filter { currentItemIDs.contains($0.key) }
 
         try requireActive(generation)
-        let prepared = Self.preparePushRecords(itemsToPush.filter { !$0.isDeleted }, in: zoneID) { item in
-            existingBlobURL(for: item)
-        }
+        let prepared = try await prepareClipPushRecords(
+            itemsToPush.filter { !$0.isDeleted },
+            policy: policy,
+            generation: generation
+        )
         // A clip CloudKit cannot represent (blob file gone, unusable blob metadata) is skipped
         // instead of blocking every other pending record. It keeps no receipt, so an ordinary
         // later push replays it once the local state is repaired.
@@ -1052,7 +1113,11 @@ public final class CloudKitSyncService {
         } catch CloudKitSyncError.encryptedDataKeyReset where replanAfterKeyReset {
             // Recovery has already emptied the receipts; one more pass uploads every clip.
             try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
+            return
         }
+        #if DEBUG
+        await logRecordShapes(for: recordsToSave.map(\.record.recordID.recordName))
+        #endif
     }
 
     /// Tombstones save onto the server's fetched record: only assignments on a fetched record
@@ -1257,7 +1322,7 @@ public final class CloudKitSyncService {
 
     /// The one place every CloudKit surface reports a reset of the user's encrypted-data key.
     /// Recovery itself runs at a point where it cannot disturb a half-applied pull or push.
-    private func noteEncryptedDataKeyReset(during phase: String) {
+    func noteEncryptedDataKeyReset(during phase: String) {
         syncLog.error("iCloud reported a reset encrypted-data key during \(phase, privacy: .public)")
         encryptedDataKeyResetPending = true
     }
@@ -1314,6 +1379,7 @@ public final class CloudKitSyncService {
     nonisolated static func preparePushRecords(
         _ items: [ClipboardItem],
         in zoneID: CKRecordZone.ID,
+        policy: ClipboardCloudMapping.PlainContentPolicy = .dualWrite,
         blobURL: (ClipboardItem) -> URL?
     ) -> PreparedPushRecords {
         var records: [PreparedPushRecord] = []
@@ -1326,7 +1392,12 @@ public final class CloudKitSyncService {
                 skippedItemIDs.append(item.id)
                 continue
             }
-            guard let record = ClipboardCloudMapping.record(from: item, in: zoneID, blobURL: itemBlobURL) else {
+            guard let record = ClipboardCloudMapping.record(
+                from: item,
+                in: zoneID,
+                blobURL: itemBlobURL,
+                policy: policy
+            ) else {
                 skippedItemIDs.append(item.id)
                 continue
             }
@@ -1336,7 +1407,7 @@ public final class CloudKitSyncService {
         return PreparedPushRecords(records: records, skippedItemIDs: skippedItemIDs)
     }
 
-    private func existingBlobURL(for item: ClipboardItem) -> URL? {
+    func existingBlobURL(for item: ClipboardItem) -> URL? {
         guard let reference = item.syncBlobReference,
               let url = store?.blobURL(for: reference),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -1463,7 +1534,8 @@ public final class CloudKitSyncService {
     nonisolated static func pullReceiptChanges(
         remote: [ClipboardItem],
         reconciled: [ClipboardItem],
-        repairItemIDs: Set<UUID>
+        repairItemIDs: Set<UUID>,
+        omittedFields: [UUID: Set<String>] = [:]
     ) -> PullReceiptChanges {
         var changes = PullReceiptChanges(invalidated: repairItemIDs)
         guard !remote.isEmpty else { return changes }
@@ -1477,7 +1549,7 @@ public final class CloudKitSyncService {
         }
         for (id, remoteItem) in newestRemote {
             guard let winner = winners[id] else { continue }
-            if ClipboardCloudMapping.syncedFieldsMatch(winner, remoteItem),
+            if ClipboardCloudMapping.syncedFieldsMatch(winner, remoteItem, omitting: omittedFields[id] ?? []),
                !repairItemIDs.contains(id) {
                 changes.seeded[id] = remoteItem.modifiedAt
             } else {
@@ -1582,7 +1654,7 @@ public final class CloudKitSyncService {
         return reset
     }
 
-    private func persistToken(
+    func persistToken(
         _ token: CKServerChangeToken?,
         generation: UInt64
     ) throws {
@@ -1595,15 +1667,15 @@ public final class CloudKitSyncService {
         defaults.set(data, forKey: tokenKey)
     }
 
-    private var activeGeneration: UInt64? {
+    var activeGeneration: UInt64? {
         isStopped ? nil : lifecycleGeneration
     }
 
-    private func requireActive(_ generation: UInt64) throws {
+    func requireActive(_ generation: UInt64) throws {
         guard canMutate(generation) else { throw CancellationError() }
     }
 
-    private func canMutate(_ generation: UInt64) -> Bool {
+    func canMutate(_ generation: UInt64) -> Bool {
         !isStopped && lifecycleGeneration == generation && !Task.isCancelled
     }
 
@@ -1619,7 +1691,7 @@ public final class CloudKitSyncService {
     }
 }
 
-private extension Array {
+extension Array {
     func chunked(into size: Int) -> [[Element]] {
         guard size > 0 else { return [self] }
         return stride(from: 0, to: count, by: size).map { start in
@@ -1628,7 +1700,7 @@ private extension Array {
     }
 }
 
-private extension ClipboardItem {
+extension ClipboardItem {
     var syncBlobReference: SyncBlobReference? {
         if let filename = imageFilename { return SyncBlobReference(filename: filename, kind: .image) }
         if let filename = textFilename { return SyncBlobReference(filename: filename, kind: .text) }

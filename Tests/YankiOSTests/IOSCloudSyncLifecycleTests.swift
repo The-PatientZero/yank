@@ -1047,7 +1047,9 @@ private final class LifecycleCloudKitDatabase: CloudKitDatabase {
 
     func fetchZoneChanges(
         _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
+        since token: CKServerChangeToken?,
+        desiredKeys: [CKRecord.FieldKey]?,
+        resultsLimit: Int?
     ) async throws -> CloudKitZoneChanges {
         CloudKitZoneChanges(
             changedRecords: [],
@@ -1066,12 +1068,16 @@ private final class LifecycleCloudKitDatabase: CloudKitDatabase {
 
     func fetchRecords(
         for recordNames: [String],
-        in zoneID: CKRecordZone.ID
+        in zoneID: CKRecordZone.ID,
+        desiredKeys: [CKRecord.FieldKey]?
     ) async throws -> CloudKitFetchedRecords {
         CloudKitFetchedRecords()
     }
 
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
+    func saveRecords(
+        _ records: [CKRecord],
+        savePolicy: CloudKitSavePolicy
+    ) async throws -> CloudKitRecordSaveResult {
         CloudKitRecordSaveResult()
     }
 
@@ -1099,7 +1105,9 @@ private final class RecordingCloudKitDatabase: CloudKitDatabase {
 
     func fetchZoneChanges(
         _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
+        since token: CKServerChangeToken?,
+        desiredKeys: [CKRecord.FieldKey]?,
+        resultsLimit: Int?
     ) async throws -> CloudKitZoneChanges {
         fetchZoneChangesCallCount += 1
         return CloudKitZoneChanges(
@@ -1119,12 +1127,16 @@ private final class RecordingCloudKitDatabase: CloudKitDatabase {
 
     func fetchRecords(
         for recordNames: [String],
-        in zoneID: CKRecordZone.ID
+        in zoneID: CKRecordZone.ID,
+        desiredKeys: [CKRecord.FieldKey]?
     ) async throws -> CloudKitFetchedRecords {
         CloudKitFetchedRecords()
     }
 
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
+    func saveRecords(
+        _ records: [CKRecord],
+        savePolicy: CloudKitSavePolicy
+    ) async throws -> CloudKitRecordSaveResult {
         CloudKitRecordSaveResult()
     }
 

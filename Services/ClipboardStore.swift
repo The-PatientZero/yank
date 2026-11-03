@@ -46,6 +46,9 @@ final class ClipboardStore {
 
     var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
 
+    /// How far the move to end-to-end encrypted clip content has come; nil until sync reports it.
+    var encryptionStatus: SyncEncryptionStatus?
+
     @ObservationIgnored var tombstones: [UUID: Date] = [:]
     @ObservationIgnored var historyWritesDisabled = false
     /// Reconcile may discover blobs that are no longer referenced before the replacement
@@ -353,3 +356,4 @@ final class ClipboardStore {
 }
 
 extension ClipboardStore: SyncableStore {}
+extension ClipboardStore: SyncEncryptionStatusReporting {}

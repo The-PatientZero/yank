@@ -315,12 +315,14 @@ final class IOSCloudSyncController {
             ClipStore,
             any SyncedSettingsStore
         ) -> CloudKitSyncService = { database, store, settingsStore in
-            CloudKitSyncService(
+            let service = CloudKitSyncService(
                 containerIdentifier: IOSCloudSyncController.containerID,
                 store: store,
                 database: database,
                 settingsStore: settingsStore
             )
+            service.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: store)
+            return service
         },
         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.registerForRemoteNotifications()
