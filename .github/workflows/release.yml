@@ -18,19 +18,68 @@ on:
       - "[0-9]*"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 jobs:
-  release:
+  # Secret-free gate: fails a bad tag before the protected job asks a reviewer for approval.
+  verify-source:
+    name: Verify release source
     runs-on: macos-26
-    env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Require main for manual recovery and validate the tag format
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Release recovery is restricted to main." >&2
+            exit 1
+          fi
+          [[ "$RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "Invalid release tag: $RELEASE_TAG"; exit 1; }
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+
+      - name: Require a tag that is already part of main
+        id: resolve
+        run: |
+          TAG_SHA="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" \
+            || { echo "$RELEASE_TAG is not a tag."; exit 1; }
+          git merge-base --is-ancestor "$TAG_SHA" origin/main \
+            || { echo "Tag $RELEASE_TAG is not on main. Merge the release commit to main, then tag it."; exit 1; }
+          echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag matches MARKETING_VERSION
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          grep -q "MARKETING_VERSION: \"${VERSION}\"" project.yml \
+            || { echo "Tag ${RELEASE_TAG} does not match MARKETING_VERSION in project.yml"; exit 1; }
+
+      - name: Check the release notes section exists
+        run: bash scripts/extract_release_notes.sh "$RELEASE_TAG" > /dev/null
+
+  release:
+    needs: verify-source
+    runs-on: macos-26
+    environment:
+      name: release
+      deployment: true
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
       - name: Validate immutable release source
         run: |
@@ -39,6 +88,13 @@ jobs:
           TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
           [ -n "$TAG_SHA" ] && [ "$TAG_SHA" = "$(git rev-parse HEAD)" ] \
             || { echo "Checkout does not match immutable tag $RELEASE_TAG"; exit 1; }
+
+      - name: Confirm the approved commit
+        env:
+          VERIFIED_SHA: ${{ needs.verify-source.outputs.sha }}
+        run: |
+          [ -n "$VERIFIED_SHA" ] && [ "$VERIFIED_SHA" = "$(git rev-parse HEAD)" ] \
+            || { echo "Checkout does not match the commit verified on main for $RELEASE_TAG"; exit 1; }
 
       - name: Load current release tooling for manual recovery
         if: github.event_name == 'workflow_dispatch'
