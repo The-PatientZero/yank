@@ -47,6 +47,15 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
         }
     }
 
+    /// History elements this build cannot read (for example written by another version). They
+    /// are written back unchanged on every save and their files are never deleted. Observed so
+    /// the history screen can tell the user.
+    private(set) var heldElements: [HeldHistoryElement] = [] {
+        didSet { blobStore.protectedFilenames = Set(heldElements.flatMap(\.filenames)) }
+    }
+
+    var heldClipCount: Int { heldElements.count }
+
     /// Monotonic in-process signal for consumers that care about content edits, not just count.
     private(set) var contentRevision: UInt64 = 0
 
@@ -118,7 +127,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     private var historyURL: URL? { appGroupContext?.historyURL }
     private var tombstonesURL: URL? { appGroupContext?.tombstonesURL }
     /// All blob filesystem work lives here; the store keeps history, persistence, and sync.
-    private let blobStore: IOSClipBlobStore
+    private var blobStore: IOSClipBlobStore
 
     /// Settings the user set in-app (App-Group backed). `0` means unlimited / off.
     private var prefs: UserDefaults? { appGroupContext?.defaults }
@@ -592,6 +601,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     /// Remove every clip, leaving tombstones so the clearance propagates via sync.
     func clear() {
         pendingDeletion = nil
+        heldElements = []
         removeItems(ids: Set(items.map(\.id)))
     }
 
@@ -772,6 +782,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
         case .success(let snapshot):
             items = snapshot.items
             tombstones = snapshot.tombstones
+            heldElements = snapshot.heldElements
             if !historyFileExisted {
                 markPullPositionRestartPending()
             }
@@ -817,6 +828,17 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
         }
     }
 
+    /// Stop keeping an element once a readable clip or a newer deletion record supersedes it, so a
+    /// kept copy never doubles a live clip or brings back a deleted one.
+    private func releaseHeldElements() {
+        let kept = HeldHistoryElement.kept(
+            heldElements,
+            tombstones: tombstones,
+            liveIDs: Set(items.map(\.id))
+        )
+        if kept != heldElements { heldElements = kept }
+    }
+
     /// Snapshot on the calling (main) actor, then build and encode both the canonical snapshot
     /// and bounded keyboard projection on the writer's utility queue. The local-change
     /// notification (which schedules a sync push) is thread-agnostic on the receiver.
@@ -826,9 +848,11 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
             clipStoreLog.error("Skipped iOS history save because the on-disk snapshot failed to load.")
             return nil
         }
+        releaseHeldElements()
         let projectionURL = appGroupContext?.keyboardProjectionURL
         let receipt = historyWriter.scheduleSave(
             items: items,
+            preservedElements: heldElements,
             tombstones: tombstones,
             keyboardProjectionURL: projectionURL,
             afterSuccessfulWrite: reconcileBackupExclusionAfterWrite,

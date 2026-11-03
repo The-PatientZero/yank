@@ -90,6 +90,7 @@ extension ClipboardStore {
 
     func clear() {
         resetCaptureSuppression()
+        heldElements = []
         let result = ClipboardMutations.removeItems(ids: Set(items.map(\.id)), from: items)
         blobStore.deleteBlobReferences(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)

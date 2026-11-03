@@ -7,6 +7,10 @@ import Foundation
 struct IOSClipBlobStore {
     private let directory: URL?
 
+    /// Filenames named by history elements this build cannot read. No deletion path or sweep
+    /// removes them, even when a readable clip shares the same file.
+    var protectedFilenames: Set<String> = []
+
     init(directory: URL?) {
         self.directory = directory
     }
@@ -90,13 +94,14 @@ struct IOSClipBlobStore {
     // MARK: - Deletion
 
     func delete(_ reference: SyncBlobReference) {
+        guard !protectedFilenames.contains(reference.filename) else { return }
         guard let directory, let url = reference.containedURL(in: directory) else { return }
         try? FileManager.default.removeItem(at: url)
     }
 
     func delete(_ references: [ClipboardBlobReference]) {
         guard let directory else { return }
-        for reference in references {
+        for reference in references where !protectedFilenames.contains(reference.filename) {
             // Rich archives are macOS-only; iOS never writes one, so there is nothing to remove.
             let kind: SyncBlobKind
             switch reference.kind {
@@ -127,7 +132,8 @@ struct IOSClipBlobStore {
                 options: [.skipsHiddenFiles]
               ) else { return 0 }
         var removedCount = 0
-        for url in entries where !referenced.contains(url.lastPathComponent) {
+        for url in entries where !referenced.contains(url.lastPathComponent)
+            && !protectedFilenames.contains(url.lastPathComponent) {
             let isRegularFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile
             guard isRegularFile == true else { continue }
             if (try? FileManager.default.removeItem(at: url)) != nil {
