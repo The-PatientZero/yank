@@ -1,6 +1,6 @@
 # Yank Privacy Policy
 
-Effective: November 3, 2026
+Effective: November 4, 2026
 
 Yank is a private-by-design clipboard manager for macOS, iPhone, and iPad. It does not
 require an account, contain advertising, or include analytics or tracking SDKs. The Yank
@@ -132,6 +132,7 @@ You can:
 - choose automatic foreground capture or explicit-only capture on iPhone and iPad;
 - keep iCloud sync, Spotlight indexing, and background tag suggestions off;
 - delete individual clips or clear history from Settings;
+- choose whether iPhone and iPad device backups include your clip history (off by default);
 - disable the keyboard or share extension in system settings; and
 - clear history before uninstalling when you want local clip records removed.
 
@@ -139,6 +140,14 @@ When iCloud sync is enabled, clip deletions are synchronized to your other Yank 
 Removing the app alone may leave application support files managed by the operating system
 and does not guarantee deletion of records already stored in iCloud. You can manage iCloud
 application data through your Apple account settings.
+
+On iPhone and iPad, Yank asks the system to leave your clip history, deletion log,
+attachments, keyboard copy and share inbox out of device backups unless you turn on Include
+History in Device Backups in Settings. iOS treats this as a request, not a guarantee. Yank's
+preferences and sync bookkeeping are always part of a device backup. The setting stays on the
+device and is not synced. After a restore from a backup that left history out, a device with
+iCloud sync on gets recent clips back through sync, up to your history limit; with sync off, it
+starts without history.
 
 ## Security and contact
 

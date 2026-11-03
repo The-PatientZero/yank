@@ -8,6 +8,10 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Added
+
+- Added Include History in Device Backups to Settings on iPhone and iPad. It is off by default: Yank asks iOS to leave your history, deletion log, attachments, keyboard copy and share inbox out of device backups, as it already does on the Mac. Existing iPhone and iPad installs stop putting history in new device backups unless you turn the setting on. A device restored from a backup without history gets recent clips back through iCloud sync, up to your history limit, when sync is on. iOS treats the request as guidance, not a guarantee.
+
 ### Fixed
 
 - Stopped recording copies that carry the older concealed and transient markers used by 1Password and some text expanders, on Mac and iPhone. Clips an earlier version already stored stay in history.
