@@ -46,6 +46,8 @@ struct CloudKitRecordSaveResult {
     var conflictedRecordNames: [String] = []
     /// At least one record failed because the user reset their encrypted-data key.
     var encryptedDataKeyWasReset = false
+    /// The most actionable cause among the failed records, when CloudKit reported one.
+    var failure: SyncFailure?
 }
 
 /// CloudKit reports a reset of the user's encrypted-data key as a `zoneNotFound` error whose
@@ -270,12 +272,14 @@ extension CKDatabase: CloudKitDatabase {
         )
         var failedRecordNames = Set<String>()
         var conflictedRecordNames = Set<String>()
+        var failureErrors: [any Error] = []
         for (recordID, result) in results.saveResults {
             guard case .failure(let error) = result else { continue }
             if savePolicy == .ifServerRecordUnchanged, Self.isServerRecordChangedError(error) {
                 conflictedRecordNames.insert(recordID.recordName)
             } else {
                 failedRecordNames.insert(recordID.recordName)
+                failureErrors.append(error)
             }
         }
         let encryptedDataKeyWasReset = results.saveResults.values.contains { result in
@@ -288,7 +292,8 @@ extension CKDatabase: CloudKitDatabase {
         return CloudKitRecordSaveResult(
             failedRecordNames: failedRecordNames.sorted(),
             conflictedRecordNames: conflictedRecordNames.sorted(),
-            encryptedDataKeyWasReset: encryptedDataKeyWasReset
+            encryptedDataKeyWasReset: encryptedDataKeyWasReset,
+            failure: CloudKitSyncFailureClassifier.classify(itemErrors: failureErrors)
         )
     }
 
