@@ -47,11 +47,44 @@ CloudKit database so your Yank devices can reconcile history:
 
 Rich pasteboard archives are not synced.
 
-Today, Yank does not add its own end-to-end encryption to any of this. Clip text, tags, OCR
-text, and the other fields above are stored as ordinary CloudKit fields. Images and large text
-are stored as CloudKit assets, which Apple's CloudKit documentation says CloudKit encrypts by
-default. Yank's maintainer cannot access that private database. Apple processes the
-synchronized data under your iCloud account and Apple's terms.
+Clip text, the name of the source app, tags (including AI-suggested tags), text recognized in
+images, and the search index Yank builds from them are stored in an end-to-end encrypted
+CloudKit field. Apple cannot read that field; it can only be decrypted with a key held in your
+iCloud Keychain. This applies once every device signed in to your iCloud runs a Yank version
+that reads that field:
+
+- While you update your devices, Yank also keeps a readable copy of the same fields in
+  iCloud, so older versions of Yank keep working. Apple can read those copies.
+- Yank stops writing readable copies, and then erases the ones already in iCloud, after at
+  least 14 days since your first updated device reported in and when it has seen no activity
+  from an older version of Yank in the last 60 days. Settings shows how far this has come.
+  Yank cannot see an older device that only reads your clips, so it cannot be certain that
+  every device is updated.
+- A device that still runs an older version of Yank and stays signed in cannot read the
+  encrypted field. It shows clips without their text, and when it saves a clip it can put a
+  readable copy back into iCloud. Yank erases that copy once; if the older device writes it
+  again, Yank leaves it and Settings tells you to update that device.
+
+Some information stays readable by Apple so sync can work: the type of each clip, its
+timestamps, deletion marks, pin and bookmark flags, sizes, file names, the time AI tags were
+added, your history-limit and retention settings, and the random installation identifier
+described above, which is also the name of that installation's small device record in
+iCloud.
+
+Images and large text are stored as CloudKit assets. Yank does not add its own encryption to
+them. CloudKit encrypts assets by default: Apple's documentation states that CloudKit
+"encrypts each chunk before storing it in the third-party services" and that it "ultimately
+encrypts the asset data to a key in the user's iCloud Keychain." Only the first 500
+characters of a large text clip, a preview, are kept in the end-to-end encrypted field.
+
+If you lose access to your iCloud Keychain, for example after resetting your encrypted data,
+the encrypted copy in iCloud can no longer be read. Yank then uploads your clips again from
+the history on your devices.
+
+Yank's maintainer cannot access your private database. Apple processes the synchronized data
+under your iCloud account and Apple's terms.
+
+Source: Apple, "Encrypting user data" (CloudKit documentation).
 
 ## Keyboard and share extensions
 
