@@ -166,6 +166,19 @@ public final class CloudKitSyncService {
         EncryptionRolloutState.reset(containerIdentifier: containerIdentifier, defaults: defaults)
     }
 
+    /// Forgets only where the last pull stopped, so the next pull reads the zone from the start.
+    /// For a device whose local history is gone (for example restored from a backup that left it
+    /// out) while its preferences, and the position in them, came back. Pulling from the start is
+    /// safe against clips and deletions already on the device. Push receipts, the upload
+    /// watermark, the quarantine and the encryption rollout state are kept. Call before
+    /// constructing the service, which reads the token once in `init`.
+    public static func resetPullPosition(
+        containerIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.removeObject(forKey: "cloudkit.changeToken.\(containerIdentifier)")
+    }
+
     /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
     init(
         containerIdentifier: String,

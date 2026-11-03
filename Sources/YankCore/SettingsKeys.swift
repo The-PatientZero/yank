@@ -16,4 +16,7 @@ enum SettingsKeys {
     /// Whether captured clips are pushed into system-wide Core Spotlight. Off by default:
     /// clipboard history can contain secrets, so system-wide indexing is opt-in.
     static let spotlightIndexing = "spotlightIndexing"
+    /// iOS only, device-local (never synced): whether history storage is left in iPhone and iPad
+    /// device backups. An absent key reads as off, so history is excluded unless the user opts in.
+    static let includeHistoryInBackups = "includeHistoryInBackups"
 }

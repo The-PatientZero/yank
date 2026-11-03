@@ -163,7 +163,8 @@ final class HistorySnapshotWriter {
     func scheduleKeyboardProjection(
         items: [ClipboardItem],
         to url: URL,
-        onError: (@Sendable (Error) -> Void)? = nil
+        onError: (@Sendable (Error) -> Void)? = nil,
+        afterWrite: (@Sendable () -> Void)? = nil
     ) {
         queue.async {
             do {
@@ -171,6 +172,7 @@ final class HistorySnapshotWriter {
             } catch {
                 onError?(error)
             }
+            afterWrite?()
         }
     }
 

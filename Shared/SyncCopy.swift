@@ -16,6 +16,15 @@ enum SyncCopy {
             : "This limit applies to this device."
     }
 
+    /// Footer for the iOS choice to include history in device backups. The refill after a restore
+    /// comes only from iCloud sync and is capped by the history limit, so the copy says exactly that.
+    static func backupFooter(syncEnabled: Bool) -> String {
+        let restore = syncEnabled
+            ? "When off, a restored iPhone starts without history and gets recent clips back from iCloud sync, up to your history limit."
+            : "Sync is off, so a restored iPhone would start without history."
+        return "Off by default. \(restore) iOS treats this as a request and may still include the files."
+    }
+
     /// Confirmation shown on the device making the reduction. It has to name the blast radius:
     /// the trim runs on every synced device, and nothing asks again over there.
     static func historyLimitReduction(syncEnabled: Bool) -> String {
