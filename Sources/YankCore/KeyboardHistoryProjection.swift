@@ -1,5 +1,11 @@
 import Foundation
 
+extension ClipboardItem {
+    /// True when `textContent` is only a preview of the clip's text: the full text lives in a blob
+    /// file the keyboard never reads, or was too large to keep at all.
+    var holdsOnlyPreview: Bool { isTruncated || isFileBacked }
+}
+
 /// A bounded, read-only view of canonical history for the keyboard extension. The DTO carries
 /// only fields needed to insert and label text — full `ClipboardItem` metadata can include large
 /// search/OCR/AI payloads and must never cross into the memory-constrained keyboard process.
@@ -15,12 +21,25 @@ struct KeyboardHistoryProjection: Codable, Sendable {
         let timestamp: Date
         let sourceApp: String?
         let textContent: String
+        /// True when `textContent` is only a preview of the clip's text. Files written by older
+        /// releases lack the key; it decodes as false and older readers ignore it.
+        let isPreviewOnly: Bool
 
         init(item: ClipboardItem, textContent: String) {
             self.id = item.id
             self.timestamp = item.timestamp
             self.sourceApp = item.sourceApp
             self.textContent = textContent
+            self.isPreviewOnly = item.holdsOnlyPreview
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try container.decode(UUID.self, forKey: .id)
+            self.timestamp = try container.decode(Date.self, forKey: .timestamp)
+            self.sourceApp = try container.decodeIfPresent(String.self, forKey: .sourceApp)
+            self.textContent = try container.decode(String.self, forKey: .textContent)
+            self.isPreviewOnly = try container.decodeIfPresent(Bool.self, forKey: .isPreviewOnly) ?? false
         }
 
         var clipboardItem: ClipboardItem {
@@ -30,6 +49,9 @@ struct KeyboardHistoryProjection: Codable, Sendable {
                 timestamp: timestamp,
                 sourceApp: sourceApp,
                 textContent: textContent,
+                // The keyboard copy has no blob file; `isTruncated` carries "preview only" so
+                // `holdsOnlyPreview` answers the same here as for the original clip.
+                isTruncated: isPreviewOnly,
                 modifiedAt: timestamp
             )
         }

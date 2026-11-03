@@ -99,7 +99,7 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        let hasInsertableClips = !KeyboardClipSearch.insertableItems(from: items).isEmpty
+        let hasInsertableClips = !KeyboardClipSearch.listableItems(from: items).isEmpty
         if !hasInsertableClips {
             presentStatusCard(.empty)
             return
@@ -242,6 +242,12 @@ final class KeyboardViewController: UIInputViewController {
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: ControlTarget.touch).isActive = true
         row.addAction(UIAction { [weak self, weak row] _ in
             guard let self else { return }
+            if item.holdsOnlyPreview {
+                // Haptics do not fire without Full Access, so the response is visual and spoken.
+                row?.flashPreviewOnlyHint(accent: self.view.tintColor)
+                UIAccessibility.post(notification: .announcement, argument: ClipRowControl.previewOnlyAnnouncement)
+                return
+            }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             row?.flashInserted(accent: self.view.tintColor)
             self.textDocumentProxy.insertText(item.textContent ?? "")
@@ -314,6 +320,10 @@ private final class ClipRowControl: UIControl {
     private let glyphView = UIImageView()
     private let excerptLabel = UILabel()
     private let ageLabel = UILabel()
+    /// Second line on preview-only rows; created only for them to keep normal rows light.
+    private var previewOnlyHintLabel: UILabel?
+
+    static let previewOnlyAnnouncement = "Too large to insert. Open Yank to copy it."
 
     init(item: ClipboardItem, background: UIColor, border: UIColor) {
         self.restingColor = background
@@ -347,7 +357,27 @@ private final class ClipRowControl: UIControl {
         ageLabel.setContentHuggingPriority(.required, for: .horizontal)
         ageLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let content = UIStackView(arrangedSubviews: [glyphView, excerptLabel, ageLabel])
+        let textColumn: UIView
+        if item.holdsOnlyPreview {
+            excerptLabel.textColor = .secondaryLabel
+            let hint = UILabel()
+            hint.text = "Open Yank to paste"
+            hint.font = .preferredFont(forTextStyle: .caption2)
+            hint.adjustsFontForContentSizeCategory = true
+            hint.textColor = UIColor(Color.yankTextTertiary)
+            hint.numberOfLines = 1
+            hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            previewOnlyHintLabel = hint
+            let column = UIStackView(arrangedSubviews: [excerptLabel, hint])
+            column.axis = .vertical
+            column.alignment = .fill
+            column.spacing = Space.xs
+            textColumn = column
+        } else {
+            textColumn = excerptLabel
+        }
+
+        let content = UIStackView(arrangedSubviews: [glyphView, textColumn, ageLabel])
         content.axis = .horizontal
         content.alignment = .center
         content.spacing = Space.md
@@ -362,10 +392,17 @@ private final class ClipRowControl: UIControl {
         ])
 
         isAccessibilityElement = true
-        accessibilityTraits = .button
         accessibilityLabel = item.excerpt
         accessibilityValue = item.relativeAge
-        accessibilityHint = "Inserts this clip"
+        if item.holdsOnlyPreview {
+            // The control stays enabled so a tap reaches the handler, which explains why nothing
+            // was inserted; VoiceOver reads the row as dimmed.
+            accessibilityTraits = [.button, .notEnabled]
+            accessibilityHint = "Too large to insert. Open Yank to copy it."
+        } else {
+            accessibilityTraits = .button
+            accessibilityHint = "Inserts this clip"
+        }
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (control: ClipRowControl, _) in
             control.layer.borderColor = UIColor(Color.yankHairline).cgColor
@@ -379,6 +416,18 @@ private final class ClipRowControl: UIControl {
         if case let .link(url) = kind { return url.host ?? url.absoluteString }
         return item.excerpt
     }
+
+    /// Briefly tints the hint line; an instant colour change, so Reduce Motion needs no special case.
+    func flashPreviewOnlyHint(accent: UIColor) {
+        guard let hint = previewOnlyHintLabel else { return }
+        let restingColor = UIColor(Color.yankTextTertiary)
+        hint.textColor = accent
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.previewOnlyFlashDuration) { [weak hint] in
+            hint?.textColor = restingColor
+        }
+    }
+
+    private static let previewOnlyFlashDuration: TimeInterval = 0.6
 
     func flashInserted(accent: UIColor) {
         UIView.animate(withDuration: 0.10, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
