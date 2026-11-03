@@ -98,6 +98,7 @@ targets:
       - Shared/ClipKindIcon.swift
       - Shared/UndoDeleteBanner.swift
       - Shared/StorageUnavailableBanner.swift
+      - Shared/HeldClipsNotice.swift
       - Shared/AppNotifications.swift
       - Sources/YankCore
       - Sources/YankCloudKitSync
