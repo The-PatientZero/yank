@@ -124,8 +124,13 @@ struct HistoryView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if store.storageUnavailable {
-                StorageUnavailableBanner()
+            VStack(spacing: 0) {
+                if store.storageUnavailable {
+                    StorageUnavailableBanner()
+                }
+                if store.heldClipCount > 0 {
+                    HeldClipsNotice(count: store.heldClipCount)
+                }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {

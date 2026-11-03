@@ -83,6 +83,15 @@ final class ClipboardStore {
 
     var maxItems: Int { captureSettings.historyLimit }
 
+    /// History elements this build cannot read (for example written by another version). They
+    /// are written back unchanged on every save and their files are never deleted. Observed so
+    /// the history window can tell the user.
+    var heldElements: [HeldHistoryElement] = [] {
+        didSet { blobStore.protectedFilenames = Set(heldElements.flatMap(\.filenames)) }
+    }
+
+    var heldClipCount: Int { heldElements.count }
+
     /// All on-disk blob storage is delegated here — see `ClipBlobStore`.
     @ObservationIgnored let blobStore: ClipBlobStore
 
@@ -307,6 +316,7 @@ final class ClipboardStore {
         case .success(let snapshot):
             items = snapshot.items
             tombstones = snapshot.tombstones
+            heldElements = snapshot.heldElements
         case .failure(let error):
             storageUnavailable = true
             historyWritesDisabled = true
@@ -361,12 +371,24 @@ final class ClipboardStore {
         }
     }
 
+    /// Stop keeping an element once a readable clip or a newer deletion record supersedes it, so a
+    /// kept copy never doubles a live clip or brings back a deleted one.
+    private func releaseHeldElements() {
+        let kept = HeldHistoryElement.kept(
+            heldElements,
+            tombstones: tombstones,
+            liveIDs: Set(items.map(\.id))
+        )
+        if kept != heldElements { heldElements = kept }
+    }
+
     func persist(notify: Bool = true) {
         guard !historyWritesDisabled else {
             Log.store.error("Skipped history save because the on-disk snapshot failed to load.")
             return
         }
-        historyWriter.scheduleSave(items: items, tombstones: tombstones)
+        releaseHeldElements()
+        historyWriter.scheduleSave(items: items, preservedElements: heldElements, tombstones: tombstones)
         if notify {
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
         }

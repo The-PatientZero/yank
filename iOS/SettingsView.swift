@@ -312,7 +312,10 @@ struct SettingsView: View {
                 Button("Clear History", role: .destructive) { store.clear() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Removes every clip from this device. With sync on, the clearance propagates to your other devices.")
+                Text([
+                    "Removes every clip from this device. With sync on, the clearance propagates to your other devices.",
+                    HeldClipsNotice.clearWarning(count: store.heldClipCount)
+                ].compactMap { $0 }.joined(separator: " "))
             }
             Toggle(isOn: $settings.includeHistoryInBackups) {
                 Label("Include History in Device Backups", systemImage: "externaldrive.badge.icloud")

@@ -194,6 +194,9 @@ struct HistoryContentView: View {
             if store.storageUnavailable {
                 StorageUnavailableBanner()
             }
+            if store.heldClipCount > 0 {
+                HeldClipsNotice(count: store.heldClipCount)
+            }
 
             HistorySearchHeader(
                 searchText: $searchText,

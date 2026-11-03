@@ -479,7 +479,10 @@ final class ClipboardController {
     private func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear Clipboard History?"
-        alert.informativeText = "This will permanently delete all clipboard items."
+        alert.informativeText = [
+            "This will permanently delete all clipboard items.",
+            HeldClipsNotice.clearWarning(count: store.heldClipCount)
+        ].compactMap { $0 }.joined(separator: " ")
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
