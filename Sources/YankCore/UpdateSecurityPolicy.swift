@@ -3,6 +3,7 @@ import Foundation
 enum UpdateError: LocalizedError {
     case invalidURL(String)
     case untrustedHost(String)
+    case untrustedAssetPath(String)
     case unsupportedReleaseFeed(String)
     case invalidHTTPStatus(Int)
     case responseTooLarge(what: String, limitBytes: Int)
@@ -24,6 +25,8 @@ enum UpdateError: LocalizedError {
             return "Invalid update URL: \(value)"
         case let .untrustedHost(host):
             return "Update asset came from an untrusted host: \(host)"
+        case let .untrustedAssetPath(path):
+            return "Update asset is not on the project's release path: \(path)"
         case let .unsupportedReleaseFeed(url):
             return "Update feed must be a public HTTPS manifest, not a private or authenticated API: \(url)"
         case let .invalidHTTPStatus(status):
@@ -59,6 +62,19 @@ enum UpdateSecurityPolicy {
     /// compromised host cannot force unbounded buffering. The app payload streams to disk instead.
     static let maximumReleaseFeedBytes = 4 * 1_024 * 1_024
     static let maximumChecksumBytes = 4 * 1_024
+    /// Ceiling for the app archive, which streams to disk. The real archive is a few MB, so this
+    /// leaves ample room to grow; an installed build that sees a larger archive fails with a
+    /// size error until the user reinstalls, so raise it before shipping an archive near it.
+    static let maximumUpdateArchiveBytes = 128 * 1_024 * 1_024
+
+    /// Release assets (archive and checksum) are listed only on this host and path. The final
+    /// location after GitHub's redirect to its storage host is checked separately.
+    private static let releaseAssetHost = "github.com"
+    private static let releaseAssetPathPrefix = "/The-PatientZero/yank/releases/download/"
+    /// An asset path after the prefix is exactly `<tag>/<file>`.
+    private static let releaseAssetPathSegmentCount = 2
+    /// Percent-encoded dot, slash and backslash: refused so the path cannot hide traversal.
+    private static let forbiddenEncodedPathSequences = ["%2e", "%2f", "%5c"]
 
     static func validateReleaseFeedURL(_ url: URL) throws {
         guard url.scheme == "https" else { throw UpdateError.invalidURL(url.absoluteString) }
@@ -79,8 +95,14 @@ enum UpdateSecurityPolicy {
 
     static func validateReleaseAssetURL(_ url: URL) throws {
         guard url.scheme == "https" else { throw UpdateError.invalidURL(url.absoluteString) }
-        guard let host = url.host, isTrustedReleaseHost(host) else {
+        guard let host = url.host, host.lowercased() == releaseAssetHost else {
             throw UpdateError.untrustedHost(url.host ?? "unknown")
+        }
+        guard url.user == nil, url.password == nil, url.port == nil,
+              url.query == nil, url.fragment == nil,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              isReleaseAssetPath(components.percentEncodedPath) else {
+            throw UpdateError.untrustedAssetPath(url.path)
         }
     }
 
@@ -112,6 +134,21 @@ enum UpdateSecurityPolicy {
             throw UpdateError.missingChecksum
         }
         return hash.lowercased()
+    }
+
+    /// Matches the encoded path as given, without decoding it first. GitHub treats owner and
+    /// repository names case-insensitively, so the prefix does too.
+    private static func isReleaseAssetPath(_ encodedPath: String) -> Bool {
+        let lowered = encodedPath.lowercased()
+        guard !encodedPath.contains("\\"),
+              !forbiddenEncodedPathSequences.contains(where: lowered.contains),
+              lowered.hasPrefix(releaseAssetPathPrefix.lowercased()) else {
+            return false
+        }
+        let remainder = encodedPath.dropFirst(releaseAssetPathPrefix.count)
+        let segments = remainder.split(separator: "/", omittingEmptySubsequences: false)
+        return segments.count == releaseAssetPathSegmentCount
+            && segments.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
     private static func isTrustedReleaseHost(_ host: String) -> Bool {
