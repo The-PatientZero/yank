@@ -12,7 +12,7 @@ let clipStoreLog = Logger(subsystem: "com.thepatientzero.yank", category: "store
 /// Group so the keyboard and share extensions read the same data.
 @MainActor
 @Observable
-final class ClipStore: SyncableStore {
+final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     private struct PendingForegroundTextCapture {
         let pasteboardGeneration: Int
         let item: ClipboardItem
@@ -53,6 +53,9 @@ final class ClipStore: SyncableStore {
     private(set) var firstSyncState: FirstSyncState = .idle
 
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+
+    /// How far the move to end-to-end encrypted clip content has come; nil until sync reports it.
+    private(set) var encryptionStatus: SyncEncryptionStatus?
 
     /// True when the blobs container or its at-rest protection class failed to set up — synced
     /// image/text blobs may be missing or weaker than `completeUntilFirstUserAuthentication`.
@@ -613,6 +616,11 @@ final class ClipStore: SyncableStore {
 
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         syncStatus = .localOnly(reason: reason)
+        encryptionStatus = nil
+    }
+
+    func markEncryptionStatus(_ status: SyncEncryptionStatus?) {
+        encryptionStatus = status
     }
 
     func itemsForSync() -> [ClipboardItem] {

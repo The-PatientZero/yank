@@ -4,7 +4,9 @@ import CloudKit
 
 /// Debug-only wrapper that makes the live database report an encrypted-data key reset once from
 /// a zone fetch and once from a save, so the recovery path can be watched without resetting a
-/// real iCloud account. Active only when the process is launched with `launchArgument`.
+/// real iCloud account. Active only when the process is launched with `launchArgument`. Only
+/// requests for the clip zone are affected: the device registry zone is a separate zone that a
+/// reset of the encrypted-data key does not turn into a recovery for clip sync.
 @MainActor
 final class KeyResetInjectingDatabase: CloudKitDatabase {
     static let launchArgument = "-yankSimulateEncryptedDataKeyReset"
@@ -12,6 +14,8 @@ final class KeyResetInjectingDatabase: CloudKitDatabase {
     static var isRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(launchArgument)
     }
+
+    private static let clipZoneName = "YankZone"
 
     private let base: any CloudKitDatabase
     private var fetchPending = true
@@ -39,13 +43,20 @@ final class KeyResetInjectingDatabase: CloudKitDatabase {
 
     func fetchZoneChanges(
         _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
+        since token: CKServerChangeToken?,
+        desiredKeys: [CKRecord.FieldKey]?,
+        resultsLimit: Int?
     ) async throws -> CloudKitZoneChanges {
-        if fetchPending {
+        if fetchPending, zoneID.zoneName == Self.clipZoneName {
             fetchPending = false
             throw Self.resetError
         }
-        return try await base.fetchZoneChanges(zoneID, since: token)
+        return try await base.fetchZoneChanges(
+            zoneID,
+            since: token,
+            desiredKeys: desiredKeys,
+            resultsLimit: resultsLimit
+        )
     }
 
     func fetchRecordPresence(
@@ -57,20 +68,24 @@ final class KeyResetInjectingDatabase: CloudKitDatabase {
 
     func fetchRecords(
         for recordNames: [String],
-        in zoneID: CKRecordZone.ID
+        in zoneID: CKRecordZone.ID,
+        desiredKeys: [CKRecord.FieldKey]?
     ) async throws -> CloudKitFetchedRecords {
-        try await base.fetchRecords(for: recordNames, in: zoneID)
+        try await base.fetchRecords(for: recordNames, in: zoneID, desiredKeys: desiredKeys)
     }
 
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
-        if savePending, !records.isEmpty {
+    func saveRecords(
+        _ records: [CKRecord],
+        savePolicy: CloudKitSavePolicy
+    ) async throws -> CloudKitRecordSaveResult {
+        if savePending, records.contains(where: { $0.recordID.zoneID.zoneName == Self.clipZoneName }) {
             savePending = false
             return CloudKitRecordSaveResult(
                 failedRecordNames: records.map(\.recordID.recordName).sorted(),
                 encryptedDataKeyWasReset: true
             )
         }
-        return try await base.saveRecords(records)
+        return try await base.saveRecords(records, savePolicy: savePolicy)
     }
 
     func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome {

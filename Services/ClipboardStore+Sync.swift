@@ -16,6 +16,11 @@ extension ClipboardStore {
 
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         syncStatus = .localOnly(reason: reason)
+        encryptionStatus = nil
+    }
+
+    func markEncryptionStatus(_ status: SyncEncryptionStatus?) {
+        encryptionStatus = status
     }
 
     /// Canonical set for the sync transport: live items plus materialised tombstones.

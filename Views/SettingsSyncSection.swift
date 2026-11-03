@@ -24,12 +24,35 @@ extension SettingsView {
 
             if let store {
                 syncStatusRow(store.syncStatus)
+                if case .localOnly = store.syncStatus {} else if let encryption = store.encryptionStatus {
+                    encryptionStatusRow(encryption)
+                }
             }
 
             if let axPermission {
                 axPermissionRow(axPermission)
             }
         }
+    }
+
+    func encryptionStatusRow(_ status: SyncEncryptionStatus) -> some View {
+        let isWarning: Bool
+        let symbol: String
+        switch status {
+        case .complete:
+            isWarning = false
+            symbol = "lock.icloud"
+        case .olderDeviceSeen:
+            isWarning = true
+            symbol = "exclamationmark.icloud"
+        case .finishing, .removingReadableCopies:
+            isWarning = false
+            symbol = "icloud.and.arrow.up"
+        }
+        return Label(SyncCopy.encryption(status), systemImage: symbol)
+            .font(.system(size: TypeScale.caption))
+            .foregroundColor(isWarning ? .yankDanger : .secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder

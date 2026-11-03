@@ -169,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     containerIdentifier: ClipboardController.cloudContainerID,
                     store: clipboardStore
                 )
+                sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: nil)
                 let result = try await sync.backfillMissingLocalRecords(dryRun: dryRun)
                 finishBackfillCommand(.completed(dryRun: dryRun, result: result))
             } catch {

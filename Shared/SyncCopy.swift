@@ -24,6 +24,32 @@ enum SyncCopy {
             : "on this device"
         return "This permanently deletes your oldest unprotected clips to fit the new size, \(scope). Pinned, bookmarked, and tagged clips are always kept. This cannot be undone."
     }
+
+    /// One plain sentence for the state of the move to end-to-end encrypted clip content.
+    static func encryption(_ status: SyncEncryptionStatus) -> String {
+        switch status {
+        case .finishing(let earliestCompletion, let olderDeviceLastSeen):
+            var parts = ["Finishing encryption. Update Yank on your other devices so clip text in iCloud can be kept private."]
+            if let olderDeviceLastSeen {
+                parts.append("Activity from an older version of Yank was last seen \(encryptionDate(olderDeviceLastSeen)).")
+            }
+            if let earliestCompletion, earliestCompletion > Date() {
+                parts.append("The earliest this can finish is \(encryptionDate(earliestCompletion)).")
+            }
+            return parts.joined(separator: " ")
+        case .removingReadableCopies:
+            return "Removing readable copies of your clips from iCloud."
+        case .complete:
+            return "Clip details such as short text, tags and search data are end-to-end encrypted in iCloud. Images and large text use CloudKit's default encryption."
+        case .olderDeviceSeen(let lastSeen):
+            return "A device on an older version of Yank cannot show new clips and can put readable copies back. Update Yank on it. Last seen \(encryptionDate(lastSeen))."
+        }
+    }
+
+    private static func encryptionDate(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
+    }
+
     static let disabled = "iCloud sync is off."
     static let signedOut = "Sign in to iCloud to sync your clips across devices."
     static let notProvisioned = "iCloud sync is not available in this build."

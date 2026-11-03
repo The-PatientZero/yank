@@ -47,6 +47,22 @@ Before tagging any release that adds record fields, as a manual step (nothing in
 An existing field cannot be turned into an encrypted one, so new encrypted content always gets
 a new field.
 
+The device record is a separate step, because it is a new record type rather than a field on
+`ClipboardItem`. Before tagging a release that includes it:
+
+1. Run a Debug build against Development with iCloud sync on. It saves one `DeviceSyncFormat`
+   record, named with the install's device ID, in the zone `YankDevicesZone`.
+2. In CloudKit Console (Development), confirm the record type `DeviceSyncFormat` exists with
+   its four fields: `encryptedFormat`, `encryptedOnlySince`, `sweepCompletedAt` and
+   `olderOrigins`. To see all four, run the proof that opens the rollout and finishes the sweep.
+3. Deploy the Development schema to Production and confirm `DeviceSyncFormat` appears there.
+   Without it, device records fail to save, the encrypted-only rollout never opens, and clip
+   sync is otherwise unaffected.
+
+`ClipboardItem` gets no new CloudKit field for this: the extra payload keys live inside the bytes
+of the encrypted `encContent` field. The zone `YankDevicesZone` is created by the app and needs
+no deployment.
+
 The `Release` workflow (`.github/workflows/release.yml`) then:
 
 0. Checks, without any secret, that the tag is well formed, that its commit is already
