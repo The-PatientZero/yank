@@ -1,6 +1,6 @@
 # Yank Privacy Policy
 
-Effective: July 26, 2026
+Effective: November 3, 2026
 
 Yank is a private-by-design clipboard manager for macOS, iPhone, and iPad. It does not
 require an account, contain advertising, or include analytics or tracking SDKs. The Yank
@@ -32,10 +32,26 @@ tagged clips are retained until you remove their protection or delete them.
 
 ## Optional iCloud sync
 
-iCloud sync is off by default. If you enable it, supported clip content and metadata are
-stored in your private CloudKit database so your Yank devices can reconcile history. Yank's
-maintainer cannot access that private database. Apple processes the synchronized data under
-your iCloud account and Apple's terms.
+iCloud sync is off by default. If you enable it, the following are stored in your private
+CloudKit database so your Yank devices can reconcile history:
+
+- clip text and images, including large clips that are stored as separate files;
+- the name of the app a clip was copied from;
+- tags, including AI-suggested tags, and text recognized in images (OCR);
+- pin and bookmark flags;
+- timestamps and deletion marks, so deletions reach your other devices;
+- your history-limit and retention settings; and
+- a random identifier, generated once for each Yank installation, that is attached to every
+  synced clip to show which of your devices created it. It is a random value, not derived
+  from your name, Apple ID, or hardware.
+
+Rich pasteboard archives are not synced.
+
+Today, Yank does not add its own end-to-end encryption to any of this. Clip text, tags, OCR
+text, and the other fields above are stored as ordinary CloudKit fields. Images and large text
+are stored as CloudKit assets, which Apple's CloudKit documentation says CloudKit encrypts by
+default. Yank's maintainer cannot access that private database. Apple processes the
+synchronized data under your iCloud account and Apple's terms.
 
 ## Keyboard and share extensions
 
@@ -57,8 +73,10 @@ with the related clip through your private CloudKit database.
 
 ## Spotlight and system permissions
 
-Spotlight indexing is opt-in. When enabled, selected clip metadata is added to the device's
-system search index. Turning the setting off removes Yank's Spotlight index.
+Spotlight indexing is opt-in and works the same way on macOS, iPhone, and iPad. When
+enabled, a short excerpt of each text clip, its first non-empty line up to 100 characters, is
+added to the device's system search index. The rest of the clip is not indexed. Turning the
+setting off removes Yank's Spotlight index.
 
 On macOS, Accessibility permission enables automatic paste and focused-field placement.
 Yank uses it to perform those requested actions, not to record keystrokes. Notification and
