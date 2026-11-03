@@ -105,9 +105,13 @@ enum PasteboardPayloadMaterializer {
         )
     }
 
+    /// Bundle identifiers are at most 255 bytes; a longer source hint is not one.
+    nonisolated static let maxSourceHintBytes = 256
+
     nonisolated static func materialize(
         pasteboardName: String,
         expectedGeneration: Int,
+        excludedSourceBundleIDs: Set<String> = [],
         limits: Limits = .capture
     ) -> PasteboardPayloadSnapshot? {
         let reader = AppKitPasteboardPayloadReader(
@@ -116,6 +120,7 @@ enum PasteboardPayloadMaterializer {
         return materialize(
             reader: reader,
             expectedGeneration: expectedGeneration,
+            excludedSourceBundleIDs: excludedSourceBundleIDs,
             limits: limits
         )
     }
@@ -123,6 +128,7 @@ enum PasteboardPayloadMaterializer {
     nonisolated static func materialize(
         reader: PasteboardPayloadReading,
         expectedGeneration: Int,
+        excludedSourceBundleIDs: Set<String> = [],
         limits: Limits
     ) -> PasteboardPayloadSnapshot? {
         guard reader.changeCount == expectedGeneration else { return nil }
@@ -133,6 +139,17 @@ enum PasteboardPayloadMaterializer {
                   $0.utf8.count <= limits.maxTypeIdentifierBytes
               }),
               !typeIdentifiers.contains(where: ConcealedPasteboardType.all.contains) else {
+            return nil
+        }
+
+        // The hint is read before any payload so an excluded app's copy never reaches memory.
+        // It can only add a skip; a missing, empty, oversized or non-UTF-8 hint changes nothing.
+        if typeIdentifiers.contains(PasteboardSourceHint.typeIdentifier),
+           let sourceBundleID = sourceHintBundleID(reader: reader),
+           excludedSourceBundleIDs.contains(sourceBundleID) {
+            Log.capture.info(
+                "Skipping copy whose source hint names an excluded app: \(sourceBundleID, privacy: .public)"
+            )
             return nil
         }
 
@@ -149,6 +166,18 @@ enum PasteboardPayloadMaterializer {
             reader: reader,
             limits: limits
         )
+    }
+
+    private nonisolated static func sourceHintBundleID(reader: PasteboardPayloadReading) -> String? {
+        guard let data = reader.data(forType: PasteboardSourceHint.typeIdentifier),
+              data.count <= maxSourceHintBytes,
+              let hint = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = hint.trimmingCharacters(
+            in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\0"))
+        )
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private nonisolated static func materializedPayload(

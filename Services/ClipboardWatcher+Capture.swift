@@ -22,6 +22,12 @@ final class ClipboardWatcher {
     @ObservationIgnored private let captureQueue = SerialCaptureQueue<PreparedClipboardCapture>()
     private var changeSuppression = PasteboardChangeSuppression()
 
+    /// Apps that were in front since the previous poll. The excluded-app check reads this window
+    /// instead of only the app in front when the poll notices a change, so switching away from an
+    /// excluded app right after copying cannot attribute the copy to the next app.
+    @ObservationIgnored private var lastActivatedBundleID: String?
+    @ObservationIgnored private var recentFrontmostBundleIDs: Set<String> = []
+
     /// Some apps re-assert pasteboard ownership with byte-identical content (lazy-promise
     /// re-declares, activation rewrites), bumping `changeCount` without a user copy; durable
     /// dedup misses those for rich/image/file captures, so drop repeats of the last-applied content.
@@ -63,10 +69,35 @@ final class ClipboardWatcher {
             name: .yankIgnoreNextChange,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleApplicationActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+        resetFrontmostWindow()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    @objc private func handleApplicationActivated(_ notification: Notification) {
+        guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication,
+              let bundleID = application.bundleIdentifier else {
+            return
+        }
+        lastActivatedBundleID = bundleID
+        recentFrontmostBundleIDs.insert(bundleID)
+    }
+
+    /// Restarts the window from the app in front now. Called when watching starts or resumes,
+    /// because the activation observer keeps running while stopped or paused.
+    private func resetFrontmostWindow() {
+        lastActivatedBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        recentFrontmostBundleIDs = lastActivatedBundleID.map { [$0] } ?? []
     }
 
     @objc private func handleIgnoreNextChange(_ notification: Notification) {
@@ -79,6 +110,7 @@ final class ClipboardWatcher {
 
     func startWatching() {
         wantsWatching = true
+        resetFrontmostWindow()
         installTimerIfNeeded()
     }
 
@@ -117,6 +149,7 @@ final class ClipboardWatcher {
     func resume() {
         isPaused = false
         lastChangeCount = pasteboard.changeCount
+        resetFrontmostWindow()
         installTimerIfNeeded()
     }
 
@@ -144,6 +177,11 @@ final class ClipboardWatcher {
     func checkClipboard() {
         guard !isPaused else { return }
 
+        // The window covers the time since the previous poll, so it restarts on every poll, even
+        // one that sees no change or returns early below. A skipped copy then cannot affect the next.
+        let windowBundleIDs = recentFrontmostBundleIDs
+        recentFrontmostBundleIDs = lastActivatedBundleID.map { [$0] } ?? []
+
         let currentChangeCount = pasteboard.changeCount
 
         guard currentChangeCount != lastChangeCount else { return }
@@ -168,7 +206,12 @@ final class ClipboardWatcher {
         // Privacy guard: never record concealed/secret copies or excluded apps.
         let settings = captureSettings
         let policy = CapturePolicy(excludedBundleIDs: settings.excludedBundleIDs)
-        guard policy.decide(frontmostBundleID: observedBundleID, pasteboardTypes: []) == .capture else {
+        var candidateBundleIDs = windowBundleIDs
+        if let observedBundleID { candidateBundleIDs.insert(observedBundleID) }
+        if let excludedBundleID = policy.excludedBundleID(among: candidateBundleIDs) {
+            Log.capture.info(
+                "Skipping copy made while an excluded app was in front: \(excludedBundleID, privacy: .public)"
+            )
             return
         }
 
@@ -179,7 +222,8 @@ final class ClipboardWatcher {
                 guard !Task.isCancelled,
                       let snapshot = PasteboardPayloadMaterializer.materialize(
                           pasteboardName: pasteboardName,
-                          expectedGeneration: currentChangeCount
+                          expectedGeneration: currentChangeCount,
+                          excludedSourceBundleIDs: settings.excludedBundleIDs
                       ),
                       !Task.isCancelled else {
                     return nil
