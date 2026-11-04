@@ -213,6 +213,18 @@ Store only the dedicated TestFlight key in this environment:
 | `TESTFLIGHT_ASC_KEY_B64` | Dedicated App Store Connect API `.p8`, base64-encoded |
 | `TESTFLIGHT_ASC_KEY_ID` | Key ID for that dedicated key |
 | `TESTFLIGHT_ASC_ISSUER_ID` | Team issuer ID from App Store Connect → Integrations |
+| `IOS_DEVELOPMENT_CERTIFICATE_P12_B64` | One Apple Development certificate with its private key (`.p12`), base64-encoded |
+| `IOS_DEVELOPMENT_CERTIFICATE_PASSWORD` | Password of that `.p12` |
+
+Every runner starts with an empty keychain. Without the stored certificate, automatic
+signing creates a new Apple Development certificate on each run, and the team soon hits
+Apple's certificate limit, which fails the archive. The workflow imports the stored one,
+then checks that the archive was signed with it and fails if Xcode made a new one.
+Create it once: generate a private key and certificate signing request with `openssl`,
+create an Apple Development certificate from the request under Certificates,
+Identifiers & Profiles, combine the downloaded certificate and the key into a `.p12`,
+and store both secrets with `gh secret set --env testflight`. When the certificate
+expires or is revoked, the check fails; create a new one the same way.
 
 Add these non-secret environment variables:
 

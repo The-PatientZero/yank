@@ -167,6 +167,46 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "Selected Yank ${MARKETING_VERSION} (${BUILD_NUMBER})."
 
+      # Each runner starts with an empty keychain. Without a stored identity, automatic
+      # signing creates a new Apple Development certificate on every run, and the team
+      # soon reaches Apple's certificate limit.
+      - name: Import reusable development certificate
+        env:
+          IOS_DEVELOPMENT_CERTIFICATE_P12_B64: ${{ secrets.IOS_DEVELOPMENT_CERTIFICATE_P12_B64 }}
+          IOS_DEVELOPMENT_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DEVELOPMENT_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$IOS_DEVELOPMENT_CERTIFICATE_P12_B64" ] || [ -z "$IOS_DEVELOPMENT_CERTIFICATE_PASSWORD" ]; then
+            echo "IOS_DEVELOPMENT_CERTIFICATE_P12_B64 and IOS_DEVELOPMENT_CERTIFICATE_PASSWORD are required." >&2
+            exit 1
+          fi
+
+          umask 077
+          KEYCHAIN_PATH="$RUNNER_TEMP/ios-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          CERTIFICATE_PATH="$RUNNER_TEMP/ios-development.p12"
+          trap 'rm -f "$CERTIFICATE_PATH"' EXIT
+          printf '%s' "$IOS_DEVELOPMENT_CERTIFICATE_P12_B64" | base64 --decode > "$CERTIFICATE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -f pkcs12 \
+            -P "$IOS_DEVELOPMENT_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          IDENTITIES="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep 'Apple Development' || true)"
+          if [ "$(printf '%s\n' "$IDENTITIES" | grep -c 'Apple Development')" -ne 1 ]; then
+            echo "The stored certificate must hold exactly one valid Apple Development identity." >&2
+            exit 1
+          fi
+          SIGNING_CERTIFICATE_SHA1="$(printf '%s\n' "$IDENTITIES" | awk '{print $2}')"
+          {
+            echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH"
+            echo "SIGNING_CERTIFICATE_SHA1=$SIGNING_CERTIFICATE_SHA1"
+          } >> "$GITHUB_ENV"
+
       - name: Archive signed iOS release candidate
         run: |
           xcodebuild archive \
@@ -182,6 +222,19 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             MARKETING_VERSION="$MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+
+      - name: Verify the archive reused the stored certificate
+        run: |
+          APP_PATH="$ARCHIVE_PATH/Products/Applications/YankiOS.app"
+          EXTRACT_PREFIX="$RUNNER_TEMP/archive-signing-certificate-"
+          codesign --display --extract-certificates="$EXTRACT_PREFIX" "$APP_PATH"
+          ARCHIVE_CERTIFICATE_SHA1="$(shasum -a 1 "${EXTRACT_PREFIX}0" | awk '{print toupper($1)}')"
+          rm -f "$EXTRACT_PREFIX"*
+          if [ "$ARCHIVE_CERTIFICATE_SHA1" != "$SIGNING_CERTIFICATE_SHA1" ]; then
+            echo "The archive was signed with a different certificate than the stored one." >&2
+            echo "Xcode probably created a new certificate; check that the stored one is still valid." >&2
+            exit 1
+          fi
 
       - name: Prepare TestFlight upload options
         run: |
@@ -338,6 +391,9 @@ jobs:
         run: |
           if [ -n "${ASC_KEY_PATH:-}" ] && [ -f "$ASC_KEY_PATH" ]; then
             rm -f "$ASC_KEY_PATH"
+          fi
+          if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ] && [ -f "$SIGNING_KEYCHAIN_PATH" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH"
           fi
           rm -f "$EXPORT_OPTIONS_PATH"
           rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"
