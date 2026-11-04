@@ -425,6 +425,9 @@ final class ClipboardController {
         let taskID = UUID()
         let task = Task { @MainActor [weak self, weak sync] in
             guard let sync else { return }
+            // Bring-up reads the synced settings; until it has, this device's own retention
+            // window may be stale, also when sync is switched on or signs back in mid-run.
+            self?.store.isRetentionHeldForSettings = true
             let result = await sync.start()
             guard let self,
                   !Task.isCancelled,

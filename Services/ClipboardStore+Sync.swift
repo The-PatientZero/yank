@@ -25,6 +25,10 @@ extension ClipboardStore {
 
     func markSyncFailure(_ failure: SyncFailure) {
         setSyncState(.failed(message: failure.message), failureKind: failure.kind)
+        // With no usable account no synced setting is coming to wait for.
+        if failure.kind == .signedOut || failure.kind == .accountRestricted {
+            isRetentionHeldForSettings = false
+        }
     }
 
     func markClipsWaiting(_ clips: [SyncWaitingClip]) {

@@ -777,6 +777,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     private func recordSyncFailure(message: String, kind: SyncFailureKind?) {
+        // With no usable account no synced setting is coming to wait for.
+        if kind == .signedOut || kind == .accountRestricted {
+            markSyncedSettingsRead()
+        }
         syncStatus = .failed(message: message)
         syncFailureKind = kind
         syncClipsReceived = nil
@@ -788,6 +792,11 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     func markClipsWaiting(_ clips: [SyncWaitingClip]) {
         guard clips != waitingClips else { return }
         waitingClips = clips
+    }
+
+    /// Sync is about to read the synced settings again, so age retention waits for it once more.
+    func holdRetentionForSettings() {
+        hasReadSyncedSettings = false
     }
 
     func markSyncedSettingsRead() {
