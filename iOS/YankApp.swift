@@ -490,9 +490,10 @@ final class IOSCloudSyncController {
 
     // Sync waits for the saved history: a pull applied over an unloaded store would lose the
     // remote clips, and the pull-position restart reads a marker the load may still be writing.
-    func refreshForeground() async {
+    @discardableResult
+    func refreshForeground() async -> IOSSyncRunOutcome {
         await store.hydrate()
-        _ = await run(.foreground(refreshExisting: true))
+        return await run(.foreground(refreshExisting: true))
     }
 
     func start(force: Bool = false) async {

@@ -58,7 +58,7 @@ The iOS targets are declared in `project.yml`; `Yank.xcodeproj` is generated and
 | `YankShare` | App extension | `com.thepatientzero.yank.share` | Lean core, no CloudKit | Share controller | `iOS/Yank-iOS-Extension.entitlements` |
 
 The keyboard reads a bounded App Group projection, the share extension writes bounded handoff
-entries, and the container app alone owns canonical history, foreground clipboard authorization,
+entries and a bounded keyboard preview of short shared text, and the container app alone owns canonical history, foreground clipboard authorization,
 and CloudKit sync.
 
 ## External Gates

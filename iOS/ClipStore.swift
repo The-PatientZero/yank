@@ -513,6 +513,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         isDrainingShareInbox = true
         defer { isDrainingShareInbox = false }
         do {
+            try await Task.detached(priority: .utility) {
+                try inbox.sweepKeyboardPreviews()
+            }.value
+        } catch {
+            clipStoreLog.error("Failed to clear stale shared-text previews: \(error.localizedDescription)")
+        }
+        do {
             let entries = try await Task.detached(priority: .utility) {
                 try inbox.recoverablePendingEntries()
             }.value

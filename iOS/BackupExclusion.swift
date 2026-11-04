@@ -26,7 +26,7 @@ final class BackupExclusion: Sendable {
         ]
         // A flag on a directory covers what is inside it, so new blobs and inbox entries need no
         // marking of their own.
-        self.directories = [context.blobsURL, inbox.entriesURL, inbox.payloadsURL]
+        self.directories = [context.blobsURL, inbox.entriesURL, inbox.payloadsURL, inbox.previewsURL]
     }
 
     /// Creates the folders when missing, then sets or clears the exclusion on every existing item.

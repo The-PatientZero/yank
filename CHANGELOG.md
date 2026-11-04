@@ -16,6 +16,8 @@ and passes that section to `gh release create --notes-file`.
 
 ### Changed
 
+- On iPhone, Save Clipboard from Shortcuts now puts the text in history and in the keyboard straight away, even if Yank is closed, and sends it to your other devices when iCloud sync is on. The result says exactly what happened: saved, saved with syncing still to finish, or only queued until Yank next opens. The action also takes an optional Text input, which is saved instead of the clipboard, and a missing text now says "No text was received" instead of claiming the clipboard is empty. Text shared from the Share Sheet shows in the keyboard right away; history and iCloud follow the next time Yank opens.
+- The iPhone Share Sheet now saves every item you share, up to ten, and offers Yank for up to ten photos at once. Rich text is saved as readable text, a web page saves its address once, and files are refused with a clear message. A share that fails or only partly works now stays on screen until you tap Done, and says how many items were saved and which were not. Text of only spaces is reported as empty instead of as a storage problem.
 - On the Mac, pausing clipboard capture now survives quitting and relaunching, including restarts and update relaunches, until you resume. Before, a relaunch cleared the pause. The setting stays on this Mac and is not synced. If you pause Yank and then go back to an older version, that version captures again, and updating again brings the pause back.
 
 ### Fixed
