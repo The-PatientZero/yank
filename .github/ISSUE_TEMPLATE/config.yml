@@ -3,6 +3,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/The-PatientZero/yank/security/advisories/new
     about: Report security problems privately, never in a public issue.
+  - name: Ask a question
+    url: https://github.com/The-PatientZero/yank/discussions/categories/q-a
+    about: Questions about using Yank go to Q&A discussions.
   - name: Help with using Yank
     url: https://github.com/The-PatientZero/yank/blob/main/SUPPORT.md
     about: Setup steps for the keyboard, Share Sheet, Shortcuts and iCloud sync.
