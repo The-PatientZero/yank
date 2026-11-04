@@ -8,7 +8,9 @@ import YankCore
 /// Outcome of `CloudKitSyncService.start()`: sync came up, or it failed with a
 /// user-presentable message.
 public enum CloudKitSyncStartResult: Equatable, Sendable {
+    /// Sync came up.
     case started
+    /// Sync did not come up; `message` is safe to show to a person.
     case failed(message: String)
 }
 

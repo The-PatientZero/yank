@@ -26,6 +26,8 @@ public enum HapticCue: Sendable, CaseIterable {
 /// The tactile patterns a trackpad performer supports. Mirrors the AppKit patterns used by
 /// clipboard cues but stays dependency-free so `YankCore` (and its tests) never import AppKit.
 public enum HapticPattern: Sendable, Equatable {
+    /// A general-purpose tap.
     case generic
+    /// A tap that signals alignment.
     case alignment
 }

@@ -3,8 +3,11 @@ import Foundation
 /// One on-device enrichment pass over a clip's text. New enrichment produces topic tags only;
 /// `title` remains for source compatibility with the original 1.0 API and is ignored by Yank.
 public struct ClipEnrichment: Sendable, Equatable {
+    /// Suggested topic tags.
     public var tags: [String]
+    /// Legacy title field kept for source compatibility; Yank ignores it.
     public var title: String?
+    /// Creates an enrichment result.
     public init(tags: [String] = [], title: String? = nil) {
         self.tags = tags
         self.title = title
@@ -15,6 +18,7 @@ public struct ClipEnrichment: Sendable, Equatable {
 /// enricher on macOS 26+; the protocol stays here (no framework import) so the pipeline and
 /// tests don't depend on a platform-only framework.
 public protocol ClipEnricher: Sendable {
+    /// Returns the suggestions for `text`.
     func enrich(_ text: String) async -> ClipEnrichment
 }
 
@@ -45,6 +49,7 @@ public enum ClipEnrichmentPolicy {
 /// Pure cleanup for raw tag output: normalise to the tag idiom, drop noise and anything the
 /// user already tagged, dedupe, and cap. Shared by the enricher and tested headlessly.
 public enum AITagCleaner {
+    /// Normalizes `raw` into tags, skipping those under two characters, already in `existing` or repeated, and returns at most `limit`.
     public static func clean(_ raw: [String], existing: [String] = [], limit: Int = 3) -> [String] {
         let taken = Set(existing.map { $0.lowercased() })
         var seen = Set<String>()
@@ -61,6 +66,7 @@ public enum AITagCleaner {
 
 /// Legacy 1.0 title cleanup retained for source compatibility. Yank no longer calls it.
 public enum AITitleCleaner {
+    /// Legacy title cleanup: collapses `raw` to one line capped at `limit` characters, or returns nil when it is missing or under four characters.
     public static func clean(_ raw: String?, limit: Int = 80) -> String? {
         guard let raw else { return nil }
         let oneLine = raw

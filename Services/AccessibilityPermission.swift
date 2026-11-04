@@ -1,5 +1,7 @@
 import AppKit
 import Observation
+// `kAXTrustedCheckOptionPrompt` is a C global the compiler rejects from this @MainActor
+// class without `@preconcurrency` (Swift 6 reports it as shared mutable state).
 @preconcurrency import ApplicationServices
 
 @MainActor

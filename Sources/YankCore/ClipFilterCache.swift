@@ -8,6 +8,7 @@ public struct ClipFilterCache {
     private var tag: String?
     private var result: [ClipboardItem] = []
 
+    /// Creates an empty cache.
     public init() {}
 
     /// The cached result for this query, or nil when the cache is empty or holds another query.
@@ -16,6 +17,7 @@ public struct ClipFilterCache {
         return result
     }
 
+    /// Remembers `result` as the answer for this search and tag.
     public mutating func store(_ result: [ClipboardItem], query: String, tag: String?) {
         self.query = query
         self.tag = tag
@@ -38,6 +40,7 @@ public struct ClipFilterCache {
         return filtered
     }
 
+    /// Forgets the stored result.
     public mutating func invalidate() {
         query = nil
         tag = nil

@@ -55,14 +55,22 @@ enum CloudKitSyncError: LocalizedError {
     }
 }
 
+/// What one backfill pass counted; every count is a number of records (tombstones included), not of clips.
 public struct CloudKitBackfillResult: Equatable, Sendable {
+    /// Records the local store offered for sync.
     public let localRecordCount: Int
+    /// Of those, the records CloudKit already held before the pass.
     public let presentRecordCountBefore: Int
+    /// Of those, the records CloudKit did not hold before the pass.
     public let missingRecordCountBefore: Int
+    /// Records handed to the save; 0 on a dry run.
     public let uploadedRecordCount: Int
+    /// Of the local records, the number CloudKit held when the pass finished.
     public let presentRecordCountAfter: Int
+    /// Of the local records, the number CloudKit still did not hold when the pass finished.
     public let remainingMissingRecordCount: Int
 
+    /// Whether `remainingMissingRecordCount` is 0.
     public var converged: Bool {
         remainingMissingRecordCount == 0
     }

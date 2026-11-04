@@ -28,6 +28,7 @@ protocol SpotlightIndexClient: Sendable {
     func delete(domainIdentifiers: [String]) async throws
 }
 
+// Holds one `CSSearchableIndex`, which is not annotated Sendable; calls go through its completion-handler API.
 private struct SystemSpotlightIndexClient: SpotlightIndexClient, @unchecked Sendable {
     let index: CSSearchableIndex
 

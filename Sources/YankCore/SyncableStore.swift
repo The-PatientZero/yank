@@ -45,6 +45,7 @@ public protocol PendingDeletionReporting: AnyObject {
     var pendingDeletionIDs: Set<UUID> { get }
 }
 
+/// Defaults for stores that do not implement these requirements themselves.
 public extension SyncableStore {
     /// Default for stores that only offer the blocking variant.
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
@@ -55,6 +56,8 @@ public extension SyncableStore {
     func markSyncProgress(clipsReceived: Int) {}
 }
 
+/// Notifications posted by the clip stores.
 public extension Notification.Name {
+    /// Posted when the local clip store changed, so the sync transport can push.
     static let yankLocalStoreDidChange = Notification.Name("yankLocalStoreDidChange")
 }

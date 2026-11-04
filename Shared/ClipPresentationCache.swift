@@ -5,6 +5,7 @@ import SwiftUI
 /// content, but expensive to recompute and read several times per row per render, so
 /// they're memoised here.
 final class ClipPresentation: @unchecked Sendable {
+    // Safe to share across threads: both properties are immutable `let` values.
     let kind: ClipKind
     let excerpt: String
 
