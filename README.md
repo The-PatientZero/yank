@@ -57,6 +57,14 @@ For help or to report a problem, see [Yank Support](SUPPORT.md).
 | `⌘,` | Open Settings from the history window |
 | `⌥⌘1`–`⌥⌘5` | Switch layout: List, Grid, Masonry, Gallery, Split |
 | `⎋` Esc | Clear the search text; press again to close the history window |
+| `⌘Z` | Undo a delete within 10 seconds (otherwise undoes typing in the search field) |
+| `⌘F` | Focus the search field |
+| `⌘1`–`⌘9` | Paste the first nine clips directly |
+| `⌥↵` | Paste as text |
+| `Space` | Peek at the selected clip (when the search field is empty) |
+| `Tab` | Complete a tag (in the tag field or a `#tag` search) |
+| `←` / `→` | Move between tiles in Grid, Masonry and Gallery |
+| `⌫` | In an empty search field, remove the active tag filter |
 
 Except for the first row, these keys work in the Full history window. The Quick Picker has its own keys.
 
