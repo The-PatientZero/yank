@@ -143,6 +143,10 @@ public final class CloudKitSyncService {
     private var changePullRequested = false
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
+    /// Called each time a bring-up has finished its pull, before the push and the rollout steps
+    /// that can still fail. A host that holds back age-based expiry until the local history has
+    /// caught up with the other devices can release it here.
+    public var onInitialPullCompleted: (@MainActor () -> Void)?
     /// The clips the last push that got past preparing could not upload.
     private var waitingClips: [SyncWaitingClip] = []
 
@@ -372,6 +376,7 @@ public final class CloudKitSyncService {
             }
             try await coalescedPull(generation: generation)
             try requireActive(generation)
+            onInitialPullCompleted?()
             // Before observers and the first push, so nothing is built in the wrong write mode.
             try await reconcileEncryptionRollout(generation: generation)
             try startObservingLocalChanges(generation: generation)

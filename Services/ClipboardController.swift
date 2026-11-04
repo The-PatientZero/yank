@@ -67,6 +67,8 @@ final class ClipboardController {
     private var periodicRemotePullTask: Task<Void, Never>?
     private var pasteSequenceCoordinator: PasteSequenceCoordinator?
 
+    /// Start failures after which no pull can run until the user fixes the iCloud account.
+    private static let accountFailureKinds: Set<SyncFailureKind> = [.signedOut, .accountRestricted, .accountUnavailable]
     private static let cloudSyncStartRetryDelays: [Duration] = [.seconds(30), .seconds(120), .seconds(600)]
     /// Backstop re-pull while sync is up, covering a silent push dropped during sleep or
     /// throttled delivery — silent pushes are best-effort, never guaranteed.
@@ -411,6 +413,10 @@ final class ClipboardController {
                 settingsStore: self.settingsSyncBridge
             )
             sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: self.store)
+            sync.onInitialPullCompleted = { [weak self, weak sync] in
+                guard let self, let sync, self.cloudSync === sync else { return }
+                self.store.isRetentionHeldForSync = false
+            }
             self.cloudSync = sync
             self.cloudSyncDidStart = false
             self.startCloudSync(sync)
@@ -441,6 +447,11 @@ final class ClipboardController {
             }
             if case .failed(let message) = result {
                 Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
+                // No pull can happen without a usable account, so waiting for one would keep
+                // expired clips on disk until sync is turned off.
+                if let kind = self.store.syncFailureKind, Self.accountFailureKinds.contains(kind) {
+                    self.store.isRetentionHeldForSync = false
+                }
                 self.cloudSyncStartRetry.scheduleNext(afterAttempt: retryAttempt) { [weak self, weak sync] in
                     // A retry is a no-op once the service is torn down or replaced.
                     guard let self, let sync, self.cloudSync === sync else { return }
