@@ -5,7 +5,13 @@ enum SyncCopy {
     static let optInDescription = "Off by default. When on, clips sync through your private iCloud database."
     static let localOnlySectionDescription = "This build keeps clips on this device. iCloud sync is available in the official signed app."
     static let iCloudRequirement = "iCloud account required. Sign in to iCloud in Settings to enable sync."
-    static let syncedRetention = "Clips and the auto-delete window sync across all your devices — removing a clip on one device removes it everywhere."
+
+    /// The sentence every retention, limit and clear message ends with, so the protected set is
+    /// described in exactly one place.
+    static let protectedClips = "Pinned, bookmarked, and tagged clips are always kept."
+
+    /// First-run sentence for the sync switch on both apps. True whether the switch is on or off.
+    static let welcomeSyncDescription = "When on, your clips sync through your private iCloud database and merge with your other devices. Removing a clip, the auto-delete window and the history limit apply on every device you sync."
 
     /// The history limit itself syncs, so the scope of a change depends on whether sync is on.
     /// Saying "this device" while the choice propagates would be a lie the user only discovers
@@ -31,7 +37,68 @@ enum SyncCopy {
         let scope = syncEnabled
             ? "on this device and on every device signed in to your iCloud"
             : "on this device"
-        return "This permanently deletes your oldest unprotected clips to fit the new size, \(scope). Pinned, bookmarked, and tagged clips are always kept. This cannot be undone."
+        return "This permanently deletes your oldest unprotected clips to fit the new size, \(scope). \(protectedClips) This cannot be undone."
+    }
+
+    /// Title for clearing the whole history; the scope depends on whether sync is on.
+    static func clearHistoryTitle(syncEnabled: Bool) -> String {
+        syncEnabled ? "Clear all clips on every device?" : "Clear all clips on this device?"
+    }
+
+    /// Body for clearing the whole history. Protected clips go too, which the user must be told
+    /// because the other deletions in the app spare them.
+    static func clearHistoryMessage(syncEnabled: Bool) -> String {
+        let scope = syncEnabled
+            ? "from this device and from every device signed in to your iCloud"
+            : "from this device"
+        return "This permanently deletes every clip, including pinned, bookmarked, and tagged clips, \(scope). This cannot be undone."
+    }
+
+    /// "1 day" / "7 days": the app has no string catalogs, so the plural is written by hand.
+    private static func dayCount(_ days: Int) -> String {
+        days == 1 ? "1 day" : "\(days) days"
+    }
+
+    /// Short picker label for an auto-delete window; `0` means the window is off.
+    static func retentionLabel(days: Int) -> String {
+        days == 0 ? "Never" : dayCount(days)
+    }
+
+    /// Scope sentence for the auto-delete setting. Absent while sync is off.
+    static func retentionScope(syncEnabled: Bool) -> String? {
+        syncEnabled ? "The window applies to every device signed in to your iCloud." : nil
+    }
+
+    /// Auto-delete caption: the optional scope sentence followed by the protected-clips sentence.
+    static func retentionCaption(syncEnabled: Bool) -> String {
+        [retentionScope(syncEnabled: syncEnabled), protectedClips].compactMap { $0 }.joined(separator: " ")
+    }
+
+    static func retentionReductionTitle(days: Int) -> String {
+        "Delete Clips Older Than \(dayCount(days).capitalized)?"
+    }
+
+    /// Confirmation for shortening the auto-delete window. `deleting` is the number of clips this
+    /// device would delete, or `nil` when they could not be counted. Other devices apply the same
+    /// window to their own history, so the count is only ever claimed for this device.
+    static func retentionReduction(days: Int, deleting: Int?, syncEnabled: Bool) -> String {
+        let age = dayCount(days)
+        let everywhere = "every device signed in to your iCloud"
+        let opening: String
+        switch deleting {
+        case .some(let count) where count > 0:
+            let clips = count == 1 ? "1 unprotected clip" : "\(count) unprotected clips"
+            opening = syncEnabled
+                ? "This permanently deletes \(clips) older than \(age) from this device, and \(everywhere) deletes its matching clips too."
+                : "This permanently deletes \(clips) older than \(age) from this device."
+        case .some(0) where syncEnabled:
+            opening = "No clips on this device are older than \(age), but \(everywhere) will permanently delete its unprotected clips older than that."
+        default:
+            opening = syncEnabled
+                ? "This permanently deletes unprotected clips older than \(age) from this device and from \(everywhere)."
+                : "This permanently deletes unprotected clips older than \(age) from this device."
+        }
+        return "\(opening) \(protectedClips) This cannot be undone."
     }
 
     /// One plain sentence for the state of the move to end-to-end encrypted clip content.

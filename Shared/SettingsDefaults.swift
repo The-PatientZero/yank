@@ -10,5 +10,7 @@ enum SettingsDefaults {
     static let historyLimit: HistoryLimit = .essential
     /// `0` = keep forever (auto-delete off).
     static let retentionDays = 0
+    /// Auto-delete windows offered on every platform, in the order shown. `0` is "Never".
+    static let retentionChoices = [0, 7, 30, 90]
     static let syncEnabled = false
 }

@@ -17,6 +17,7 @@ enum CloudKitSyncError: LocalizedError {
     case unrecoverableLocalRecords(Int)
     case backfillDidNotConverge(Int)
     case pushReceiptEncodingFailed
+    case changeTokenEncodingFailed
     case pullQuarantineEncodingFailed
     case pullQuarantineOverflow
     case encryptedDataKeyReset
@@ -35,6 +36,8 @@ enum CloudKitSyncError: LocalizedError {
             "Backfill finished uploading, but \(count) local record(s) are still missing from CloudKit."
         case .pushReceiptEncodingFailed:
             "CloudKit push acknowledgements could not be saved. Sync will safely replay."
+        case .changeTokenEncodingFailed:
+            "Where sync stopped could not be saved. Sync will safely replay."
         case .pullQuarantineEncodingFailed:
             "Skipped CloudKit records could not be recorded. Sync will safely replay."
         case .pullQuarantineOverflow:
@@ -63,6 +66,15 @@ public struct CloudKitBackfillResult: Equatable, Sendable {
     public var converged: Bool {
         remainingMissingRecordCount == 0
     }
+}
+
+/// What one remote-change run did, for callers that report it to the system.
+enum CloudKitRemoteChangeOutcome: Equatable, Sendable {
+    /// The run fetched changes from CloudKit.
+    case newData
+    /// The run succeeded and fetched nothing.
+    case noData
+    case failed
 }
 
 /// Syncs the local store with the user's CloudKit private database.
@@ -113,6 +125,14 @@ public final class CloudKitSyncService {
     /// True while a pull waits for its snapshot to reach the disk; pushes wait for it to clear.
     private var durablePullApplyInFlight = false
     private var durablePullApplyWaiters: [CheckedContinuation<Void, Never>] = []
+    private var activePull: PullFlight?
+    /// Changes every pull of this service fetched so far; a caller that cannot see a pull's own
+    /// count (the start) compares it before and after.
+    private(set) var fetchedChangesTotal = 0
+    /// Pull requests made so far; a running pull serves the ones made before it started.
+    private var pullRequestCount: UInt64 = 0
+    /// A caller asked for a pull that fetches changes since the last pull started.
+    private var changePullRequested = false
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
     /// The clips the last push that got past preparing could not upload.
@@ -252,6 +272,8 @@ public final class CloudKitSyncService {
         pushRetryAttempt = 0
         activePush?.task.cancel()
         activePush = nil
+        activePull?.task.cancel()
+        activePull = nil
         activeRolloutEvaluation?.task.cancel()
         activeRolloutEvaluation = nil
         activeSweep?.task.cancel()
@@ -335,7 +357,7 @@ public final class CloudKitSyncService {
             settingsReconciliationPending = true
             try await prepareBlankRepairIfNeeded(generation: generation)
             try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
-            try await pull(generation: generation)
+            try await coalescedPull(generation: generation)
             try requireActive(generation)
             // Before observers and the first push, so nothing is built in the wrong write mode.
             try await reconcileEncryptionRollout(generation: generation)
@@ -344,7 +366,7 @@ public final class CloudKitSyncService {
             try await pushLocal(generation: generation)
             try requireActive(generation)
             // The push may have adopted a newer settings record the pull did not carry.
-            try await backfillIfHistoryLimitRose(generation: generation)
+            try await coalescedPull(generation: generation, fetchesChanges: false)
             store?.markSyncSucceeded(at: Date())
             return .started
         } catch {
@@ -467,10 +489,16 @@ public final class CloudKitSyncService {
     /// Called from the silent push handler to fold in remote changes.
     @discardableResult
     public func handleRemoteChange() async -> Bool {
-        guard let generation = activeGeneration else { return false }
+        await handleRemoteChangeOutcome() != .failed
+    }
+
+    /// Like `handleRemoteChange()`, and says whether the run fetched anything, which is what
+    /// iOS wants to hear after a background push.
+    func handleRemoteChangeOutcome() async -> CloudKitRemoteChangeOutcome {
+        guard let generation = activeGeneration else { return .failed }
         do {
             try requireActive(generation)
-            try await pull(generation: generation)
+            let fetched = try await coalescedPull(generation: generation)
             try requireActive(generation)
             try await reconcileEncryptionRollout(generation: generation)
             // Receipt comparison makes this a no-op for a clean pull. Always reconsidering
@@ -478,13 +506,13 @@ public final class CloudKitSyncService {
             try await pushLocal(generation: generation)
             try requireActive(generation)
             // The push may have adopted a newer settings record the pull did not carry.
-            try await backfillIfHistoryLimitRose(generation: generation)
+            try await coalescedPull(generation: generation, fetchesChanges: false)
             store?.markSyncSucceeded(at: Date())
-            return true
+            return fetched > 0 ? .newData : .noData
         } catch {
-            guard shouldReport(error, generation: generation) else { return false }
+            guard shouldReport(error, generation: generation) else { return .failed }
             reportFailure(error, during: "remote pull")
-            return false
+            return .failed
         }
     }
 
@@ -591,12 +619,67 @@ public final class CloudKitSyncService {
         try await database.ensureSubscription(id: subscriptionID)
     }
 
-    /// Returns true when an expired token was recovered and callers should reconsider local state.
+    /// One running pull and the requests it was started for.
+    private struct PullFlight {
+        let id: UUID
+        let task: Task<Int, Error>
+        /// The pull serves every request made up to the moment it started.
+        let servesRequestsThrough: UInt64
+        /// False when the pull only runs the history-limit refetch.
+        let fetchesChanges: Bool
+    }
+
+    /// Runs a pull with at most one in flight. A caller that arrives meanwhile waits for it and
+    /// then for one follow-up pull that every caller waiting before it started shares; a caller
+    /// that arrives while the follow-up runs asks for one more. A pull that failed for an earlier
+    /// caller does not fail the later ones; their pull reports its own result. Returns the
+    /// changes fetched by the pulls this caller waited on. `fetchesChanges: false` is for the
+    /// history-limit refetch alone, which a pull that fetches changes also covers.
     @discardableResult
-    private func pull(generation: UInt64) async throws -> Bool {
-        let recoveredToken = try await pullRecoveringFromTokenLoss(generation: generation)
-        try await backfillIfHistoryLimitRose(generation: generation)
-        return recoveredToken
+    private func coalescedPull(generation: UInt64, fetchesChanges: Bool = true) async throws -> Int {
+        try requireActive(generation)
+        pullRequestCount &+= 1
+        let request = pullRequestCount
+        if fetchesChanges { changePullRequested = true }
+        var fetched = 0
+        while true {
+            try requireActive(generation)
+            let flight = activePull ?? startPullFlight(generation: generation)
+            let result = await flight.task.result
+            let servesRequest = flight.servesRequestsThrough >= request
+                && (flight.fetchesChanges || !fetchesChanges)
+            switch result {
+            case .success(let count):
+                fetched += count
+                if servesRequest { return fetched }
+            case .failure(let error):
+                if servesRequest { throw error }
+            }
+        }
+    }
+
+    private func startPullFlight(generation: UInt64) -> PullFlight {
+        let id = UUID()
+        let fetchesChanges = changePullRequested
+        changePullRequested = false
+        let task = Task { @MainActor [weak self] () throws -> Int in
+            guard let self else { throw CancellationError() }
+            defer { if self.activePull?.id == id { self.activePull = nil } }
+            guard fetchesChanges else {
+                return try await self.backfillIfHistoryLimitRose(generation: generation)
+            }
+            let recovered = try await self.pullRecoveringFromTokenLoss(generation: generation)
+            let backfilled = try await self.backfillIfHistoryLimitRose(generation: generation)
+            return recovered + backfilled
+        }
+        let flight = PullFlight(
+            id: id,
+            task: task,
+            servesRequestsThrough: pullRequestCount,
+            fetchesChanges: fetchesChanges
+        )
+        activePull = flight
+        return flight
     }
 
     /// The history limit the settings store applies right now, or `nil` when there is no
@@ -636,37 +719,38 @@ public final class CloudKitSyncService {
     /// Trimming never tombstones, so they are still in iCloud. Push receipts are kept: the
     /// refetch re-seeds them for the winners it re-delivers, and a full re-upload is not wanted.
     /// The restarted pull records the limit it applied, so this cannot repeat.
-    private func backfillIfHistoryLimitRose(generation: UInt64) async throws {
+    private func backfillIfHistoryLimitRose(generation: UInt64) async throws -> Int {
         try requireActive(generation)
         guard historyLimitRoseAboveCoverage(),
               let limit = effectiveHistoryLimit,
-              let coverage = historyCoverage() else { return }
+              let coverage = historyCoverage() else { return 0 }
         syncLog.info(
             "history limit rose from \(coverage, privacy: .public) to \(limit, privacy: .public); refetching the zone from the start"
         )
         try persistToken(nil, generation: generation)
         changeToken = nil
-        try await pullUsingCurrentToken(generation: generation)
+        let fetched = try await pullUsingCurrentToken(generation: generation)
         try requireActive(generation)
         syncLog.info("history backfill finished under limit \(limit, privacy: .public)")
+        return fetched
     }
 
-    private func pullRecoveringFromTokenLoss(generation: UInt64) async throws -> Bool {
+    private func pullRecoveringFromTokenLoss(generation: UInt64) async throws -> Int {
         do {
-            try await pullUsingCurrentToken(generation: generation)
+            let fetched = try await pullUsingCurrentToken(generation: generation)
             try requireActive(generation)
             // A key reset noticed on a record-level failure does not abort the pull; the
             // recovery runs once the rest of the pull is durable.
             try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
-            return false
+            return fetched
         } catch {
             try requireActive(generation)
             if CloudKitEncryptedDataKeyReset.isReset(error) {
                 noteEncryptedDataKeyReset(during: "pull")
                 try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
-                try await pullUsingCurrentToken(generation: generation)
+                let fetched = try await pullUsingCurrentToken(generation: generation)
                 try requireActive(generation)
-                return true
+                return fetched
             }
             guard Self.isExpiredChangeTokenError(error) else { throw error }
             syncLog.info("CloudKit change token expired; retrying from the beginning.")
@@ -675,20 +759,38 @@ public final class CloudKitSyncService {
             try requireActive(generation)
             try persistToken(nil, generation: generation)
             changeToken = nil
-            try await pullUsingCurrentToken(generation: generation)
+            let fetched = try await pullUsingCurrentToken(generation: generation)
             try requireActive(generation)
-            return true
+            return fetched
         }
     }
 
-    private func pullUsingCurrentToken(generation: UInt64) async throws {
+    /// Fetches and applies the zone changes after the saved position, logging where it started
+    /// and what it fetched. Returns the number of changes that reached this device's history.
+    private func pullUsingCurrentToken(generation: UInt64) async throws -> Int {
+        let startingFrom = changeToken == nil ? "nothing" : "saved position"
+        syncLog.notice("Sync pull started (starting from: \(startingFrom, privacy: .public))")
+        do {
+            let fetched = try await fetchAndApplyZoneChanges(generation: generation)
+            fetchedChangesTotal += fetched
+            syncLog.notice("Sync pull finished (changes: \(fetched, privacy: .public), result: ok)")
+            return fetched
+        } catch {
+            syncLog.notice("Sync pull finished (changes: 0, result: failed)")
+            throw error
+        }
+    }
+
+    private func fetchAndApplyZoneChanges(generation: UInt64) async throws -> Int {
         try requireActive(generation)
-        guard let store else { return }
+        guard let store else { return 0 }
         var accumulation = PullAccumulation()
         var quarantine = QuarantineState(entries: pullQuarantine)
         var token = changeToken
         let startedFromNothing = token == nil
         var moreComing = true
+        var fetchedChanges = 0
+        var changedHistory = 0
         do {
             // Re-attempt earlier skipped records first, so a recovered one lands in the same
             // durable apply as this pull's page set.
@@ -701,6 +803,7 @@ public final class CloudKitSyncService {
             while moreComing {
                 let changes = try await database.fetchZoneChanges(zoneID, since: token)
                 try requireActive(generation)
+                fetchedChanges += changes.changedRecords.count + changes.deletedRecordNames.count
                 try quarantinePermanentServerFailures(
                     changes.failedRecords,
                     quarantine: &quarantine
@@ -758,6 +861,7 @@ public final class CloudKitSyncService {
                 accumulation.remote
             )
             try requireActive(generation)
+            changedHistory = Self.changedItemCount(from: local, to: reconciled)
             try await applyPulledStateDurably(reconciled, to: store)
             try requireActive(generation)
             deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
@@ -795,12 +899,23 @@ public final class CloudKitSyncService {
             }
             try persistToken(token, generation: generation)
             changeToken = token
+            // A refetch from nothing re-delivers records this device already has.
+            return startedFromNothing ? changedHistory : fetchedChanges
         } catch {
             if canMutate(generation) {
                 deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
             }
             throw error
         }
+    }
+
+    /// How many canonical items are new to `local` or newer than its copy.
+    nonisolated static func changedItemCount(
+        from local: [ClipboardItem],
+        to reconciled: [ClipboardItem]
+    ) -> Int {
+        let stamps = Dictionary(local.map { ($0.id, $0.modifiedAt) }, uniquingKeysWith: { first, _ in first })
+        return reconciled.filter { stamps[$0.id] != $0.modifiedAt }.count
     }
 
     /// Everything one pull collects before it becomes a single durable apply.
@@ -1842,10 +1957,13 @@ public final class CloudKitSyncService {
         generation: UInt64
     ) throws {
         try requireActive(generation)
-        guard let token,
-              let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
+        // A nil token removes the key on purpose: the next pull starts from nothing.
+        guard let token else {
             defaults.removeObject(forKey: tokenKey)
             return
+        }
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
+            throw CloudKitSyncError.changeTokenEncodingFailed
         }
         defaults.set(data, forKey: tokenKey)
     }

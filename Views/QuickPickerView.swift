@@ -4,6 +4,7 @@ import Observation
 
 struct QuickPickerView: View {
     let store: ClipboardStore
+    let settings: SettingsManager
     @Bindable var presentationState: QuickPickerPresentationState
     let onPaste: (ClipboardItem) -> Void
     let onPasteAsText: (ClipboardItem) -> Void
@@ -12,6 +13,7 @@ struct QuickPickerView: View {
     let onDismiss: () -> Void
     let onOpenFullHistory: () -> Void
     let onStartPasteSequence: () -> Void
+    let onResumeCapture: () -> Void
     let onSmartSearch: QuickPickerSmartSearchState.Search
 
     @State private var searchText = ""
@@ -205,6 +207,11 @@ struct QuickPickerView: View {
             )
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            if settings.capturePaused {
+                pausedNotice
+            }
             Spacer()
             if let selectedItem {
                 ClipStatusBadge(item: selectedItem)
@@ -213,6 +220,25 @@ struct QuickPickerView: View {
         .padding(.horizontal, Space.lg)
         .padding(.vertical, Space.sm)
         .background(Color.yankRaised.opacity(0.78))
+    }
+
+    /// The saved pause and the way to end it. It keeps its layout priority, so the selected
+    /// clip's badge gives way first at the picker's width.
+    private var pausedNotice: some View {
+        HStack(spacing: Space.sm) {
+            Text("Capture paused")
+                .font(.system(size: TypeScale.micro, weight: .semibold))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+            Button("Resume", action: onResumeCapture)
+                .buttonStyle(.plain)
+                .font(.system(size: TypeScale.micro, weight: .semibold))
+                .foregroundStyle(.tint)
+                .lineLimit(1)
+                .accessibilityLabel("Resume capture")
+                .accessibilityHint("Starts saving copied items to history again.")
+        }
+        .layoutPriority(1)
     }
 
     private var keyMonitor: some View {

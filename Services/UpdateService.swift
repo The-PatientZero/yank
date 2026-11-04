@@ -10,6 +10,9 @@ final class UpdateService {
     private nonisolated static let justUpdatedKey = "yankJustUpdated"
     private nonisolated static let updateTagKey = "yankUpdateTag"
     private nonisolated static let highestInstalledKey = "yankHighestInstalledVersion"
+    private nonisolated static let updateAvailableKey = "yankUpdateAvailable"
+    private nonisolated static let lastCheckThrottle: TimeInterval = 86400
+    private nonisolated static let periodicCheckInterval: Duration = .seconds(86400)
     private nonisolated static let releaseFeedURL =
         URL(string: "https://raw.githubusercontent.com/The-PatientZero/yank/main/releases.json")!
     private let releasesURL: URL
@@ -24,10 +27,15 @@ final class UpdateService {
     private var retryStagedUpdate: StagedUpdate?
     private var downloadTask: Task<Void, Never>?
     private var downloadSessionID: UUID?
+    private var periodicCheckTask: Task<Void, Never>?
 
     private init() {
         releasesURL = Self.releaseFeedURL
         restoreStagedUpdate()
+    }
+
+    var state: UpdateLifecycleState {
+        updateState
     }
 
     var menuPresentation: UpdateMenuPresentation {
@@ -44,11 +52,31 @@ final class UpdateService {
     }
 
     func checkOnLaunchIfNeeded() {
-        if let lastCheck = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date,
-           Date().timeIntervalSince(lastCheck) < 86400 {
+        let updateWasAvailable = UserDefaults.standard.bool(forKey: Self.updateAvailableKey)
+        if !updateWasAvailable,
+           let lastCheck = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date,
+           Date().timeIntervalSince(lastCheck) < Self.lastCheckThrottle {
             return
         }
         checkForUpdates(silent: true)
+    }
+
+    /// Re-checks silently once a day while Yank keeps running. A check only starts from a state
+    /// with no update message pending, so a Retry, "What's new" or in-progress message is never wiped.
+    func startPeriodicChecks() {
+        periodicCheckTask?.cancel()
+        periodicCheckTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.periodicCheckInterval)
+                guard !Task.isCancelled, let self else { return }
+                switch updateState {
+                case .idle, .upToDate:
+                    checkForUpdates(silent: true)
+                case .checking, .available, .downloading, .staged, .unavailable, .failed, .installed:
+                    break
+                }
+            }
+        }
     }
 
     func checkForUpdates(silent: Bool) {
@@ -107,6 +135,7 @@ final class UpdateService {
         #endif
 
         guard let selected = UpdateReleaseSelection.newestCandidate(from: releases, archKeyword: archKeyword) else {
+            setUpdateAvailableFlag(false)
             updateState = silent ? .idle : .unavailable
             return
         }
@@ -126,11 +155,11 @@ final class UpdateService {
             candidate: candidate.version, current: current, highestInstalled: updatedInstallFloor(current: current)
         ) {
             availableCandidate = candidate
+            setUpdateAvailableFlag(true)
             updateState = .available(version: candidate.version, tag: candidate.tag)
-        } else if !silent {
-            updateState = .upToDate(version: current)
         } else {
-            updateState = .idle
+            setUpdateAvailableFlag(false)
+            updateState = silent ? .idle : .upToDate(version: current)
         }
     }
 
@@ -168,9 +197,18 @@ final class UpdateService {
         return version
     }
 
+    private func setUpdateAvailableFlag(_ available: Bool) {
+        if available {
+            UserDefaults.standard.set(true, forKey: Self.updateAvailableKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.updateAvailableKey)
+        }
+    }
+
     func checkIfJustUpdated() {
         guard UserDefaults.standard.bool(forKey: Self.justUpdatedKey) else { return }
         UserDefaults.standard.removeObject(forKey: Self.justUpdatedKey)
+        setUpdateAvailableFlag(false)
         let staged = persistedStagedUpdate()
         let tag = UserDefaults.standard.string(forKey: Self.updateTagKey) ?? staged?.tag ?? ""
         UserDefaults.standard.removeObject(forKey: Self.updateTagKey)
@@ -237,9 +275,19 @@ final class UpdateService {
         downloadTask?.cancel()
         downloadTask = nil
         downloadSessionID = nil
-        updateState = .idle
-        retryCandidate = nil
+        returnToAvailableAfterCancel()
         Log.update.info("Update download cancelled by user.")
+    }
+
+    /// A cancelled download leaves the update available, so Install is offered again.
+    private func returnToAvailableAfterCancel() {
+        if let candidate = retryCandidate {
+            availableCandidate = candidate
+            updateState = .available(version: candidate.version, tag: candidate.tag)
+        } else {
+            updateState = .idle
+        }
+        retryCandidate = nil
     }
 
     private func downloadAndStage(_ candidate: UpdateCandidate, sessionID: UUID) async {
@@ -329,8 +377,7 @@ final class UpdateService {
         guard downloadSessionID == sessionID else { return }
         downloadTask = nil
         downloadSessionID = nil
-        updateState = .idle
-        retryCandidate = nil
+        returnToAvailableAfterCancel()
     }
 
     private func cleanUpDownloadArtifacts(downloadedFileURL: URL?, staged: StagedUpdate?) {

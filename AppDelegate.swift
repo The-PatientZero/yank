@@ -77,8 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
 
+        // First touch of the singleton restores a staged update and posts a state change, so it
+        // happens before the hub exists and registers its observers.
+        UpdateService.shared.checkIfJustUpdated()
+
         let hub = HubController(footer: HubAppFooter(
             updateMenu: { UpdateService.shared.menuPresentation },
+            updateAttention: { UpdateService.shared.state.attentionText },
             onUpdateAction: { UpdateService.shared.handleMenuAction($0) },
             onRestart: { [weak self] in self?.restartOrFinishUpdate() },
             onQuit: { NSApplication.shared.terminate(nil) }
@@ -105,11 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clipboard.start()
         }
 
-        UpdateService.shared.checkIfJustUpdated()
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
             UpdateService.shared.checkOnLaunchIfNeeded()
         }
+        UpdateService.shared.startPeriodicChecks()
 
         if !UserDefaults.standard.bool(forKey: "yankWelcomeSeen") {
             Task { @MainActor in
@@ -139,6 +144,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardController?.handleRemoteChange()
     }
 
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        Log.app.error("Could not register for remote notifications: \(error.localizedDescription, privacy: .public)")
+    }
+
     /// Reopening the app (e.g. from Finder) surfaces Settings — the recovery path when the
     /// menu-bar icon is hidden, so the user is never stranded.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -150,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showWelcomeWindow() {
         let syncAvailable = CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID)
-        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, manager: settings)
+        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, store: clipboardStore, manager: settings)
         controller.showWindow(nil)
         welcomeWindowController = controller
     }

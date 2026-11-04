@@ -112,6 +112,7 @@ targets:
       - iOS/PasteboardBootTime.swift
       - iOS/IOSSyncedSettingsBridge.swift
       - iOS/HistoryLimitConfirmation.swift
+      - iOS/RetentionConfirmation.swift
       - iOS/YankIOSDesignSystem.swift
       - iOS/YankApp.swift
       - iOS/HistoryView.swift
@@ -130,6 +131,7 @@ targets:
       - iOS/CaptureClipIntent.swift
       - Shared/SpotlightIndexer.swift
       - iOS/YankAppDelegate.swift
+      - iOS/IOSAppRuntime.swift
       - path: Privacy/YankiOS/PrivacyInfo.xcprivacy
       - path: iOS/Assets.xcassets
     dependencies:

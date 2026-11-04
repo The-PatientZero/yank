@@ -1,14 +1,17 @@
 import ImageIO
+import OSLog
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+
 @MainActor
 final class ShareViewController: UIViewController {
     private let appGroup = AppGroupContainer.live()
 
     private static let confirmationDuration: Duration = .milliseconds(800)
-    private static let failureDuration: Duration = .milliseconds(1400)
-    private static let voiceOverExtraDuration: Duration = .milliseconds(600)
+    /// Clips saved from one share. The rest are named on the card so they can be shared again.
+    nonisolated static let maxClipsPerShare = 10
+    private nonisolated static let log = Logger(subsystem: "com.thepatientzero.yank", category: "share")
 
     enum ShareError: Error, LocalizedError {
         case storageUnavailable
@@ -18,6 +21,9 @@ final class ShareViewController: UIViewController {
         case imageWriteFailed
         case captureQueueFull
         case textTooLarge
+        case emptyText
+        case fileNotSupported
+        case tooManyItems
 
         var errorDescription: String? {
             switch self {
@@ -30,14 +36,26 @@ final class ShareViewController: UIViewController {
             case .imageWriteFailed: return "The shared image couldn't be saved."
             case .captureQueueFull: return "Yank has pending shared items. Open the app, then try again."
             case .textTooLarge: return "The shared text is too large to save."
+            case .emptyText: return "There is no text to save."
+            case .fileNotSupported: return "Yank can't save files. Share the text or an image instead."
+            case .tooManyItems:
+                return "Yank saves up to \(ShareViewController.maxClipsPerShare) items from one share."
             }
         }
     }
 
-    private enum SharedContent {
+    /// One thing to save, numbered in the order shared. Text is read up front because it is small
+    /// and duplicates must be dropped before the limit applies; an image is read only when its turn
+    /// comes, one at a time, to stay inside the extension's memory limit.
+    private enum ShareSlot {
         case text(String)
-        case image(Data)
+        case image(NSItemProvider)
+        case unreadable(Error)
     }
+
+    private var hostingController: UIHostingController<ShareConfirmationView>?
+    private var dismissalContinuation: CheckedContinuation<Void, Never>?
+    private var didDismiss = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -49,45 +67,114 @@ final class ShareViewController: UIViewController {
         Task { await run() }
     }
 
+    /// The host closes the extension (for example a swipe down on the sheet) without the Done button.
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        finishDismissal()
+    }
+
     // MARK: - Pipeline
     private func run() async {
         guard let appGroup else {
-            let error = ShareError.storageUnavailable
-            present(.failed(reason: error.errorDescription))
-            await holdForFailure()
-            extensionContext?.cancelRequest(withError: error)
+            await finishWithFailure(ShareError.storageUnavailable)
             return
         }
 
+        let slots: [ShareSlot]
         do {
-            let content = try await sharedContent()
-            let excerpt: String
-            switch content {
-            case let .text(text):
-                try await enqueue(text: text, in: appGroup.shareInbox)
-                excerpt = self.excerpt(of: text)
-            case let .image(pngData):
-                try await enqueue(imagePNG: pngData, in: appGroup.shareInbox)
-                excerpt = "Image"
+            slots = try await shareSlots()
+        } catch {
+            await finishWithFailure(error)
+            return
+        }
+
+        let attempted = slots.prefix(Self.maxClipsPerShare)
+        var savedCount = 0
+        var lastExcerpt = ""
+        var failures: [(position: Int, error: Error)] = []
+        for (index, slot) in attempted.enumerated() {
+            let position = index + 1
+            // A full queue fails every remaining clip the same way; do not read them to find out.
+            if let blocked = failures.first(where: { ($0.error as? ShareError) == .captureQueueFull }) {
+                failures.append((position, blocked.error))
+                continue
             }
+            do {
+                lastExcerpt = try await save(slot, in: appGroup.shareInbox)
+                savedCount += 1
+            } catch {
+                if !(error is ShareError) { Self.logFailure("Reading a shared item", error) }
+                failures.append((position, error))
+            }
+        }
+        let notTried = slots.count > Self.maxClipsPerShare
+            ? Array((Self.maxClipsPerShare + 1)...slots.count)
+            : []
+
+        if failures.isEmpty, notTried.isEmpty {
             IOSMotion.successFeedback()
+            let excerpt = savedCount == 1 ? lastExcerpt : "\(savedCount) items"
             let outcome = ShareConfirmationView.Outcome.saved(excerpt: excerpt)
             present(outcome)
             postAccessibilityAnnouncement(for: outcome)
             try? await Task.sleep(for: Self.confirmationDuration)
             extensionContext?.completeRequest(returningItems: nil)
-        } catch {
-            let outcome = ShareConfirmationView.Outcome.failed(reason: localizedReason(for: error))
-            present(outcome)
-            postAccessibilityAnnouncement(for: outcome)
-            await holdForFailure()
-            extensionContext?.cancelRequest(withError: error)
+        } else if savedCount == 0 {
+            await finishWithFailure(failures.first?.error ?? ShareError.tooManyItems)
+        } else {
+            await finishPartially(
+                saved: savedCount,
+                total: slots.count,
+                notSaved: failures.map(\.position) + notTried,
+                firstError: failures.first?.error ?? ShareError.tooManyItems
+            )
         }
     }
 
-    private func holdForFailure() async {
-        let extra: Duration = UIAccessibility.isVoiceOverRunning ? Self.voiceOverExtraDuration : .zero
-        try? await Task.sleep(for: Self.failureDuration + extra)
+    /// Saves one slot and returns the short text the success card shows for it.
+    private func save(_ slot: ShareSlot, in inbox: ShareCaptureInbox) async throws -> String {
+        switch slot {
+        case let .text(text):
+            try await enqueue(text: text, in: inbox)
+            return excerpt(of: text)
+        case let .image(provider):
+            try await enqueue(imagePNG: try await loadImagePNG(from: provider), in: inbox)
+            return "Image"
+        case let .unreadable(error):
+            throw error
+        }
+    }
+
+    private func finishWithFailure(_ error: Error) async {
+        let outcome = ShareConfirmationView.Outcome.failed(reason: localizedReason(for: error))
+        present(outcome, onDone: { [weak self] in self?.finishDismissal() })
+        postAccessibilityAnnouncement(for: outcome)
+        await waitForDismissal()
+        extensionContext?.cancelRequest(withError: error)
+    }
+
+    private func finishPartially(saved: Int, total: Int, notSaved: [Int], firstError: Error) async {
+        let label = notSaved.count == 1 ? "item" : "items"
+        let positions = notSaved.sorted().map(String.init).joined(separator: ", ")
+        var reason = "Not saved: \(label) \(positions)."
+        if let detail = localizedReason(for: firstError) { reason += " \(detail)" }
+        let outcome = ShareConfirmationView.Outcome.partial(saved: saved, total: total, reason: reason)
+        present(outcome, onDone: { [weak self] in self?.finishDismissal() })
+        postAccessibilityAnnouncement(for: outcome)
+        await waitForDismissal()
+        extensionContext?.completeRequest(returningItems: nil)
+    }
+
+    /// Returns when the user taps Done or the host dismisses the extension, whichever comes first.
+    private func waitForDismissal() async {
+        guard !didDismiss else { return }
+        await withCheckedContinuation { dismissalContinuation = $0 }
+    }
+
+    private func finishDismissal() {
+        didDismiss = true
+        dismissalContinuation?.resume()
+        dismissalContinuation = nil
     }
 
     private func localizedReason(for error: Error) -> String? {
@@ -101,39 +188,118 @@ final class ShareViewController: UIViewController {
         switch outcome {
         case let .saved(excerpt) where !excerpt.isEmpty: message = "Saved to Yank. \(excerpt)"
         case .saved: message = "Saved to Yank"
+        case let .partial(saved, total, reason):
+            message = ShareConfirmationView.partialAnnouncement(saved: saved, total: total, reason: reason)
         case let .failed(reason?): message = "Couldn't save. \(reason)"
         case .failed: message = "Couldn't save to Yank"
         }
         UIAccessibility.post(notification: .announcement, argument: message)
     }
 
-    private func sharedContent() async throws -> SharedContent {
-        guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
-              let provider = extensionItem.attachments?.first else {
-            throw ShareError.unsupportedContent
-        }
-
-        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-            return .image(try await loadImagePNG(from: provider))
-        }
-        if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            return .text(
-                try await provider.loadText(forTypeIdentifier: UTType.plainText.identifier) {
-                    $0 as? String
+    // MARK: - Reading the shared items
+    private func shareSlots() async throws -> [ShareSlot] {
+        let items = (extensionContext?.inputItems ?? []).compactMap { $0 as? NSExtensionItem }
+        var seenTexts: Set<Data> = []
+        var slots: [ShareSlot] = []
+        for item in items {
+            for slot in await chooseSlots(for: item) {
+                if case let .text(text) = slot {
+                    // Byte-for-byte, so two texts that only look alike are both kept.
+                    guard seenTexts.insert(Data(text.utf8)).inserted else { continue }
                 }
-            )
+                slots.append(slot)
+            }
         }
-        if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            return .text(
-                try await provider.loadText(forTypeIdentifier: UTType.url.identifier) {
-                    ($0 as? URL)?.absoluteString
-                }
-            )
-        }
-        throw ShareError.unsupportedContent
+        guard !slots.isEmpty else { throw ShareError.unsupportedContent }
+        return slots
     }
 
-    private nonisolated func loadImagePNG(from provider: NSItemProvider) async throws -> Data {
+    /// Chooses one kind of content per shared item, a web URL before text before an image, so a page
+    /// share that carries preview images saves the page address once. Text that is more than the
+    /// URL itself (a selection from a web page) wins over the URL.
+    private func chooseSlots(for item: NSExtensionItem) async -> [ShareSlot] {
+        let providers = item.attachments ?? []
+        let urlProviders = providers.filter(Self.isWebURL)
+        // A provider that offers a web URL is a URL, even if it also offers a text form of it.
+        let textProviders = providers.filter { !Self.isWebURL($0) && Self.textCarrier(of: $0) != nil }
+        let imageProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
+
+        if !urlProviders.isEmpty, !textProviders.isEmpty {
+            let urlSlots = await loadSlots(of: urlProviders, using: loadURLString)
+            let textSlots = await loadSlots(of: textProviders, using: loadTextString)
+            let urlStrings = urlSlots.compactMap(Self.textValue)
+            let hasTextBeyondURL = textSlots.compactMap(Self.textValue).contains { text in
+                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && !urlStrings.contains { $0.utf8.elementsEqual(text.utf8) }
+            }
+            return hasTextBeyondURL ? textSlots : urlSlots
+        }
+        if !urlProviders.isEmpty { return await loadSlots(of: urlProviders, using: loadURLString) }
+        if !textProviders.isEmpty { return await loadSlots(of: textProviders, using: loadTextString) }
+        return imageProviders.map(ShareSlot.image)
+    }
+
+    private func loadSlots(
+        of providers: [NSItemProvider],
+        using load: @MainActor (NSItemProvider) async throws -> String
+    ) async -> [ShareSlot] {
+        var slots: [ShareSlot] = []
+        for provider in providers {
+            do {
+                slots.append(.text(try await load(provider)))
+            } catch {
+                if !(error is ShareError) { Self.logFailure("Reading shared text", error) }
+                slots.append(.unreadable(error))
+            }
+        }
+        return slots
+    }
+
+    private static func textValue(of slot: ShareSlot) -> String? {
+        if case let .text(text) = slot { return text }
+        return nil
+    }
+
+    private static func isWebURL(_ provider: NSItemProvider) -> Bool {
+        provider.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+            && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+    }
+
+    private enum TextCarrier {
+        case plainText(identifier: String)
+        case richText(identifier: String)
+    }
+
+    /// The most readable form a provider offers: plain text, then RTF. HTML is not parsed.
+    private static func textCarrier(of provider: NSItemProvider) -> TextCarrier? {
+        let types = provider.registeredTypeIdentifiers.compactMap { identifier in
+            UTType(identifier).map { (identifier, $0) }
+        }
+        if let plain = types.first(where: { $0.1.conforms(to: .plainText) }) {
+            return .plainText(identifier: plain.0)
+        }
+        if let rich = types.first(where: { $0.1.conforms(to: .rtf) }) {
+            return .richText(identifier: rich.0)
+        }
+        return nil
+    }
+
+    private func loadURLString(from provider: NSItemProvider) async throws -> String {
+        try await provider.loadText(forTypeIdentifier: UTType.url.identifier)
+    }
+
+    private func loadTextString(from provider: NSItemProvider) async throws -> String {
+        switch Self.textCarrier(of: provider) {
+        case let .plainText(identifier)?:
+            return try await provider.loadText(forTypeIdentifier: identifier)
+        case let .richText(identifier)?:
+            return try await provider.loadRichTextString(forTypeIdentifier: identifier)
+        case nil:
+            throw ShareError.unsupportedContent
+        }
+    }
+
+    private func loadImagePNG(from provider: NSItemProvider) async throws -> Data {
         if let fileURL = try await provider.loadTemporaryImageFileRepresentation(
             forTypeIdentifier: UTType.image.identifier
         ) {
@@ -253,8 +419,14 @@ final class ShareViewController: UIViewController {
         ClipboardItem.text(text).excerpt
     }
 
-    private func present(_ outcome: ShareConfirmationView.Outcome) {
-        let host = UIHostingController(rootView: ShareConfirmationView(outcome: outcome))
+    private func present(_ outcome: ShareConfirmationView.Outcome, onDone: (() -> Void)? = nil) {
+        if let previous = hostingController {
+            previous.willMove(toParent: nil)
+            previous.view.removeFromSuperview()
+            previous.removeFromParent()
+        }
+        let host = UIHostingController(rootView: ShareConfirmationView(outcome: outcome, onDone: onDone))
+        hostingController = host
         host.view.backgroundColor = .clear
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -266,19 +438,38 @@ final class ShareViewController: UIViewController {
         ])
         host.didMove(toParent: self)
     }
+
+    /// Writes the error domain and code only, never the shared content or a file name.
+    fileprivate nonisolated static func logFailure(_ context: String, _ error: Error) {
+        let nsError = error as NSError
+        log.error(
+            "\(context, privacy: .public) failed. domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public)"
+        )
+    }
 }
 
 private extension ShareViewController {
     func enqueue(text: String, in inbox: ShareCaptureInbox) async throws {
         do {
             _ = try await Task.detached(priority: .userInitiated) {
-                try inbox.enqueue(text: text, sourceApp: "Share")
+                let entry = try inbox.enqueue(text: text, sourceApp: "Share")
+                // The clip is already queued; a preview that cannot be written only means the
+                // keyboard shows it after the app imports it.
+                do {
+                    try inbox.publishKeyboardPreview(for: entry)
+                } catch {
+                    ShareViewController.logFailure("Publishing the keyboard preview", error)
+                }
+                return entry
             }.value
         } catch ShareCaptureInbox.Error.quotaExceeded {
             throw ShareError.captureQueueFull
         } catch ShareCaptureInbox.Error.textTooLarge {
             throw ShareError.textTooLarge
+        } catch ShareCaptureInbox.Error.invalidEntry {
+            throw ShareError.emptyText
         } catch {
+            Self.logFailure("Queueing shared text", error)
             throw ShareError.storageUnavailable
         }
     }
@@ -293,6 +484,7 @@ private extension ShareViewController {
         } catch ShareCaptureInbox.Error.payloadTooLarge {
             throw ShareError.imageTooLarge
         } catch {
+            Self.logFailure("Queueing a shared image", error)
             throw ShareError.imageWriteFailed
         }
     }
@@ -305,24 +497,69 @@ private enum ProviderImageSource: Sendable {
 }
 
 private extension NSItemProvider {
-    func loadText(
-        forTypeIdentifier identifier: String,
-        extract: @escaping @Sendable (NSSecureCoding?) -> String?
-    ) async throws -> String {
+    /// Reads a text, web URL or UTF-8 data item. A file URL is refused: its contents are not shared.
+    @MainActor func loadText(forTypeIdentifier identifier: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             loadItem(forTypeIdentifier: identifier, options: nil) { value, error in
                 if let error {
                     continuation.resume(throwing: error)
-                } else if let text = extract(value) {
+                    return
+                }
+                switch value {
+                case let text as String:
                     continuation.resume(returning: text)
-                } else {
+                case let attributed as NSAttributedString:
+                    continuation.resume(returning: attributed.string)
+                case let data as Data:
+                    if let text = String(data: data, encoding: .utf8) {
+                        continuation.resume(returning: text)
+                    } else {
+                        continuation.resume(throwing: ShareViewController.ShareError.malformedItem)
+                    }
+                case let url as URL:
+                    if url.isFileURL {
+                        continuation.resume(throwing: ShareViewController.ShareError.fileNotSupported)
+                    } else {
+                        continuation.resume(returning: url.absoluteString)
+                    }
+                default:
                     continuation.resume(throwing: ShareViewController.ShareError.malformedItem)
                 }
             }
         }
     }
 
-    func loadTemporaryImageFileRepresentation(forTypeIdentifier identifier: String) async throws -> URL? {
+    /// Reads RTF bytes and returns their readable text. The bytes are never treated as UTF-8.
+    @MainActor func loadRichTextString(forTypeIdentifier identifier: String) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = loadDataRepresentation(forTypeIdentifier: identifier) { data, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let data else {
+                    continuation.resume(throwing: ShareViewController.ShareError.malformedItem)
+                    return
+                }
+                guard data.count <= SyncBlobKind.text.maximumBytes else {
+                    continuation.resume(throwing: ShareViewController.ShareError.textTooLarge)
+                    return
+                }
+                do {
+                    let attributed = try NSAttributedString(
+                        data: data,
+                        options: [.documentType: NSAttributedString.DocumentType.rtf],
+                        documentAttributes: nil
+                    )
+                    continuation.resume(returning: attributed.string)
+                } catch {
+                    continuation.resume(throwing: ShareViewController.ShareError.malformedItem)
+                }
+            }
+        }
+    }
+
+    @MainActor func loadTemporaryImageFileRepresentation(forTypeIdentifier identifier: String) async throws -> URL? {
         try await withCheckedThrowingContinuation { continuation in
             loadFileRepresentation(forTypeIdentifier: identifier) { url, error in
                 if let error {
@@ -342,7 +579,7 @@ private extension NSItemProvider {
         }
     }
 
-    func loadImageSource(forTypeIdentifier identifier: String) async throws -> ProviderImageSource {
+    @MainActor func loadImageSource(forTypeIdentifier identifier: String) async throws -> ProviderImageSource {
         try await withCheckedThrowingContinuation { continuation in
             loadItem(forTypeIdentifier: identifier, options: nil) { value, error in
                 if let error {
@@ -380,7 +617,7 @@ private extension NSItemProvider {
         }
     }
 
-    private static func copyTemporaryImageFile(at url: URL) throws -> URL {
+    private nonisolated static func copyTemporaryImageFile(at url: URL) throws -> URL {
         do {
             try ShareImageImportPolicy.validateEncodedSourceFile(at: url)
         } catch ShareImageImportPolicy.SourceFileError.tooLarge {

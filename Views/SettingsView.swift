@@ -24,6 +24,8 @@ struct SettingsView: View {
     @State var isRecording = false
     @State var showingTrimAlert = false
     @State var pendingTier: HistoryLimit?
+    @State var showingRetentionAlert = false
+    @State var pendingRetention: RetentionChange.Pending?
     @State var shortcutConflict: String?
     @State var launchAtLoginError: String?
     @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -170,6 +172,7 @@ struct SettingsView: View {
                         .foregroundColor(.yankTextTertiary)
                 }
             }
+            SettingsUpdatesRow()
             HStack(spacing: Space.lg) {
                 Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
                 Link("Privacy Policy", destination: YankLinks.privacyPolicy)

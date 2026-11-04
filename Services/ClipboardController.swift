@@ -32,6 +32,8 @@ final class ClipboardController {
     /// Resolves the current iCloud account's identity ahead of constructing a sync service, so
     /// a persisted checkpoint from a previous account can be detected and reset. Seam for tests.
     private let accountIdentityProvider: () async throws -> String
+    /// Whether an iCloud account is signed in right now. Seam for tests, like the identity.
+    private let accountStatusProvider: () async throws -> CKAccountStatus
     private var cloudSyncConfigureTask: (id: UUID, task: Task<Void, Never>)?
     private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
     /// Whether the current service has completed a full bring-up. Until it has, "Sync now"
@@ -40,12 +42,23 @@ final class ClipboardController {
     /// Set by "Sync now" so the next pull reports "Syncing…" itself.
     private var manualSyncRequested = false
     /// Bounded backoff for a failed `start()` (offline at login, CloudKit throttle). Once
-    /// exhausted, recovery falls to the wake/periodic pulls below.
+    /// exhausted, the network, wake, hourly, account and "Sync now" triggers start it again.
     private let cloudSyncStartRetry = BackoffRetryScheduler(delays: ClipboardController.cloudSyncStartRetryDelays)
+    /// Bounded backoff for a recovery pull that failed after setup had completed, so a pull
+    /// that raced the network coming back is not stuck until the next trigger.
+    private let recoveryRetry = BackoffRetryScheduler(delays: ClipboardController.cloudSyncStartRetryDelays)
+    private var recoveryRetryAttempt = 0
+    /// A trigger arrived while setup was running; one pull runs when setup succeeds, so a push
+    /// that landed after the setup pull fetched is not lost.
+    private var followUpAfterSetup = false
+    /// Watches the network and the iCloud account while sync is enabled; it outlives the sync
+    /// service so an account change can replace the service.
+    private var recoveryTriggers: SyncRecoveryTriggers?
+    private var accountChangeTask: Task<Void, Never>?
     /// Coalesces a CloudKit silent push with the wake/periodic catch-up triggers below into at
     /// most one follow-up pull when they arrive while a pull is already in flight.
     private lazy var remoteChangeTrigger = CoalescingTrigger { [weak self] in
-        _ = await self?.pullRemoteChange()
+        _ = await self?.recoverSync()
     }
     private var observerTokens: [NSObjectProtocol] = []
     /// `NSWorkspace.shared.notificationCenter` is a distinct center from `NotificationCenter.default`,
@@ -66,11 +79,15 @@ final class ClipboardController {
         dependencies: ClipboardDependencies,
         accountIdentityProvider: @escaping () async throws -> String = {
             try await CKContainer(identifier: ClipboardController.cloudContainerID).userRecordID().recordName
+        },
+        accountStatusProvider: @escaping () async throws -> CKAccountStatus = {
+            try await CKContainer(identifier: ClipboardController.cloudContainerID).accountStatus()
         }
     ) {
         self.dependencies = dependencies
         self.settingsSyncBridge = SettingsSyncBridge(settings: dependencies.settings, store: dependencies.store)
         self.accountIdentityProvider = accountIdentityProvider
+        self.accountStatusProvider = accountStatusProvider
     }
 
     // `isolated deinit` hops to the main actor for cleanup (unlike `MainActor.assumeIsolated`, it
@@ -83,6 +100,9 @@ final class ClipboardController {
     func start() {
         let watcher = ClipboardWatcher(store: store, settings: dependencies.settings.captureSettings)
         let pasteSequenceCoordinator = makePasteSequenceCoordinator(for: watcher)
+        // A saved pause is restored before the timer would start, so nothing is captured. Resume
+        // re-reads the change count, so what was copied during the pause is never captured later.
+        if dependencies.settings.capturePaused { watcher.pause() }
         watcher.startWatching()
         clipboardWatcher = watcher
 
@@ -176,7 +196,8 @@ final class ClipboardController {
             axPermission: dependencies.axPermission,
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
             onOpenFullHistory: { [weak self] in self?.showHistoryWindow() },
-            onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() }
+            onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() },
+            onResumeCapture: { [weak self] in self?.setCapturePaused(false) }
         )
 
         let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
@@ -193,7 +214,7 @@ final class ClipboardController {
         )
 
         dependencies.hub.setPrimaryPanelProvider { [weak self] in self?.makePrimaryPanel() ?? .empty }
-        dependencies.hub.setPrimaryIconDimmed(watcher.isPaused)
+        dependencies.hub.showCapturePaused(watcher.isPaused)
 
         registerHotkey()
         observerTokens.append(
@@ -240,7 +261,8 @@ final class ClipboardController {
         clipboardWatcher = nil
         dependencies.hotkeys.unregister()
         dependencies.hub.setPrimaryPanelProvider(nil)
-        dependencies.hub.setPrimaryIconDimmed(false)
+        // Visual reset only: quitting and the update relaunch keep the saved pause.
+        dependencies.hub.showCapturePaused(false)
         cancelDelayedQuickPickerOpen()
         quickPickerWindowController?.close()
         quickPickerWindowController = nil
@@ -252,19 +274,46 @@ final class ClipboardController {
 
     // MARK: - Forwarded from the composition root
 
-    /// Handle a CloudKit silent push delivered to the app delegate, or a wake/periodic
-    /// catch-up trigger. A trigger arriving mid-pull is coalesced into one follow-up pull
-    /// rather than dropped — the in-flight pull may predate the record that triggered it.
+    /// Handle a CloudKit silent push delivered to the app delegate, or a wake, periodic, network
+    /// or account catch-up trigger. A trigger arriving mid-pull is coalesced into one follow-up
+    /// pull rather than dropped — the in-flight pull may predate the record that triggered it.
     func handleRemoteChange() {
+        recoveryRetry.cancel()
+        recoveryRetryAttempt = 0
         remoteChangeTrigger.trigger()
     }
 
-    private func pullRemoteChange() async -> Bool {
+    /// The one way sync catches up: repeats setup when it never completed, remembers a trigger
+    /// that arrives while setup runs, and otherwise pulls and pushes. A failed pull retries on a
+    /// bounded schedule.
+    private func recoverSync() async -> Bool {
         guard dependencies.settings.syncEnabled else { return false }
         guard let cloudSync else {
             configureCloudSync()
             return false
         }
+        guard cloudSyncStartTask == nil else {
+            followUpAfterSetup = true
+            return false
+        }
+        guard cloudSyncDidStart else {
+            restartSetup(cloudSync)
+            return false
+        }
+        let succeeded = await pullAndPush(cloudSync)
+        if succeeded {
+            recoveryRetryAttempt = 0
+        } else if self.cloudSync === cloudSync {
+            let attempt = recoveryRetryAttempt
+            recoveryRetryAttempt += 1
+            recoveryRetry.scheduleNext(afterAttempt: attempt) { [weak self] in
+                self?.remoteChangeTrigger.trigger()
+            }
+        }
+        return succeeded
+    }
+
+    private func pullAndPush(_ cloudSync: CloudKitSyncService) async -> Bool {
         guard manualSyncRequested else { return await cloudSync.handleRemoteChange() }
         manualSyncRequested = false
         let previousStatus = store.syncStatus
@@ -278,6 +327,12 @@ final class ClipboardController {
         return succeeded
     }
 
+    /// Starts setup again from the beginning of its retry schedule.
+    private func restartSetup(_ cloudSync: CloudKitSyncService) {
+        cloudSyncStartRetry.cancel()
+        startCloudSync(cloudSync)
+    }
+
     /// "Sync now" from Settings or the menu. A service that never finished starting repeats its
     /// bring-up; one that did only pulls and pushes (through the coalescing trigger, so quick
     /// repeated clicks run one follow-up at most).
@@ -289,12 +344,11 @@ final class ClipboardController {
         }
         guard cloudSyncStartTask == nil else { return }
         guard cloudSyncDidStart else {
-            cloudSyncStartRetry.cancel()
-            startCloudSync(cloudSync)
+            restartSetup(cloudSync)
             return
         }
         manualSyncRequested = true
-        remoteChangeTrigger.trigger()
+        handleRemoteChange()
     }
 
     private func keepClipsLocalOnly(_ clipIDs: [UUID]) {
@@ -332,6 +386,7 @@ final class ClipboardController {
             tearDownCloudSync(reason: .notProvisioned)
             return
         }
+        startRecoveryTriggers()
         guard cloudSync == nil, cloudSyncConfigureTask == nil else { return }
         let taskID = UUID()
         let task = Task { @MainActor [weak self] in
@@ -357,7 +412,6 @@ final class ClipboardController {
             sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: self.store)
             self.cloudSync = sync
             self.cloudSyncDidStart = false
-            NSApp.registerForRemoteNotifications()
             self.startCloudSync(sync)
             self.startCatchUpTriggers()
         }
@@ -365,6 +419,8 @@ final class ClipboardController {
     }
 
     private func startCloudSync(_ sync: CloudKitSyncService, retryAttempt: Int = 0) {
+        // Every setup attempt asks the system for pushes again; registering is idempotent.
+        NSApp.registerForRemoteNotifications()
         let taskID = UUID()
         let task = Task { @MainActor [weak self, weak sync] in
             guard let sync else { return }
@@ -374,7 +430,13 @@ final class ClipboardController {
                   self.cloudSyncStartTask?.id == taskID,
                   self.cloudSync === sync else { return }
             self.cloudSyncStartTask = nil
-            if case .started = result { self.cloudSyncDidStart = true }
+            if case .started = result {
+                self.cloudSyncDidStart = true
+                if self.followUpAfterSetup {
+                    self.followUpAfterSetup = false
+                    self.remoteChangeTrigger.trigger()
+                }
+            }
             if case .failed(let message) = result {
                 Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
                 self.cloudSyncStartRetry.scheduleNext(afterAttempt: retryAttempt) { [weak self, weak sync] in
@@ -416,16 +478,87 @@ final class ClipboardController {
         periodicRemotePullTask = nil
     }
 
-    private func tearDownCloudSync(reason: SyncStatus.Reason? = nil) {
+    /// Watches for the network coming back and for iCloud account changes while sync is enabled.
+    private func startRecoveryTriggers() {
+        guard recoveryTriggers == nil else { return }
+        let triggers = SyncRecoveryTriggers(
+            container: CKContainer(identifier: Self.cloudContainerID),
+            onNetworkRestored: { [weak self] in self?.handleRemoteChange() },
+            onAccountChanged: { [weak self] in self?.accountDidChange() }
+        )
+        triggers.start()
+        recoveryTriggers = triggers
+    }
+
+    /// The iCloud account notification also fires for events that are not a switch, so the
+    /// running service is replaced only when the identity differs from the one it was built for
+    /// or the account is gone. A failed probe (offline) leaves everything as it is.
+    private func accountDidChange() {
+        guard dependencies.settings.syncEnabled else { return }
+        accountChangeTask?.cancel()
+        accountChangeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let status = await self.probeAccountStatus()
+            let identity = await self.probeAccountIdentity()
+            guard !Task.isCancelled else { return }
+            let accountGone = status == .noAccount || status == .restricted
+            if let identity, !accountGone {
+                let persisted = UserDefaults.standard.string(forKey: Self.accountIdentityDefaultsKey)
+                if self.cloudSync != nil, persisted == nil || persisted == identity {
+                    UserDefaults.standard.set(identity, forKey: Self.accountIdentityDefaultsKey)
+                    // Signing back in to the same account: a service whose setup failed while
+                    // the account was gone repeats it.
+                    if !self.cloudSyncDidStart { self.handleRemoteChange() }
+                    return
+                }
+            } else if !accountGone {
+                return
+            }
+            Log.app.info("iCloud account changed; replacing the sync service.")
+            self.tearDownCloudSync(stopRecoveryTriggers: false)
+            self.configureCloudSync()
+        }
+    }
+
+    private func probeAccountStatus() async -> CKAccountStatus? {
+        do {
+            return try await accountStatusProvider()
+        } catch {
+            Log.app.info("Could not check the iCloud account status: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private func probeAccountIdentity() async -> String? {
+        do {
+            return try await accountIdentityProvider()
+        } catch {
+            Log.app.info("Could not read the iCloud account identity: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// `stopRecoveryTriggers: false` is for replacing the service after an account change: the
+    /// network and account triggers keep running through the rebuild.
+    private func tearDownCloudSync(reason: SyncStatus.Reason? = nil, stopRecoveryTriggers: Bool = true) {
         cloudSync?.stop()
         cloudSyncConfigureTask?.task.cancel()
         cloudSyncConfigureTask = nil
         cloudSyncStartTask?.task.cancel()
         cloudSyncStartTask = nil
         cloudSyncStartRetry.cancel()
+        recoveryRetry.cancel()
+        recoveryRetryAttempt = 0
+        followUpAfterSetup = false
         remoteChangeTrigger.cancel()
         manualSyncRequested = false
         stopCatchUpTriggers()
+        if stopRecoveryTriggers {
+            accountChangeTask?.cancel()
+            accountChangeTask = nil
+            recoveryTriggers?.stop()
+            recoveryTriggers = nil
+        }
         cloudSync = nil
         cloudSyncDidStart = false
         NSApp.unregisterForRemoteNotifications()
@@ -444,7 +577,14 @@ final class ClipboardController {
         case .quickPicker:
             toggleQuickPickerWindow()
         case .fullHistory:
-            toggleHistoryWindow()
+            // The history window has no pause state. With the icon hidden and capture paused, the
+            // Quick Picker is the only place to see the pause and end it.
+            let settings = dependencies.settings
+            if settings.capturePaused && !settings.showMenuBarIcon {
+                toggleQuickPickerWindow()
+            } else {
+                toggleHistoryWindow()
+            }
         }
     }
 
@@ -537,7 +677,10 @@ final class ClipboardController {
             onRepeatPasteSequence: { [weak self] previousApp in
                 self?.pasteSequenceCoordinator?.repeatPrevious(previousApp: previousApp)
             },
-            onTogglePause: { [weak self] in self?.togglePause() },
+            onTogglePause: { [weak self] in
+                guard let self else { return }
+                setCapturePaused(!dependencies.settings.capturePaused)
+            },
             onIgnoreNextCopy: { [weak self] in self?.clipboardWatcher?.ignoreNextCopy() },
             onFixShortcut: { [weak self] in self?.openSettings() },
             onSettings: { [weak self] in self?.openSettings() },
@@ -547,30 +690,35 @@ final class ClipboardController {
         )
     }
 
-    private func togglePause() {
-        guard let watcher = clipboardWatcher else { return }
-        let nowPaused = !watcher.isPaused
-        if nowPaused {
-            if pasteSequenceCoordinator?.isActive == true { pasteSequenceCoordinator?.cancel() }
-            watcher.pause()
-        } else {
-            watcher.resume()
+    /// The only place the pause changes: saves the choice, applies it to the watcher and shows it.
+    private func setCapturePaused(_ paused: Bool) {
+        dependencies.settings.setCapturePaused(paused)
+        if let watcher = clipboardWatcher {
+            if paused {
+                if pasteSequenceCoordinator?.isActive == true { pasteSequenceCoordinator?.cancel() }
+                watcher.pause()
+            } else {
+                watcher.resume()
+            }
         }
-        dependencies.hub.setPrimaryIconDimmed(nowPaused)
+        dependencies.hub.showCapturePaused(paused)
     }
 
     private func clearHistory() {
         let alert = NSAlert()
-        alert.messageText = "Clear Clipboard History?"
+        let syncEnabled = dependencies.settings.syncEnabled
+        alert.messageText = SyncCopy.clearHistoryTitle(syncEnabled: syncEnabled)
         alert.informativeText = [
-            "This will permanently delete all clipboard items.",
+            SyncCopy.clearHistoryMessage(syncEnabled: syncEnabled),
             HeldClipsNotice.clearWarning(count: store.heldClipCount)
         ].compactMap { $0 }.joined(separator: " ")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Clear")
+        // Cancel is added first so it answers Return, and Escape; Clear must be clicked.
         alert.addButton(withTitle: "Cancel")
+        let clearButton = alert.addButton(withTitle: "Clear")
+        clearButton.hasDestructiveAction = true
 
-        if alert.runModal() == .alertFirstButtonReturn {
+        if alert.runModal() == .alertSecondButtonReturn {
             pasteSequenceCoordinator?.discard()
             store.clear()
         }

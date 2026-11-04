@@ -138,8 +138,9 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// The keyboard is intentionally a read-only App Group consumer. It reads only the
-    /// host's bounded projection without creating directories or scanning pending payloads.
+    /// The keyboard is intentionally a read-only App Group consumer. It reads the host's bounded
+    /// projection and the small previews of queued short texts, without creating directories and
+    /// without decoding the pending queue or its payloads.
     private func reloadHistory() -> Bool {
         guard let appGroup else {
             items = []
@@ -147,7 +148,16 @@ final class KeyboardViewController: UIInputViewController {
             return false
         }
         do {
-            items = try KeyboardHistoryReader(projectionURL: appGroup.keyboardProjectionURL).load()
+            let inbox = appGroup.shareInbox
+            let log = Self.log
+            items = try KeyboardHistoryReader(
+                projectionURL: appGroup.keyboardProjectionURL,
+                previewsURL: inbox.previewsURL,
+                inboxEntriesURL: inbox.entriesURL,
+                reportSkippedPreviews: { count in
+                    log.error("Skipped \(count, privacy: .public) unreadable shared-text previews.")
+                }
+            ).load()
             return true
         } catch {
             items = []

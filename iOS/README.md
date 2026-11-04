@@ -38,6 +38,7 @@ Before a public iOS build or release candidate, run the physical-device matrix i
 | File | Role |
 |---|---|
 | `iOS/YankApp.swift` | App entry; starts sync and Spotlight indexing when available |
+| `iOS/IOSAppRuntime.swift` | Creates the store, settings and sync controller once per process, so a background push can sync without a window |
 | `iOS/HistoryView.swift` | Browse/search synced clips, tap to open details, batch actions |
 | `iOS/ClipStore.swift` | iOS store backed by App Group JSON, conforms to `SyncableStore` |
 | `iOS/WaitingClipsView.swift` | Lists clips that cannot upload yet, with keep-on-this-iPhone and delete |
@@ -57,7 +58,7 @@ The iOS targets are declared in `project.yml`; `Yank.xcodeproj` is generated and
 | `YankShare` | App extension | `com.thepatientzero.yank.share` | Lean core, no CloudKit | Share controller | `iOS/Yank-iOS-Extension.entitlements` |
 
 The keyboard reads a bounded App Group projection, the share extension writes bounded handoff
-entries, and the container app alone owns canonical history, foreground clipboard authorization,
+entries and a bounded keyboard preview of short shared text, and the container app alone owns canonical history, foreground clipboard authorization,
 and CloudKit sync.
 
 ## External Gates

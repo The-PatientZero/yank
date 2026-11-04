@@ -89,14 +89,10 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
     private let syncEnabledProvider: @MainActor () -> Bool
     private let historyFlushCoordinator = IOSHistoryBackgroundFlushCoordinator()
     private let privacyCover = IOSPrivacyCover()
-    /// Wired by the scene once the sync controller exists. A silent push can land before that
-    /// happens (launch straight into a background fetch), so assigning the handler drains the
-    /// latch below instead of losing that notification until the next trigger.
-    var remoteChangeHandler: (() async -> Bool)? {
-        didSet { drainMissedRemoteChange() }
-    }
+    /// Wired at launch from the app runtime, which needs no window, so a launch straight into a
+    /// background fetch can sync. Tests inject their own.
+    var remoteChangeHandler: (() async -> IOSSyncRunOutcome)?
     private var pendingRemoteChange: PendingRemoteChange?
-    private var missedRemoteChangeWhileUnwired = false
 
     private struct PendingRemoteChange {
         let id: UUID
@@ -119,6 +115,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         privacyCover.startObserving()
+        remoteChangeHandler = IOSAppRuntime.shared.remoteChangeHandler
         if syncEnabledProvider()
             && CloudContainerProvisioning.isProvisioned(for: Self.cloudContainerID) {
             application.registerForRemoteNotifications()
@@ -149,26 +146,32 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
                 return
             }
             guard let remoteChangeHandler else {
-                // Report immediately — iOS expects the completion handler promptly — and remember
-                // that a remote change is still unapplied.
-                self.missedRemoteChangeWhileUnwired = true
+                // Fail-safe: the handler is set at launch. iOS expects the completion handler promptly.
                 self.finishRemoteChange(requestID, result: .noData)
                 return
             }
-            let changed = await remoteChangeHandler()
+            let outcome = await remoteChangeHandler()
             guard !Task.isCancelled,
                   self.syncEnabledProvider(),
                   self.pendingRemoteChange?.id == requestID else {
                 self.finishRemoteChange(requestID, result: .noData)
                 return
             }
-            self.finishRemoteChange(requestID, result: changed ? .newData : .failed)
+            clipStoreLog.notice("Remote change outcome: \(outcome.logDescription, privacy: .public)")
+            self.finishRemoteChange(requestID, result: outcome.backgroundFetchResult)
         }
         pendingRemoteChange = PendingRemoteChange(
             id: requestID,
             task: task,
             completion: completionHandler
         )
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: any Error
+    ) {
+        clipStoreLog.error("Could not register for remote notifications: \(error.localizedDescription, privacy: .public)")
     }
 
     func disableRemoteChanges() {
@@ -198,16 +201,6 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
         )
     }
 
-    /// Runs exactly one catch-up refresh for a push that arrived before the handler existed.
-    private func drainMissedRemoteChange() {
-        guard missedRemoteChangeWhileUnwired, let remoteChangeHandler else { return }
-        missedRemoteChangeWhileUnwired = false
-        Task { @MainActor [weak self] in
-            guard let self, self.syncEnabledProvider() else { return }
-            _ = await remoteChangeHandler()
-        }
-    }
-
     private func cancelPendingRemoteChange() {
         guard let pendingRemoteChange else { return }
         self.pendingRemoteChange = nil
@@ -227,5 +220,23 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
     private static func syncEnabledFromDefaults() -> Bool {
         guard let defaults = AppGroupContext.live()?.defaults else { return false }
         return defaults.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
+    }
+}
+
+private extension IOSSyncRunOutcome {
+    var backgroundFetchResult: UIBackgroundFetchResult {
+        switch self {
+        case .newData: .newData
+        case .noData: .noData
+        case .failed: .failed
+        }
+    }
+
+    var logDescription: String {
+        switch self {
+        case .newData: "new data"
+        case .noData: "no new data"
+        case .failed: "failed"
+        }
     }
 }

@@ -36,6 +36,17 @@ struct ShareCaptureInbox: Sendable {
     static let currentVersion = 1
     static let entriesDirectoryName = "share-capture-inbox-v1"
     static let payloadsDirectoryName = "share-capture-payloads-v1"
+    /// One small file per queued short text, read by the keyboard so a shared text can be inserted
+    /// before the host app imports it. The file name is `<epoch milliseconds>-<entry id>.json`, so
+    /// the newest previews sort last by name alone.
+    static let previewsDirectoryName = "share-capture-keyboard-v1"
+    /// Longer text is only queued: the keyboard shows short clips and stays small.
+    static let maxPreviewTextBytes = 16 * 1_024
+    /// Previews whose queue entry still exists. A full set stops new previews, not new captures.
+    static let maxPendingPreviews = 20
+    /// Upper bound the keyboard accepts for one preview file, so a damaged file stays cheap to skip.
+    static let maxPreviewFileBytes = 128 * 1_024
+    private static let previewNameDigits = 15
     /// Lives in the inbox root, not beside the entries, so every process that drains the inbox
     /// reads and writes the same record.
     static let processedFileName = "share-capture-processed-v1.json"
@@ -57,6 +68,10 @@ struct ShareCaptureInbox: Sendable {
 
     var payloadsURL: URL {
         rootURL.appendingPathComponent(Self.payloadsDirectoryName, isDirectory: true)
+    }
+
+    var previewsURL: URL {
+        rootURL.appendingPathComponent(Self.previewsDirectoryName, isDirectory: true)
     }
 
     var processedURL: URL {
@@ -196,6 +211,7 @@ struct ShareCaptureInbox: Sendable {
         let stem = url.deletingPathExtension().lastPathComponent
         guard let id = UUID(uuidString: stem) else { return }
         try? removeIfPresent(imagePayloadURL(for: id))
+        try? removePreviews(for: id)
     }
 
     func imagePayload(for entry: Entry) throws -> Data {
@@ -218,6 +234,119 @@ struct ShareCaptureInbox: Sendable {
             try removeIfPresent(imagePayloadURL(for: entry.id))
         }
         try removeIfPresent(entryURL(for: entry.id))
+        // Best effort: once the entry file is gone the keyboard ignores its preview, and the next
+        // `sweepKeyboardPreviews()` removes what is left, so a failure must not fail the import.
+        try? removePreviews(for: entry.id)
+    }
+
+    /// Publishes the keyboard preview of a queued text entry. Returns false, without writing,
+    /// when the text is too long for a preview or the set of live previews is full. The queue
+    /// still holds the clip in either case, so a caller treats a throw as non-fatal.
+    @discardableResult
+    func publishKeyboardPreview(for entry: Entry) throws -> Bool {
+        guard entry.kind == .text,
+              let text = entry.text,
+              text.utf8.count <= Self.maxPreviewTextBytes else { return false }
+        try FileManager.default.createDirectory(at: previewsURL, withIntermediateDirectories: true)
+        try removeDeadPreviews()
+        guard try previewURLs().count < Self.maxPendingPreviews else { return false }
+
+        let item = ClipboardItem(
+            id: entry.id,
+            type: .text,
+            timestamp: entry.createdAt,
+            sourceApp: entry.sourceApp,
+            textContent: text,
+            modifiedAt: entry.createdAt
+        )
+        try KeyboardHistoryProjection(items: [item]).write(
+            to: previewURL(for: entry),
+            options: writeOptions
+        )
+        return true
+    }
+
+    /// Removes previews whose entry is gone or already imported. The host runs this before each
+    /// import pass, which covers an older app release that removes entries without their previews.
+    func sweepKeyboardPreviews() throws {
+        for url in try previewURLs(includingDead: true) {
+            guard let id = Self.entryID(ofPreviewAt: url) else {
+                try removeIfPresent(url)
+                continue
+            }
+            let entryExists = FileManager.default.fileExists(atPath: entryURL(for: id).path)
+            let alreadyImported = try isProcessed(id)
+            if !entryExists || alreadyImported {
+                try removeIfPresent(url)
+            }
+        }
+    }
+
+    /// The newest preview files first, at most `limit`, each with the entry ID it belongs to.
+    static func newestPreviewURLs(
+        in previewsURL: URL,
+        limit: Int
+    ) throws -> [(url: URL, entryID: UUID)] {
+        guard FileManager.default.fileExists(atPath: previewsURL.path) else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: previewsURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        return urls
+            .filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .compactMap { url in entryID(ofPreviewAt: url).map { (url, $0) } }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    /// The queue file the keyboard checks to know a preview is still waiting for its import.
+    static func entryFileURL(for id: UUID, in entriesURL: URL) -> URL {
+        entriesURL.appendingPathComponent(id.uuidString, isDirectory: false).appendingPathExtension("json")
+    }
+
+    private func previewURL(for entry: Entry) -> URL {
+        let milliseconds = max(0, Int((entry.createdAt.timeIntervalSince1970 * 1_000).rounded()))
+        let padded = String(milliseconds)
+        let zeros = String(repeating: "0", count: max(0, Self.previewNameDigits - padded.count))
+        return previewsURL
+            .appendingPathComponent("\(zeros)\(padded)-\(entry.id.uuidString)", isDirectory: false)
+            .appendingPathExtension("json")
+    }
+
+    /// `<epoch milliseconds>-<entry id>.json`; the entry ID is everything after the first dash.
+    private static func entryID(ofPreviewAt url: URL) -> UUID? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let separator = stem.firstIndex(of: "-") else { return nil }
+        return UUID(uuidString: String(stem[stem.index(after: separator)...]))
+    }
+
+    private func previewURLs(includingDead: Bool = false) throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: previewsURL.path) else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: previewsURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "json" }
+        guard !includingDead else { return urls }
+        return urls.filter { url in
+            guard let id = Self.entryID(ofPreviewAt: url) else { return false }
+            return FileManager.default.fileExists(atPath: entryURL(for: id).path)
+        }
+    }
+
+    private func removeDeadPreviews() throws {
+        let live = Set(try previewURLs())
+        for url in try previewURLs(includingDead: true) where !live.contains(url) {
+            try removeIfPresent(url)
+        }
+    }
+
+    private func removePreviews(for id: UUID) throws {
+        for url in try previewURLs(includingDead: true) where Self.entryID(ofPreviewAt: url) == id {
+            try removeIfPresent(url)
+        }
     }
 
     /// Whether this handoff identifier was already imported, independent of whether its clip is
@@ -289,7 +418,7 @@ struct ShareCaptureInbox: Sendable {
     }
 
     private func entryURL(for id: UUID) -> URL {
-        entriesURL.appendingPathComponent(id.uuidString, isDirectory: false).appendingPathExtension("json")
+        Self.entryFileURL(for: id, in: entriesURL)
     }
 
     private func imagePayloadURL(for id: UUID) -> URL {
