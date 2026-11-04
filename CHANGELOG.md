@@ -8,6 +8,8 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-04
+
 ### Added
 
 - Include History in Device Backups on iPhone and iPad, off by default. Yank asks iOS to keep history, the deletion log, attachments, keyboard copy and share inbox out of device backups, as it does on the Mac, so existing installs stop including history in new backups unless you turn it on. A device restored without history refills from iCloud sync, up to your history limit. iOS treats the request as guidance, not a guarantee.
