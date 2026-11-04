@@ -15,6 +15,7 @@ and passes that section to `gh release create --notes-file`.
 
 ### Fixed
 
+- iCloud sync now picks up again by itself on Mac and iPhone after the network comes back, after you switch or sign out of iCloud and back in, and after a background update, without relaunching Yank. A Mac that started offline now also sets up push delivery once it is online, two syncs no longer run at once, an iPhone refresh you ask for while another sync runs is no longer dropped, and an iPhone started before its first unlock recovers once you unlock it.
 - Stopped recording copies that carry the older concealed and transient markers used by 1Password and some text expanders, on Mac and iPhone. Clips an earlier version already stored stay in history.
 - On the Mac, a copy made in an excluded app is no longer recorded when you switch to another app within half a second. A copy is also skipped when the app named in its source hint is excluded; the hint can only add exclusions. iPhone still cannot exclude by app.
 

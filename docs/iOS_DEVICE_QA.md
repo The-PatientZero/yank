@@ -90,14 +90,14 @@ If clip insertion or next-keyboard switching is unavailable, do not submit the b
 - [ ] On two devices using the same recorded iCloud account alias, text, image, tags, pin/bookmark state, and deletions converge in both directions.
 - [ ] After foreground catch-up and relaunch on both devices, the converged history has no missing or duplicate clips.
 - [ ] Record the source device and OS for a Universal Clipboard copy; returning to Yank under the recorded mode and permission state captures the eligible value exactly once.
-- [ ] Offline edits recover after connectivity returns.
+- [ ] Offline edits recover after connectivity returns. With the app open, sync resumes without a tap or pull to refresh.
 - [ ] A partial record failure does not advance the change token past failed work.
 - [ ] Quota exhaustion and signed-out states preserve local history and explain recovery.
-- [ ] iCloud account changes and expired tokens trigger a safe reconciliation.
+- [ ] iCloud account changes and expired tokens trigger a safe reconciliation. Signing out and back in resumes sync without a relaunch.
 - [ ] Push-disabled operation catches up on foreground refresh.
 - [ ] Background change delivery does not duplicate clips.
 - [ ] Launch before first unlock reports protected storage without replacing history with empty data.
-- [ ] Launch after first unlock hydrates the original history.
+- [ ] Launch after first unlock hydrates the original history. The storage banner clears without a relaunch and the Sync and history limit settings keep their earlier values.
 - [ ] After a foreground capture, immediately background or terminate Yank; relaunch shows the acknowledged clip exactly once, while interrupted unacknowledged work remains retryable.
 
 ## Capacity and resource checks
