@@ -209,7 +209,8 @@ struct CaptureClipIntent: AppIntent {
             return
         }
         let outcome = await runtime.syncController.refreshForeground()
-        store.enforceRetentionAndLimit()
+        // A pull that did not happen leaves the local history stale, so only the cap applies.
+        store.enforceRetentionAndLimit(limitOnly: outcome == .failed || store.isAwaitingFirstUnlock)
         run.stage = outcome == .failed ? .pushFailed : .pushed
         run.finish(run.result)
     }

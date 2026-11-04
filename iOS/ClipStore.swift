@@ -128,8 +128,15 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// in-memory list must never replace the unloaded file.
     @ObservationIgnored private var isHistoryLoadPending = false
     @ObservationIgnored private var hydrateTask: Task<Void, Never>?
-    /// A retention pass was requested while the history was still loading; `hydrate()` runs it.
-    @ObservationIgnored private var retentionPassOwed = false
+    /// A retention pass was requested while the history was still loading; the end of storage
+    /// setup runs it. A cap-only request replays as cap-only, and any full request makes it full.
+    private enum RetentionPassOwed {
+        case none
+        case limitOnly
+        case full
+    }
+
+    @ObservationIgnored private var retentionPassOwed = RetentionPassOwed.none
     @ObservationIgnored private let appGroupContext: AppGroupContext?
     /// Keeps history storage out of device backups unless the user opted in; nil without an App Group.
     @ObservationIgnored private let backupExclusion: BackupExclusion?
@@ -266,9 +273,12 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             publishKeyboardProjection()
         }
         hasLoaded = true
-        if retentionPassOwed {
-            retentionPassOwed = false
-            enforceRetentionAndLimit()
+        let owed = retentionPassOwed
+        retentionPassOwed = .none
+        switch owed {
+        case .none: break
+        case .limitOnly: enforceRetentionAndLimit(limitOnly: true)
+        case .full: enforceRetentionAndLimit()
         }
     }
 
@@ -295,7 +305,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         prepareStorage(context: appGroupContext, deferHistoryLoad: false)
         guard !historyWritesDisabled else { return false }
         finishStorageSetup()
-        enforceRetentionAndLimit()
+        // Age expiry waits for the pull that follows: the history read here may be stale.
+        enforceRetentionAndLimit(limitOnly: true)
         clipStoreLog.notice("Protected storage became readable; history re-read")
         return true
     }
@@ -707,7 +718,11 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// used again meanwhile.
     func enforceRetentionAndLimit(limitOnly: Bool = false) {
         guard !isHistoryLoadPending else {
-            retentionPassOwed = true
+            if !limitOnly {
+                retentionPassOwed = .full
+            } else if retentionPassOwed == .none {
+                retentionPassOwed = .limitOnly
+            }
             return
         }
         let result = ClipboardRetention.enforce(
@@ -736,6 +751,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     func markSyncSucceeded(at date: Date) {
+        let finishedMultiPagePull = syncClipsReceived != nil
         syncStatus = .healthy(lastSynced: date)
         syncFailureKind = nil
         syncClipsReceived = nil
@@ -744,6 +760,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         if firstSyncState != .settled {
             firstSyncState = .settled
         }
+        // The pages skipped age expiry, so it runs once now that the whole pull is merged.
+        if finishedMultiPagePull { enforceRetentionAndLimit() }
     }
 
     func markSyncProgress(clipsReceived: Int) {
@@ -809,13 +827,16 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     /// Applies the canonical state in memory and reports whether anything a snapshot stores
     /// changed. Nothing is assigned when nothing changed, so an echo of this device's own pushes
-    /// neither redraws the list nor writes the disk.
+    /// neither redraws the list nor writes the disk. A page of a multi-page pull skips age
+    /// expiry: a clip expired from the stale history is tombstoned as of now and would beat a copy
+    /// another device used again on a later page. `markSyncSucceeded` expires them after the last.
     private func applyReconciledInMemory(_ canonical: [ClipboardItem]) -> ReconcileOutcome {
+        let isMidPull = syncClipsReceived != nil
         let result = SyncReconcile.apply(
             canonical: canonical,
             replacing: items,
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionDays: isMidPull ? 0 : retentionDays,
             now: Date()
         )
         let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)
