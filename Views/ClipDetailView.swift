@@ -428,7 +428,7 @@ struct ClipDetailView: View {
 
             if model.showTagInput {
                 if inputSuggestions.isEmpty && !model.tagInputText.isEmpty {
-                    Text("No matching tags — ↵ creates “\(TagChip.normalize(model.tagInputText))”.")
+                    Text("No matching tags — ↵ creates “\(TagNormalization.normalize(model.tagInputText))”.")
                         .font(.system(size: TypeScale.micro))
                         .foregroundColor(.yankTextTertiary)
                 } else {

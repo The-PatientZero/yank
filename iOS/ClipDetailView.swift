@@ -224,7 +224,7 @@ struct ClipDetailView: View {
                     .textInputAutocapitalization(.never)
                     .onSubmit(addTag)
                 Button("Add", action: addTag)
-                    .disabled(TagChip.normalize(newTag).isEmpty)
+                    .disabled(TagNormalization.normalize(newTag).isEmpty)
             }
             if !tagSuggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -315,7 +315,7 @@ struct ClipDetailView: View {
     }
 
     private func addTag() {
-        let tag = TagChip.normalize(newTag)
+        let tag = TagNormalization.normalize(newTag)
         guard !tag.isEmpty else { return }
         store.addTag(tag, to: current)
         withAnimation(IOSMotion.state(reduceMotion)) { newTag = "" }

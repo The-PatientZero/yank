@@ -50,18 +50,12 @@ public enum AITagCleaner {
         var seen = Set<String>()
         var out: [String] = []
         for candidate in raw {
-            let tag = normalize(candidate)
+            let tag = TagNormalization.normalize(candidate)
             guard tag.count >= 2, !taken.contains(tag), seen.insert(tag).inserted else { continue }
             out.append(tag)
             if out.count == limit { break }
         }
         return out
-    }
-
-    /// The shared tag rule — see `TagNormalization`. Kept as a name here because the cleaner's
-    /// own vectors read against it.
-    static func normalize(_ input: String) -> String {
-        TagNormalization.normalize(input)
     }
 }
 
