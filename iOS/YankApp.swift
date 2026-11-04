@@ -286,8 +286,6 @@ enum IOSSyncRunOutcome: Equatable, Sendable {
     /// The run succeeded and fetched nothing, or was held back until the phone is unlocked.
     case noData
     case failed
-
-    var succeeded: Bool { self != .failed }
 }
 
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
