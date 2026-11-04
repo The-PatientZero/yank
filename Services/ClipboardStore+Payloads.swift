@@ -98,10 +98,6 @@ extension ClipboardStore {
     }
 
     /// Load a chunk of text content, reading only what's necessary
-    func textChunk(for item: ClipboardItem, charCount: Int, byteOffset: Int = 0) -> TextChunkPage? {
-        Self.textChunk(for: item, textURL: blobURL(for: item), charCount: charCount, byteOffset: byteOffset)
-    }
-
     nonisolated static func textChunk(
         for item: ClipboardItem,
         textURL: URL?,

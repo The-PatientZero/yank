@@ -13,8 +13,6 @@ struct SequentialPasteSession: Equatable, Sendable {
         let pasteboardGeneration: Int
         let text: String
         let capturedAt: Date
-
-        var utf8ByteCount: Int { text.utf8.count }
     }
 
     enum Failure: Equatable, Sendable {
@@ -99,7 +97,6 @@ struct SequentialPasteSession: Equatable, Sendable {
 
     var isRequestInFlight: Bool { inFlightRequest != nil }
     var pastedCount: Int { nextIndex }
-    var remainingCount: Int { max(occurrences.count - nextIndex, 0) }
 
     @discardableResult
     mutating func start(at now: Date) -> Bool {
