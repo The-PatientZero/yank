@@ -754,7 +754,6 @@ struct YankApp: App {
                     appDelegate.remoteChangeHandler = { [weak syncController] in
                         await syncController?.handleRemoteChange() ?? false
                     }
-                    store.enforceRetentionAndLimit()
                     await refreshForeground()
                     refreshSpotlightIndex()
                 }
@@ -814,6 +813,9 @@ struct YankApp: App {
     }
 
     private func refreshForeground() async {
+        // Nothing runs in the background, so a clip that aged past the window while the app was
+        // away is only removed when it returns. Before the drain: clips captured now are new.
+        store.enforceRetentionAndLimit()
         await IOSForegroundRefreshPipeline.refresh(
             currentMode: { settings.foregroundCaptureMode },
             drainExplicitCaptures: { await store.drainShareInbox() },

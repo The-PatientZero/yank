@@ -112,6 +112,7 @@ targets:
       - iOS/PasteboardBootTime.swift
       - iOS/IOSSyncedSettingsBridge.swift
       - iOS/HistoryLimitConfirmation.swift
+      - iOS/RetentionConfirmation.swift
       - iOS/YankIOSDesignSystem.swift
       - iOS/YankApp.swift
       - iOS/HistoryView.swift
