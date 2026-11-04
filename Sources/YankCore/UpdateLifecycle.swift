@@ -213,6 +213,76 @@ extension UpdateLifecycleState {
     }
 }
 
+/// Feed-derived text reaches the tooltip, an accessibility string and Settings, so it is reduced
+/// to its first line and capped before display.
+enum UpdateDisplayText {
+    static let maxDisplayedVersionLength = 32
+    static let maxDisplayedDetailLength = 160
+
+    static func version(_ value: String) -> String {
+        sanitized(value, maxLength: maxDisplayedVersionLength)
+    }
+
+    static func detail(_ value: String) -> String {
+        sanitized(value, maxLength: maxDisplayedDetailLength)
+    }
+
+    private static func sanitized(_ value: String, maxLength: Int) -> String {
+        let firstLine = value
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        guard firstLine.count > maxLength else { return firstLine }
+        return String(firstLine.prefix(maxLength - 1)) + "\u{2026}"
+    }
+}
+
+extension UpdateLifecycleState {
+    /// A short line for the menu-bar icon tooltip and accessibility description while an update
+    /// needs the user's attention; `nil` when there is nothing to point out.
+    var attentionText: String? {
+        switch self {
+        case let .available(version, _), let .downloading(version):
+            return "Update \(UpdateDisplayText.version(version)) available"
+        case let .staged(update):
+            return "Update \(UpdateDisplayText.version(update.version)) ready, relaunch to finish"
+        case let .failed(failure):
+            guard let version = failure.version else { return nil }
+            return "Update \(UpdateDisplayText.version(version)) available, install failed"
+        case .idle, .checking, .upToDate, .unavailable, .installed:
+            return nil
+        }
+    }
+
+    /// One plain sentence describing the update status, shown in Settings.
+    var statusText: String {
+        switch self {
+        case .idle:
+            return "Yank checks for updates about once a day."
+        case .checking:
+            return "Checking for updates."
+        case let .available(version, _):
+            return "Yank \(UpdateDisplayText.version(version)) is available."
+        case let .downloading(version):
+            return "Downloading Yank \(UpdateDisplayText.version(version))."
+        case let .staged(update):
+            return "Yank \(UpdateDisplayText.version(update.version)) is ready. Relaunch to finish installing."
+        case .upToDate:
+            return "Yank is up to date."
+        case .unavailable:
+            return "No update information is available right now."
+        case let .failed(failure):
+            let detail = UpdateDisplayText.detail(failure.detail)
+            let title = UpdateDisplayText.detail(failure.title)
+            return detail.isEmpty ? "\(title)." : "\(title). \(detail)"
+        case let .installed(version, tag, _, _):
+            return tag.isEmpty
+                ? "Yank is up to date."
+                : "Yank \(UpdateDisplayText.version(version)) is installed."
+        }
+    }
+}
+
 enum UpdateReleaseNotesFormatter {
     static func menuDetail(from body: String?, releaseURL: String?, version: String) -> String {
         let lines = plainLines(from: body)
