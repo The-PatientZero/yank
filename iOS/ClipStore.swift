@@ -669,6 +669,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         syncStatus = .localOnly(reason: reason)
         syncFailureKind = nil
+        // A first sync that never finished must not leave a spinner or a retry screen behind.
+        if firstSyncState != .settled {
+            firstSyncState = .idle
+        }
         waitingClips = []
         encryptionStatus = nil
     }

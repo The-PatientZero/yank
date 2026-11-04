@@ -1,22 +1,21 @@
 import SwiftUI
 
 enum HistoryEmptyPresentation: Equatable {
-    case iCloudSignedOut
     case syncFailed(String)
     case syncing
-    case captureSetup
     case ready
 
+    /// A signed-out or restricted account never blocks the empty state: the banner above it
+    /// explains the account, and the app works without iCloud.
     static func resolve(
         iCloudSignedOut: Bool,
         syncFailureMessage: String?,
-        isAwaitingFirstSync: Bool,
-        captureSetupCompleted: Bool
+        isAwaitingFirstSync: Bool
     ) -> Self {
-        if iCloudSignedOut { return .iCloudSignedOut }
+        if iCloudSignedOut { return .ready }
         if let syncFailureMessage { return .syncFailed(syncFailureMessage) }
         if isAwaitingFirstSync { return .syncing }
-        return captureSetupCompleted ? .ready : .captureSetup
+        return .ready
     }
 }
 
@@ -26,6 +25,9 @@ struct HistoryView: View {
     var iCloudSignedOut: Bool = false
     var onRetrySync: (() async -> Void)? = nil
     var onKeepLocalOnly: (([UUID]) -> Void)? = nil
+    /// Reopens the first-run screen on the capture methods; owned by the app, which holds the session.
+    var onReviewCaptureMethods: (() -> Void)? = nil
+    var pasteAccess: PasteAccessMonitor? = nil
     /// Bumped by the app each time it returns from the background; resets search, filter and scroll.
     var openRequest = 0
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -100,8 +102,7 @@ struct HistoryView: View {
         .resolve(
             iCloudSignedOut: iCloudSignedOut,
             syncFailureMessage: firstSyncFailureMessage,
-            isAwaitingFirstSync: isAwaitingFirstSync,
-            captureSetupCompleted: settings.captureSetupCompleted
+            isAwaitingFirstSync: isAwaitingFirstSync
         )
     }
 
@@ -109,14 +110,10 @@ struct HistoryView: View {
         Group {
             if store.items.isEmpty {
                 switch emptyPresentation {
-                case .iCloudSignedOut:
-                    iCloudSignedOutState
                 case .syncFailed(let message):
                     syncFailedState(message: message)
                 case .syncing:
                     syncingState
-                case .captureSetup:
-                    onboardingState
                 case .ready:
                     readyEmptyState
                 }
@@ -128,6 +125,15 @@ struct HistoryView: View {
             VStack(spacing: 0) {
                 if store.storageUnavailable {
                     StorageUnavailableBanner()
+                }
+                if store.items.isEmpty && iCloudSignedOut {
+                    ICloudSignedOutBanner(
+                        isRestricted: store.syncFailureKind == .accountRestricted,
+                        onUseWithoutICloud: { settings.syncEnabled = false }
+                    )
+                }
+                if let pasteAccess, pasteAccess.isDenied {
+                    PasteDeniedBanner()
                 }
                 if store.heldClipCount > 0 {
                     HeldClipsNotice(count: store.heldClipCount)
@@ -145,7 +151,6 @@ struct HistoryView: View {
         }
         .animation(IOSMotion.state(reduceMotion), value: isAwaitingFirstSync)
         .animation(IOSMotion.state(reduceMotion), value: firstSyncFailureMessage)
-        .animation(IOSMotion.state(reduceMotion), value: settings.captureSetupCompleted)
         .animation(IOSMotion.state(reduceMotion), value: store.storageUnavailable)
         .animation(IOSMotion.state(reduceMotion), value: store.pendingDeletion != nil)
         .navigationBarTitleDisplayMode(.inline)
