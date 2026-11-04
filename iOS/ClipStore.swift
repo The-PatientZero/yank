@@ -81,6 +81,12 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// Surfaced to the UI; never silently swallowed.
     private(set) var storageUnavailable = false
 
+    /// True while the history could not be read only because iOS has not made the files
+    /// readable yet (the phone was not unlocked since it restarted). Nothing is written, and
+    /// sync does not start, until `retryStorageIfUnreadable()` finds the files readable. A
+    /// corrupt file is not this state.
+    private(set) var isAwaitingFirstUnlock = false
+
     @ObservationIgnored private var tombstones: [UUID: Date] = [:]
     /// Blobs no clip references any more stay on disk until the snapshot that stopped
     /// referencing them is durable (a sync reconcile, a delete, a clear, retention or the history
@@ -98,6 +104,21 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     @ObservationIgnored var filterCache = ClipFilterCache()
     @ObservationIgnored var tagCache: [String]?
 
+    /// What kept storage from setting up cleanly; `storageUnavailable`, `isAwaitingFirstUnlock`
+    /// and `historyWritesDisabled` are derived from it by `refreshStorageState()`.
+    private enum StorageFault {
+        /// No App Group container: permanent.
+        case missingContainer
+        /// The blobs folder or a file attribute could not be set up; may pass once files are readable.
+        case folderSetup
+        /// A history file could not be read; may pass once files are readable.
+        case unreadableHistory
+        /// The history is corrupt or its recovery failed: fail closed, never retried.
+        case unusableHistory
+        case keyboardProjection
+    }
+
+    @ObservationIgnored private var storageFaults: Set<StorageFault> = []
     @ObservationIgnored private var historyWritesDisabled = false
     /// True from `init(deferHistoryLoad: true)` until `hydrate()` has applied the saved history.
     /// While it is set nothing may write the history file or apply synced state: an empty
@@ -160,17 +181,26 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         self.backupExclusion = context.map(BackupExclusion.init(context:))
         self.blobStore = IOSClipBlobStore(directory: context?.blobsURL)
         guard let context else {
-            storageUnavailable = true
-            historyWritesDisabled = true
+            storageFaults.insert(.missingContainer)
+            refreshStorageState()
             hasLoaded = true
             clipStoreLog.error("App Group container is unavailable; iOS storage is disabled.")
             return
         }
+        prepareStorage(context: context, deferHistoryLoad: deferHistoryLoad)
+        if !isHistoryLoadPending {
+            finishStorageSetup()
+        }
+    }
+
+    /// Blobs folder, protection classes and the history load, unless the load is deferred to
+    /// `hydrate()`. Safe to run again.
+    private func prepareStorage(context: AppGroupContext, deferHistoryLoad: Bool) {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(at: context.blobsURL, withIntermediateDirectories: true)
         } catch {
-            storageUnavailable = true
+            storageFaults.insert(.folderSetup)
             clipStoreLog.error("Failed to create iOS blobs directory: \(error.localizedDescription)")
         }
         // Data-protection class is the iOS default for App-Group containers, but setting it
@@ -182,10 +212,12 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                 ofItemAtPath: context.blobsURL.path
             )
         } catch {
-            storageUnavailable = true
+            storageFaults.insert(.folderSetup)
             clipStoreLog.error("Failed to set iOS blobs data-protection class: \(error.localizedDescription)")
         }
         protectExistingHistoryFiles()
+        // A retry clears the faults it owns first, so writes the load needs are not still disabled.
+        refreshStorageState()
         if deferHistoryLoad {
             isHistoryLoadPending = true
             return
@@ -195,7 +227,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             HistorySnapshotLoader.load(historyURL: context.historyURL, tombstonesURL: context.tombstonesURL),
             historyFileExisted: historyFileExisted
         )
-        finishLaunchLoad()
     }
 
     /// Reads the saved history off the main thread, then applies it and does the launch work
@@ -221,15 +252,17 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             // Cleared first, so everything below that persists is not swallowed by the guard.
             self.isHistoryLoadPending = false
             self.applyLoadResult(result, historyFileExisted: historyFileExisted)
-            self.finishLaunchLoad()
+            self.finishStorageSetup()
         }
         hydrateTask = task
         await task.value
     }
 
-    /// The work that follows a load: backup exclusion, orphan sweep, keyboard projection and any
-    /// retention pass that was requested meanwhile. Marks the history ready last.
-    private func finishLaunchLoad() {
+    /// What follows a setup attempt: backup exclusion, and only when the history loaded the orphan
+    /// blob sweep (an empty `items` from a failed load would make every blob look orphaned) and the
+    /// keyboard projection, then any retention pass that was requested meanwhile. Marks the
+    /// history ready last.
+    private func finishStorageSetup() {
         reconcileBackupExclusionInBackground()
         if !historyWritesDisabled {
             sweepOrphanBlobs()
@@ -240,6 +273,34 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             retentionPassOwed = false
             enforceRetentionAndLimit()
         }
+    }
+
+    /// Sets the three derived flags from `storageFaults`, notifying observers only on a change.
+    private func refreshStorageState() {
+        let unavailable = !storageFaults.isEmpty
+        if storageUnavailable != unavailable { storageUnavailable = unavailable }
+        let awaitingUnlock = storageFaults.contains(.unreadableHistory)
+            && storageFaults.isSubset(of: [.unreadableHistory, .folderSetup])
+        if isAwaitingFirstUnlock != awaitingUnlock { isAwaitingFirstUnlock = awaitingUnlock }
+        historyWritesDisabled = !storageFaults.isDisjoint(
+            with: [.missingContainer, .unreadableHistory, .unusableHistory]
+        )
+    }
+
+    /// Runs storage setup again when the only trouble was files that were not readable yet, as
+    /// after a launch before the first unlock. Clears only the faults it owns: a keyboard
+    /// projection failure stays unless the projection works now. Does nothing for a corrupt
+    /// file or a missing App Group. Returns whether the history is usable afterwards.
+    @discardableResult
+    func retryStorageIfUnreadable() -> Bool {
+        guard isAwaitingFirstUnlock, let appGroupContext else { return false }
+        storageFaults.subtract([.folderSetup, .unreadableHistory, .keyboardProjection])
+        prepareStorage(context: appGroupContext, deferHistoryLoad: false)
+        guard !historyWritesDisabled else { return false }
+        finishStorageSetup()
+        enforceRetentionAndLimit()
+        clipStoreLog.notice("Protected storage became readable; history re-read")
+        return true
     }
 
     /// Capture text from the foreground clipboard, share extension, or App Intent; large text is
@@ -893,7 +954,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                     ofItemAtPath: url.path
                 )
             } catch {
-                storageUnavailable = true
+                storageFaults.insert(.folderSetup)
                 clipStoreLog.error("Failed to set iOS history data-protection class: \(error.localizedDescription)")
             }
         }
@@ -928,9 +989,19 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                 markPullPositionRestartPending()
             }
         case .failure(let error):
-            storageUnavailable = true
-            historyWritesDisabled = true
+            storageFaults.insert(Self.fault(for: error))
             clipStoreLog.error("Failed to load iOS history snapshot: \(error.localizedDescription)")
+        }
+        refreshStorageState()
+    }
+
+    /// An unreadable file may be readable after the first unlock; every other failure is final.
+    private static func fault(for error: HistorySnapshotLoader.LoadError) -> StorageFault {
+        switch error {
+        case .unreadableHistory, .unreadableTombstones, .unreadableTransaction:
+            .unreadableHistory
+        case .corruptHistory, .corruptTombstones, .corruptTransaction, .transactionRecoveryFailed:
+            .unusableHistory
         }
     }
 
@@ -1058,7 +1129,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             onError: { [weak self] error in
                 clipStoreLog.error("Failed to publish keyboard history: \(error.localizedDescription)")
                 Task { @MainActor [weak self] in
-                    self?.storageUnavailable = true
+                    self?.storageFaults.insert(.keyboardProjection)
+                    self?.refreshStorageState()
                 }
             },
             afterWrite: reconcileBackupExclusionAfterWrite

@@ -38,6 +38,7 @@ Before a public iOS build or release candidate, run the physical-device matrix i
 | File | Role |
 |---|---|
 | `iOS/YankApp.swift` | App entry; starts sync and Spotlight indexing when available |
+| `iOS/IOSAppRuntime.swift` | Creates the store, settings and sync controller once per process, so a background push can sync without a window |
 | `iOS/HistoryView.swift` | Browse/search synced clips, tap to open details, batch actions |
 | `iOS/ClipStore.swift` | iOS store backed by App Group JSON, conforms to `SyncableStore` |
 | `iOS/WaitingClipsView.swift` | Lists clips that cannot upload yet, with keep-on-this-iPhone and delete |

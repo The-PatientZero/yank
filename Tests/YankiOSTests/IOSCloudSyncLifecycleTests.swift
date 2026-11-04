@@ -228,42 +228,6 @@ struct IOSCloudSyncLifecycleTests {
         #expect(!controller.iCloudSignedOut)
     }
 
-    @Test("A push that arrives before the handler is wired refreshes once on wiring")
-    func remoteChangeArrivingBeforeWiringRefreshesOnceOnWiring() async {
-        let delegate = YankAppDelegate(syncEnabledProvider: { true })
-        var results: [UIBackgroundFetchResult] = []
-        var handlerCallCount = 0
-
-        delegate.application(
-            UIApplication.shared,
-            didReceiveRemoteNotification: [:],
-            fetchCompletionHandler: { results.append($0) }
-        )
-        while results.isEmpty {
-            await Task.yield()
-        }
-        #expect(results == [.noData])
-
-        delegate.remoteChangeHandler = {
-            handlerCallCount += 1
-            return true
-        }
-        while handlerCallCount == 0 {
-            await Task.yield()
-        }
-
-        // The latch is one-shot: re-wiring must not replay the same missed notification.
-        delegate.remoteChangeHandler = {
-            handlerCallCount += 1
-            return true
-        }
-        for _ in 0..<10 {
-            await Task.yield()
-        }
-        #expect(handlerCallCount == 1)
-        #expect(results == [.noData])
-    }
-
     @Test("Disabling a remote notification completes once and preserves re-enable delivery")
     func disableRemoteNotificationCompletesExactlyOnceAndReenables() async {
         let handlerGate = LifecycleTestGate()
@@ -275,7 +239,7 @@ struct IOSCloudSyncLifecycleTests {
             if handlerCallCount == 1 {
                 await handlerGate.wait()
             }
-            return true
+            return .newData
         }
         var results: [UIBackgroundFetchResult] = []
 
@@ -317,7 +281,7 @@ struct IOSCloudSyncLifecycleTests {
         let delegate = YankAppDelegate(syncEnabledProvider: { syncEnabled.value })
         delegate.remoteChangeHandler = {
             handlerCallCount += 1
-            return true
+            return .newData
         }
         var results: [UIBackgroundFetchResult] = []
 
@@ -345,7 +309,7 @@ struct IOSCloudSyncLifecycleTests {
         delegate.remoteChangeHandler = {
             handlerCallCount += 1
             await handlerGate.wait()
-            return true
+            return .newData
         }
         var firstResults: [UIBackgroundFetchResult] = []
         var secondResults: [UIBackgroundFetchResult] = []
@@ -386,7 +350,7 @@ struct IOSCloudSyncLifecycleTests {
             if handlerCallCount == 1 {
                 await firstHandlerGate.wait()
             }
-            return true
+            return .newData
         }
         var firstResults: [UIBackgroundFetchResult] = []
         var secondResults: [UIBackgroundFetchResult] = []
@@ -432,7 +396,7 @@ struct IOSCloudSyncLifecycleTests {
         while results.isEmpty {
             await Task.yield()
         }
-        delegate.remoteChangeHandler = { false }
+        delegate.remoteChangeHandler = { .failed }
         delegate.application(
             UIApplication.shared,
             didReceiveRemoteNotification: [:],

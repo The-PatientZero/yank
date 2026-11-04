@@ -139,6 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardController?.handleRemoteChange()
     }
 
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        Log.app.error("Could not register for remote notifications: \(error.localizedDescription, privacy: .public)")
+    }
+
     /// Reopening the app (e.g. from Finder) surfaces Settings — the recovery path when the
     /// menu-bar icon is hidden, so the user is never stranded.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
