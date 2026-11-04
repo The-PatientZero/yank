@@ -25,6 +25,7 @@ final class HubController {
 
     /// Everything the menu-bar glyph shows. The image is rebuilt only when this changes.
     private struct IconState: Equatable {
+        let style: MenuBarIconStyle
         let paused: Bool
         let updateText: String?
         let syncProblem: Bool
@@ -44,6 +45,8 @@ final class HubController {
         statusItem.isVisible = settings.showMenuBarIcon
         NotificationCenter.default.addObserver(self, selector: #selector(menuBarVisibilityChanged),
                                                name: .yankMenuBarVisibilityChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuBarIconStyleChanged),
+                                               name: .yankMenuBarIconStyleChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(didCapture),
                                                name: .yankDidCapture, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateStateChanged),
@@ -94,6 +97,10 @@ final class HubController {
 
     @objc private func menuBarVisibilityChanged() {
         statusItem.isVisible = settings.showMenuBarIcon
+    }
+
+    @objc private func menuBarIconStyleChanged() {
+        refreshGlyph()
     }
 
     @objc private func didCapture() {
@@ -149,6 +156,7 @@ final class HubController {
     /// so it never goes stale.
     private func refreshGlyph() {
         let state = IconState(
+            style: settings.menuBarIconStyle,
             paused: capturePaused,
             updateText: footer.updateAttention(),
             syncProblem: syncAttentionShown
@@ -210,6 +218,15 @@ final class HubController {
         return image
     }()
 
+    /// Single-colour mark: only its alpha is used. It is tinted at render time instead of being
+    /// a template image, so the status dots drawn over it keep their own colours.
+    private static let plainGlyph: NSImage = {
+        let image = NSImage(named: "BrandGlyphPlain") ?? NSImage()
+        image.size = NSSize(width: 18, height: 18)
+        image.accessibilityDescription = "Yank"
+        return image
+    }()
+
     private static let pausedTooltipLine = "Capture is paused"
 
     /// The brand glyph with the active marks, each in its own corner so none hides another: the
@@ -218,12 +235,13 @@ final class HubController {
     /// 3:1 against both a light and a dark menu bar. Drawn per appearance at render time.
     private static func glyph(for state: IconState) -> NSImage {
         let image = NSImage(size: brandGlyph.size, flipped: false) { rect in
-            brandGlyph.draw(
-                in: rect,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: state.paused ? PauseMark.glyphOpacity : 1
-            )
+            let opacity = state.paused ? PauseMark.glyphOpacity : 1
+            switch state.style {
+            case .color:
+                brandGlyph.draw(in: rect, from: .zero, operation: .sourceOver, fraction: opacity)
+            case .plain:
+                drawPlainGlyph(in: rect, opacity: opacity)
+            }
             if state.updateText != nil {
                 drawDot(
                     in: NSRect(
@@ -256,6 +274,13 @@ final class HubController {
         image.isTemplate = false
         image.accessibilityDescription = state.accessibilityDescription
         return image
+    }
+
+    /// Draws the plain mark in the menu bar's text colour for the current appearance.
+    private static func drawPlainGlyph(in rect: NSRect, opacity: CGFloat) {
+        plainGlyph.draw(in: rect, from: .zero, operation: .sourceOver, fraction: opacity)
+        NSColor.labelColor.setFill()
+        rect.fill(using: .sourceAtop)
     }
 
     private static func drawDot(in dotRect: NSRect, ringWidth: CGFloat, color: NSColor) {

@@ -50,6 +50,16 @@ enum ShortcutOpenTarget: String, CaseIterable, Hashable, Identifiable, Sendable 
     var id: String { rawValue }
 }
 
+/// How the menu bar icon is drawn. Local to this Mac and never synced.
+enum MenuBarIconStyle: String, CaseIterable, Hashable, Identifiable, Sendable {
+    /// The full-colour brand mark.
+    case color
+    /// A single-colour mark that follows the menu bar's text colour.
+    case plain
+
+    var id: String { rawValue }
+}
+
 enum ShortcutOpenTargetDefaults {
     static func initialTarget(storedRawValue: String?) -> ShortcutOpenTarget {
         guard let storedRawValue,
@@ -75,6 +85,7 @@ final class SettingsManager {
     private let excludedBundleIDsKey = "excludedBundleIDs"
     private let minCaptureLengthKey = "minCaptureLength"
     private let showMenuBarIconKey = "showMenuBarIcon"
+    private let menuBarIconStyleKey = "menuBarIconStyle"
     private let capturePausedKey = "capturePaused"
     private let keepHistoryWindowOpenKey = "keepHistoryWindowOpen"
     private let aiTaggingEnabledKey = "aiTaggingEnabled"
@@ -116,6 +127,9 @@ final class SettingsManager {
 
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
     var showMenuBarIcon: Bool = true
+
+    /// Whether the menu bar icon is drawn in colour or in the menu bar's text colour.
+    var menuBarIconStyle: MenuBarIconStyle = .color
 
     /// Whether the user paused clipboard capture. Saved so a pause survives a relaunch; local to
     /// this Mac and never synced. `ClipboardWatcher.isPaused` is the effect of this choice.
@@ -212,6 +226,8 @@ final class SettingsManager {
         }
         self.minCaptureLength = defaults.integer(forKey: minCaptureLengthKey)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
+        self.menuBarIconStyle = defaults.string(forKey: menuBarIconStyleKey)
+            .flatMap(MenuBarIconStyle.init(rawValue:)) ?? .color
         self.capturePaused = defaults.bool(forKey: capturePausedKey)
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
         self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
@@ -249,6 +265,7 @@ final class SettingsManager {
         defaults.set(minCaptureLength, forKey: minCaptureLengthKey)
         defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
         defaults.set(showMenuBarIcon, forKey: showMenuBarIconKey)
+        defaults.set(menuBarIconStyle.rawValue, forKey: menuBarIconStyleKey)
         defaults.set(capturePaused, forKey: capturePausedKey)
         defaults.set(keepHistoryWindowOpen, forKey: keepHistoryWindowOpenKey)
         defaults.set(aiTaggingEnabled, forKey: aiTaggingEnabledKey)
@@ -278,6 +295,12 @@ final class SettingsManager {
         showMenuBarIcon = value
         save()
         NotificationCenter.default.post(name: .yankMenuBarVisibilityChanged, object: nil)
+    }
+
+    func setMenuBarIconStyle(_ value: MenuBarIconStyle) {
+        menuBarIconStyle = value
+        save()
+        NotificationCenter.default.post(name: .yankMenuBarIconStyleChanged, object: nil)
     }
 
     func setCapturePaused(_ value: Bool) {
