@@ -9,6 +9,7 @@ extension Notification.Name {
     /// Posted when the history window is asked to show a clip while it is already open and key.
     static let yankHistoryFocusRequested = Notification.Name("yankHistoryFocusRequested")
     static let yankMenuBarVisibilityChanged = Notification.Name("yankMenuBarVisibilityChanged")
+    static let yankMenuBarIconStyleChanged = Notification.Name("yankMenuBarIconStyleChanged")
     static let yankThemeChanged = Notification.Name("yankThemeChanged")
     static let yankAppearanceChanged = Notification.Name("yankAppearanceChanged")
     static let yankOpenSettings = Notification.Name("yankOpenSettings")

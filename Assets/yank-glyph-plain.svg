@@ -1,0 +1,31 @@
+<svg width="548" height="548" viewBox="238 238 548 548" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- ============================================================
+       Yank — plain (single-colour) menu-bar logo
+       The same two cards and up-left "yank" arrow as yank-glyph.svg,
+       drawn in one colour for the "Plain" menu bar icon setting.
+       Only the alpha channel matters: the app tints it with the
+       menu bar's text colour. Separation comes from shape, not
+       colour: the back card is an outline kept clear of the front
+       card by a gap, and the arrow is cut out of the solid front card.
+       ============================================================ -->
+  <defs>
+    <mask id="back-card-gap" maskUnits="userSpaceOnUse" x="238" y="238" width="548" height="548">
+      <rect x="238" y="238" width="548" height="548" fill="#FFFFFF"/>
+      <rect x="215" y="215" width="430" height="430" rx="120" fill="#000000"/>
+    </mask>
+    <mask id="arrow-cutout" maskUnits="userSpaceOnUse" x="238" y="238" width="548" height="548">
+      <rect x="238" y="238" width="548" height="548" fill="#FFFFFF"/>
+      <g stroke="#000000" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M510 510 L355 355"/>
+        <path d="M445 355 L355 355 L355 445"/>
+      </g>
+    </mask>
+  </defs>
+
+  <!-- back card: the history beneath, as an outline -->
+  <rect x="442" y="442" width="306" height="306" rx="58" stroke="#000000" stroke-width="44"
+        mask="url(#back-card-gap)"/>
+
+  <!-- front card: the copy you grabbed, with the yank arrow cut out -->
+  <rect x="255" y="255" width="350" height="350" rx="80" fill="#000000" mask="url(#arrow-cutout)"/>
+</svg>
