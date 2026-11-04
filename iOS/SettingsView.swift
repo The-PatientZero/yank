@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showClearConfirm = false
     @State private var historyLimitConfirmation = HistoryLimitConfirmation()
+    @State private var retentionConfirmation = RetentionConfirmation()
 
     @ScaledMetric(relativeTo: .caption) private var checkmarkSize: CGFloat = TypeScale.caption
 
@@ -281,6 +282,16 @@ struct SettingsView: View {
         settings.setHistoryLimit(applied)
     }
 
+    private func selectRetentionDays(_ days: Int) {
+        guard let applied = retentionConfirmation.select(
+            days,
+            current: settings.retentionDays,
+            items: store.items,
+            syncEnabled: settings.syncEnabled
+        ) else { return }
+        settings.setRetentionDays(applied)
+    }
+
     private func coerceMacOnlyViewMode(_ mode: ClipViewMode) {
         if mode == .split { settings.viewMode = .list }
     }
@@ -313,14 +324,37 @@ struct SettingsView: View {
             } message: {
                 Text(SyncCopy.historyLimitReduction(syncEnabled: settings.syncEnabled))
             }
+            // Committed-value binding: see `RetentionConfirmation` for the cancel-path guarantee.
             Picker("Auto-delete", selection: Binding(
                 get: { settings.retentionDays },
-                set: { settings.setRetentionDays($0) }
+                set: { selectRetentionDays($0) }
             )) {
-                Text("Never").tag(0)
-                Text("After 7 days").tag(7)
-                Text("After 30 days").tag(30)
-                Text("After 90 days").tag(90)
+                ForEach(SettingsDefaults.retentionChoices, id: \.self) { days in
+                    Text(SyncCopy.retentionLabel(days: days)).tag(days)
+                }
+            }
+            .confirmationDialog(
+                SyncCopy.retentionReductionTitle(days: retentionConfirmation.pending?.days ?? 0),
+                isPresented: Binding(
+                    get: { retentionConfirmation.isConfirming },
+                    set: { if !$0 { retentionConfirmation.cancel() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete Clips", role: .destructive) {
+                    if let days = retentionConfirmation.confirm() {
+                        settings.setRetentionDays(days)
+                    }
+                }
+                Button("Cancel", role: .cancel) { retentionConfirmation.cancel() }
+            } message: {
+                if let pending = retentionConfirmation.pending {
+                    Text(SyncCopy.retentionReduction(
+                        days: pending.days,
+                        deleting: pending.deleting,
+                        syncEnabled: settings.syncEnabled
+                    ))
+                }
             }
             Toggle(isOn: Binding(
                 get: { settings.spotlightIndexing },
@@ -338,10 +372,14 @@ struct SettingsView: View {
         } header: {
             Text("History")
         } footer: {
-            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.syncedRetention) Pinned, bookmarked, and tagged clips are always kept.")
+            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.retentionCaption(syncEnabled: settings.syncEnabled))")
         }
         .onChange(of: settings.historyLimit) { _, _ in store.enforceRetentionAndLimit() }
-        .onChange(of: settings.retentionDays) { _, _ in store.enforceRetentionAndLimit() }
+        .onChange(of: settings.retentionDays) { _, _ in
+            // An adopted remote window must not be overwritten by a late "Delete Clips".
+            retentionConfirmation.cancel()
+            store.enforceRetentionAndLimit()
+        }
     }
 
     // MARK: - Data section
@@ -351,13 +389,13 @@ struct SettingsView: View {
             Button(role: .destructive) { showClearConfirm = true } label: {
                 Label("Clear History", systemImage: "trash")
             }
-            .confirmationDialog("Clear all clips on this device?",
+            .confirmationDialog(SyncCopy.clearHistoryTitle(syncEnabled: settings.syncEnabled),
                                 isPresented: $showClearConfirm, titleVisibility: .visible) {
                 Button("Clear History", role: .destructive) { store.clear() }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text([
-                    "Removes every clip from this device. With sync on, the clearance propagates to your other devices.",
+                    SyncCopy.clearHistoryMessage(syncEnabled: settings.syncEnabled),
                     HeldClipsNotice.clearWarning(count: store.heldClipCount)
                 ].compactMap { $0 }.joined(separator: " "))
             }

@@ -561,16 +561,19 @@ final class ClipboardController {
 
     private func clearHistory() {
         let alert = NSAlert()
-        alert.messageText = "Clear Clipboard History?"
+        let syncEnabled = dependencies.settings.syncEnabled
+        alert.messageText = SyncCopy.clearHistoryTitle(syncEnabled: syncEnabled)
         alert.informativeText = [
-            "This will permanently delete all clipboard items.",
+            SyncCopy.clearHistoryMessage(syncEnabled: syncEnabled),
             HeldClipsNotice.clearWarning(count: store.heldClipCount)
         ].compactMap { $0 }.joined(separator: " ")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Clear")
+        // Cancel is added first so it answers Return, and Escape; Clear must be clicked.
         alert.addButton(withTitle: "Cancel")
+        let clearButton = alert.addButton(withTitle: "Clear")
+        clearButton.hasDestructiveAction = true
 
-        if alert.runModal() == .alertFirstButtonReturn {
+        if alert.runModal() == .alertSecondButtonReturn {
             pasteSequenceCoordinator?.discard()
             store.clear()
         }

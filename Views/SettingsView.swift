@@ -24,6 +24,8 @@ struct SettingsView: View {
     @State var isRecording = false
     @State var showingTrimAlert = false
     @State var pendingTier: HistoryLimit?
+    @State var showingRetentionAlert = false
+    @State var pendingRetention: RetentionChange.Pending?
     @State var shortcutConflict: String?
     @State var launchAtLoginError: String?
     @Environment(\.accessibilityReduceMotion) var reduceMotion
