@@ -234,7 +234,7 @@ Compact icon-only button with two guarantees the loose `Button { Image }` patter
 
 ### `TagChip` — [`Shared/TagChip.swift`](../Shared/TagChip.swift)
 A tag pill: a 6×6 hue dot for identity, a same-hue wash (fill `0.14`, border `0.28`), and `.primary` text so legibility never depends on the (light) tag colour. Padding `sm`×`xxs`, `Capsule` shape. Optionally tappable (filter) or removable (`xmark`). Hue = `YankInk.tagPalette[YankInk.tagPaletteIndex(for: tag)]`.
-**`TagChip.normalize`**: lowercase → collapse whitespace to `-` → trim leading/trailing `-` → cap at 32 chars.
+Tag normalization is owned by [`TagNormalization`](../Sources/YankCore/TagNormalization.swift): lowercase, whitespace runs to `-`, keep only letters, digits and `-`, trim `-` from both ends, then cut to `TagNormalization.maximumLength`.
 
 ### `ClipStatusBadge` / `RichContentBadge` — [`Shared/ClipStatusBadge.swift`](../Shared/ClipStatusBadge.swift)
 - **Status**: `pin.fill` (uses `.tint`) takes precedence over `bookmark.fill` (uses `yankBookmark` gold); nothing renders if neither.
