@@ -1724,6 +1724,12 @@ public final class CloudKitSyncService {
                     // the tombstone stays unsent and no receipt is kept; the next pull delivers
                     // the live copy here, and it replaces the tombstone.
                     if Self.liveServerCopyOutranks(item, serverRecord: serverRecord) { continue }
+                    // A server tombstone that is as new as this one or newer already stands.
+                    // Overwriting it would lower the delete date, so the local one stays unsent
+                    // and the next pull brings the server's tombstone here.
+                    if Self.serverTombstoneIsAtLeastAsNew(as: item, serverRecord: serverRecord) {
+                        continue
+                    }
                     ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
                     records.append(PreparedPushRecord(
                         itemID: item.id,
@@ -1743,6 +1749,17 @@ public final class CloudKitSyncService {
             }
         }
         return records
+    }
+
+    /// Whether the server record is already a tombstone dated no earlier than the local `tombstone`.
+    private nonisolated static func serverTombstoneIsAtLeastAsNew(
+        as tombstone: ClipboardItem,
+        serverRecord: CKRecord
+    ) -> Bool {
+        guard let serverDeletedAt = serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date else {
+            return false
+        }
+        return serverDeletedAt >= (tombstone.deletedAt ?? tombstone.modifiedAt)
     }
 
     /// Whether the server's copy is a live clip that beats the local delete `tombstone`.
