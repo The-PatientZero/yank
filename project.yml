@@ -111,6 +111,7 @@ targets:
       - iOS/IOSClipBlobStore.swift
       - iOS/IOSSettings.swift
       - iOS/PasteboardBootTime.swift
+      - iOS/PasteboardImageReader.swift
       - iOS/IOSSyncedSettingsBridge.swift
       - iOS/HistoryLimitConfirmation.swift
       - iOS/RetentionConfirmation.swift

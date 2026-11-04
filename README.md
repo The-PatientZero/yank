@@ -110,7 +110,7 @@ To check that a download was built from this repository, run
 
 The iPhone and iPad app is available on the
 [App Store](https://apps.apple.com/app/id6791990020). On iOS, you choose whether Yank may
-check the latest eligible plain-text clipboard value while the app is in the foreground.
+check the latest eligible clipboard text or image while the app is in the foreground.
 Share and Save Clipboard remain explicit capture paths in either mode. The keyboard only
 reads a bounded view of clips already saved by the app; it never captures the current clipboard.
 See [`CHANGELOG.md`](CHANGELOG.md) for release history.

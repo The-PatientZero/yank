@@ -13,7 +13,7 @@ let clipStoreLog = Logger(subsystem: "com.thepatientzero.yank", category: "store
 @MainActor
 @Observable
 final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueReporting, PendingDeletionReporting {
-    private struct PendingForegroundTextCapture {
+    private struct PendingForegroundCapture {
         let pasteboardGeneration: Int
         let item: ClipboardItem
         let deferredBlobDeletions: Set<ClipboardBlobReference>
@@ -140,7 +140,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// Keeps history storage out of device backups unless the user opted in; nil without an App Group.
     @ObservationIgnored private let backupExclusion: BackupExclusion?
     @ObservationIgnored private var isDrainingShareInbox = false
-    @ObservationIgnored private var pendingForegroundTextCapture: PendingForegroundTextCapture?
+    @ObservationIgnored private var pendingForegroundCapture: PendingForegroundCapture?
     @ObservationIgnored private var latestHistoryWriteReceipt: HistorySnapshotWriteReceipt?
 
     /// Shared snapshot → encode → write pipeline (same type as the macOS store). Writes
@@ -344,16 +344,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             return .terminalPolicyRejection
         }
 
-        if let pending = pendingForegroundTextCapture,
-           pending.pasteboardGeneration == pasteboardGeneration,
-           let current = items.first(where: { $0.id == pending.item.id }),
-           isSameForegroundCaptureVersion(current, pending.item) {
-            let receipt = persist(notify: false)
-            return await finishForegroundCapture(
-                itemID: pending.item.id,
-                pasteboardGeneration: pasteboardGeneration,
-                receipt: receipt
-            )
+        if let outcome = await retryPendingForegroundCapture(pasteboardGeneration: pasteboardGeneration) {
+            return outcome
         }
 
         let plan = TextCapturePlan.make(for: text)
@@ -391,6 +383,48 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                 receipt: receipt
             )
         }
+        return await insertForegroundCapture(item, pasteboardGeneration: pasteboardGeneration)
+    }
+
+    /// Same durability contract as `captureForegroundText`, for a pasteboard image already
+    /// downsampled to PNG. Images are never merged with an earlier copy, as on the Mac.
+    @discardableResult
+    func captureForegroundImage(
+        _ pngData: Data,
+        pasteboardGeneration: Int
+    ) async -> IOSForegroundCaptureOutcome {
+        await hydrate()
+        guard !historyWritesDisabled else { return .retryableFailure }
+        if let outcome = await retryPendingForegroundCapture(pasteboardGeneration: pasteboardGeneration) {
+            return outcome
+        }
+        guard let filename = await saveImageBlob(pngData) else { return .retryableFailure }
+        var item = ClipboardItem.image(filename: filename)
+        item.deviceOrigin = DeviceIdentity.current
+        return await insertForegroundCapture(item, pasteboardGeneration: pasteboardGeneration)
+    }
+
+    /// Persists again the capture of this pasteboard generation whose save failed earlier, as
+    /// long as the clip is still the one captured. Nil when there is nothing to retry.
+    private func retryPendingForegroundCapture(
+        pasteboardGeneration: Int
+    ) async -> IOSForegroundCaptureOutcome? {
+        guard let pending = pendingForegroundCapture,
+              pending.pasteboardGeneration == pasteboardGeneration,
+              let current = items.first(where: { $0.id == pending.item.id }),
+              isSameForegroundCaptureVersion(current, pending.item) else { return nil }
+        let receipt = persist(notify: false)
+        return await finishForegroundCapture(
+            itemID: pending.item.id,
+            pasteboardGeneration: pasteboardGeneration,
+            receipt: receipt
+        )
+    }
+
+    private func insertForegroundCapture(
+        _ item: ClipboardItem,
+        pasteboardGeneration: Int
+    ) async -> IOSForegroundCaptureOutcome {
         items.insert(item, at: 0)
         let deferredBlobDeletions = applyHistoryLimit(deferBlobDeletion: true)
         prepareForegroundCapture(
@@ -411,10 +445,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         pasteboardGeneration: Int,
         deferredBlobDeletions: [ClipboardBlobReference]
     ) {
-        let carriedDeletions = pendingForegroundTextCapture?.deferredBlobDeletions ?? []
+        let carriedDeletions = pendingForegroundCapture?.deferredBlobDeletions ?? []
         let item = items.first { $0.id == itemID }
         guard let item else { return }
-        pendingForegroundTextCapture = PendingForegroundTextCapture(
+        pendingForegroundCapture = PendingForegroundCapture(
             pasteboardGeneration: pasteboardGeneration,
             item: item,
             deferredBlobDeletions: carriedDeletions.union(deferredBlobDeletions)
@@ -453,10 +487,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         guard let receipt else { return .retryableFailure }
         switch await receipt.value() {
         case .success:
-            if pendingForegroundTextCapture?.pasteboardGeneration == pasteboardGeneration,
-               pendingForegroundTextCapture?.item.id == itemID {
-                releaseDeferredBlobDeletions(pendingForegroundTextCapture?.deferredBlobDeletions ?? [])
-                pendingForegroundTextCapture = nil
+            if pendingForegroundCapture?.pasteboardGeneration == pasteboardGeneration,
+               pendingForegroundCapture?.item.id == itemID {
+                releaseDeferredBlobDeletions(pendingForegroundCapture?.deferredBlobDeletions ?? [])
+                pendingForegroundCapture = nil
             }
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
             return .durable

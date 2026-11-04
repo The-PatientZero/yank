@@ -2,8 +2,8 @@
 
 The iOS app is built on shared `YankCore` logic for the clipboard model, retention policy, capture
 rules, and CloudKit mapping. The Mac captures continuously. On iOS, the user chooses automatic
-foreground capture or explicit-only capture. Automatic mode checks the latest eligible plain-text
-clipboard generation when the app launches or returns to the foreground, subject to the system's
+foreground capture or explicit-only capture. Automatic mode checks the latest eligible clipboard
+generation (plain text, or an image when there is no plain text) when the app launches or returns to the foreground, subject to the system's
 Paste from Other Apps permission; undecided and explicit-only modes do not inspect the pasteboard.
 The Share extension and Save Clipboard App Intent capture only content the user explicitly sends.
 The keyboard is read-only: it inserts a bounded projection of clips already saved by the host app

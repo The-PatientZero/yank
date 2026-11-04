@@ -20,8 +20,8 @@ Yank stores clipboard history on the device by default:
 - Rich pasteboard archives are local to the Mac that captured them and are not synced.
 
 On iPhone and iPad, you choose between automatic foreground capture and explicit-only
-capture. Automatic mode checks the latest eligible plain-text clipboard generation when the
-app launches or returns to the foreground, subject to the system's Paste from Other Apps
+capture. Automatic mode checks the latest eligible clipboard generation (plain text, or an image
+when there is no plain text) when the app launches or returns to the foreground, subject to the system's Paste from Other Apps
 permission. Undecided and explicit-only modes do not inspect the clipboard. Yank does not
 continuously read the clipboard while suspended. The share extension and Save Clipboard
 action capture only the item you explicitly provide. The keyboard does not capture clipboard

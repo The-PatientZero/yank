@@ -31,6 +31,17 @@ struct PasteboardAcknowledgement: Codable, Equatable, Sendable {
             type == legacyStringType || UTType(type)?.conforms(to: .text) == true
         }
     }
+
+    /// Whether the clipboard should be saved as an image: it declares an image type and no plain
+    /// text. Plain text wins, as on the Mac, so copied text that carries a picture stays text,
+    /// while an image that comes with only HTML or RTF (a copy from a web page) is saved as the image.
+    static func prefersImage(in pasteboardTypes: [String]) -> Bool {
+        let declaresImage = pasteboardTypes.contains { UTType($0)?.conforms(to: .image) == true }
+        let declaresPlainText = pasteboardTypes.contains { type in
+            type == legacyStringType || UTType(type)?.conforms(to: .plainText) == true
+        }
+        return declaresImage && !declaresPlainText
+    }
 }
 
 /// Reads and writes the persisted acknowledgement. Without a readable boot time nothing is
