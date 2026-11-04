@@ -247,7 +247,7 @@ A 30×30 `Radius.sm` rounded square filled `yankSubtleFill`, with a centred SF S
 Wordmark described under Typography. `YankBrandMark` is the boxed logo: `Radius.md` rounded square, `yankSurface` fill, `yankHairline` border, the `BrandGlyph` asset inset by `size × 0.22`, with a soft `black @ 0.06` shadow.
 
 ### `YankPanelTokens` — [`Views/DesignSystem.swift`](../Views/DesignSystem.swift)
-AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×214`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, button `124 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
+AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×244`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, button `124 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
 
 ---
 
@@ -293,7 +293,7 @@ Essential `100` · Deep `500` · Unlimited `1,000`. Protected clips (pinned / bo
 
 ## Cross-platform notes
 
-- **Shared scales** (`Space`, `Radius`, `TypeScale`, `IconSize`, `Stroke`, `Hairline`, `ControlTarget`, `MotionCurve`, `MotionScale`) compile into both targets from `Shared/`, so they cannot drift.
+- **Shared scales** (`Space`, `Radius`, `TypeScale`, `IconSize`, `Stroke`, `Hairline`, `ControlTarget`, `MotionCurve`, `MotionScale`, `MotionDuration`) compile into both targets from `Shared/`, so they cannot drift.
 - **Type**: macOS uses the fixed `TypeScale`; iOS uses Dynamic Type via `IOSType` / `Font.yank(_:)`, so iOS labels grow with the user's text size.
 - **Colour bridges**: the `YankInk` pairs are exposed as named `Color`s through an `NSColor` bridge on macOS and a `UIColor` bridge on iOS — identical values, platform-specific plumbing.
 
