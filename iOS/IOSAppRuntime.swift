@@ -36,9 +36,14 @@ final class IOSAppRuntime {
         }
     }
 
-    /// What the app delegate runs for a CloudKit push.
+    /// What the app delegate runs for a CloudKit push. Settles the settings first: a process
+    /// started in the background before the first unlock would otherwise keep the empty defaults,
+    /// read sync as off and turn it off.
     var remoteChangeHandler: () async -> IOSSyncRunOutcome {
-        { [syncController] in await syncController.handleRemoteChange() }
+        { [self] in
+            await hydrate()
+            return await syncController.handleRemoteChange()
+        }
     }
 
     /// Reads the saved history off the main thread, then lets the settings seed what is missing
