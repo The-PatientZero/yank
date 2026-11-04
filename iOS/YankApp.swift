@@ -474,6 +474,7 @@ final class IOSCloudSyncController {
                 registerForRemoteNotifications()
                 await reconcileAccountIdentity(container: container, generation: generation)
                 guard isActive(generation) else { return false }
+                restartPullPositionIfHistoryWasMissing()
             case .hardUnavailable(let reason):
                 iCloudSignedOut = true
                 tearDownService(
@@ -545,6 +546,25 @@ final class IOSCloudSyncController {
         }
         syncDefaults.set(identity, forKey: Self.accountIdentityDefaultsKey)
         cachedAccountIdentity = identity
+    }
+
+    /// A launch that found the history file missing (a fresh device, or one restored from a
+    /// backup that left history out) left a marker. The change token in the always-backed-up
+    /// preferences may claim the history was already downloaded, so drop only that token and the
+    /// next pull refills from iCloud. Push receipts, the upload watermark, the quarantine and the
+    /// encryption rollout state stay. The marker survives until this runs, so a clip captured
+    /// meanwhile cannot defeat it. A service is stopped first because it holds the token in memory.
+    private func restartPullPositionIfHistoryWasMissing() {
+        guard syncDefaults.bool(forKey: ClipStore.pullPositionRestartPendingKey) else { return }
+        sync?.stop()
+        sync = nil
+        syncStarted = false
+        CloudKitSyncService.resetPullPosition(
+            containerIdentifier: Self.containerID,
+            defaults: syncDefaults
+        )
+        syncDefaults.removeObject(forKey: ClipStore.pullPositionRestartPendingKey)
+        clipStoreLog.info("Restarting iCloud download position: history file was missing at launch")
     }
 
     private func performStart(
@@ -731,6 +751,8 @@ struct YankApp: App {
                     if newPhase == .active {
                         let returnedFromBackground = wasInBackground
                         wasInBackground = false
+                        // Folders an extension created while the app was away are not marked yet.
+                        store.reconcileBackupExclusionInBackground()
                         Task {
                             await refreshForeground()
                             refreshSpotlightIndex()
@@ -747,6 +769,9 @@ struct YankApp: App {
                         syncController.stop()
                         appDelegate.disableRemoteChanges()
                     }
+                }
+                .onChange(of: settings.includeHistoryInBackups) {
+                    store.reconcileBackupExclusionInBackground()
                 }
                 .onChange(of: settings.foregroundCaptureMode) { oldMode, newMode in
                     if newMode == .undecided {

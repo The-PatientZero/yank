@@ -77,6 +77,10 @@ final class IOSSettings {
     }
     var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
     var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
+    /// Device-local and not part of `SyncedSettings`: it never reaches CloudKit or the Mac.
+    var includeHistoryInBackups: Bool {
+        didSet { defaults?.set(includeHistoryInBackups, forKey: SettingsKeys.includeHistoryInBackups) }
+    }
     private(set) var foregroundCaptureMode: IOSForegroundCaptureMode
     var confirmedCaptureMethods: Set<IOSCaptureMethod> {
         didSet {
@@ -120,6 +124,7 @@ final class IOSSettings {
         )
         self.syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
         self.spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
+        self.includeHistoryInBackups = defaults?.bool(forKey: SettingsKeys.includeHistoryInBackups) ?? false
         self.foregroundCaptureMode = IOSForegroundCaptureMode(
             rawValue: defaults?.string(forKey: Self.foregroundCaptureModeKey) ?? ""
         ) ?? .undecided

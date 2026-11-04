@@ -22,11 +22,18 @@ struct GlobalKeyMonitor: NSViewRepresentable {
         let onSpace: () -> Bool
         let onLeft: () -> Bool
         let onRight: () -> Bool
-        let onUndo: () -> Void
+        /// Returns true when it undid a pending clip delete (the key is then consumed).
+        let onUndo: () -> Bool
         let onFocusSearch: () -> Void
+        let onOpenSettings: () -> Void
+        /// Zero-based position in the header's layout picker.
+        let onSetViewMode: (Int) -> Void
     }
 
     let handlers: Handlers
+
+    /// ⌥⌘1 to ⌥⌘5, one per layout in the header picker.
+    private static let layoutShortcutCount = 5
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -37,6 +44,12 @@ struct GlobalKeyMonitor: NSViewRepresentable {
                 monitoredWindow: view?.window,
                 keyWindow: NSApp.keyWindow
             ) else { return event }
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            // Matched by character, not key code: the comma key code differs between layouts.
+            if modifiers == .command, event.charactersIgnoringModifiers == "," {
+                handlers.onOpenSettings()
+                return nil
+            }
             switch event.keyCode {
             // Returning nil consumes the key event; returning `event` forwards it.
             case 126: // Up
@@ -72,8 +85,10 @@ struct GlobalKeyMonitor: NSViewRepresentable {
                 return event
             case 8: // C (for Copy)
                 if event.modifierFlags.contains(.command) {
-                    // If text is selected in a text view, let the system handle native copy
-                    if let responder = view?.window?.firstResponder, responder is NSTextView {
+                    // Selected text in a text view keeps the system copy; with nothing selected
+                    // (the search field is focused on every open) the key copies the focused clip.
+                    if let textView = view?.window?.firstResponder as? NSTextView,
+                       textView.selectedRange().length > 0 {
                         return event
                     }
                     handlers.onCopy()
@@ -118,7 +133,12 @@ struct GlobalKeyMonitor: NSViewRepresentable {
                 return event
             case 6:
                 if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) {
-                    handlers.onUndo()
+                    // A pending clip delete wins; otherwise undo typing in the focused text field.
+                    if !handlers.onUndo(),
+                       let undoManager = (view?.window?.firstResponder as? NSTextView)?.undoManager,
+                       undoManager.canUndo {
+                        undoManager.undo()
+                    }
                     return nil
                 }
                 return event
@@ -132,6 +152,12 @@ struct GlobalKeyMonitor: NSViewRepresentable {
                 if event.modifierFlags.contains(.command) {
                     let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9]
                     if let n = digits[event.keyCode] {
+                        // ⌥⌘1–5 switch layout; ⌥ with anything else is not a quick-paste.
+                        if event.modifierFlags.contains(.option) {
+                            guard modifiers == [.command, .option], n <= Self.layoutShortcutCount else { return event }
+                            handlers.onSetViewMode(n - 1)
+                            return nil
+                        }
                         handlers.onPasteIndex(n)
                         return nil
                     }

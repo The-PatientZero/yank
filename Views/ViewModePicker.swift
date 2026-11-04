@@ -10,7 +10,7 @@ struct ViewModePicker: View {
 
     var body: some View {
         HStack(spacing: Space.xxs) {
-            ForEach(ClipViewMode.platformCases) { mode in
+            ForEach(Array(ClipViewMode.platformCases.enumerated()), id: \.element.id) { index, mode in
                 Button { select(mode) } label: {
                     Image(systemName: mode.symbol)
                         .font(.system(size: TypeScale.control, weight: .medium))
@@ -25,12 +25,12 @@ struct ViewModePicker: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("\(mode.label) — \(mode.blurb)")
+                .help("\(mode.label) — \(mode.blurb) (⌥⌘\(index + 1))")
                 .accessibilityLabel("\(mode.label) view")
                 .accessibilityValue(selection == mode ? "Selected" : "Not selected")
                 .accessibilityHint(selection == mode
                     ? "Current view mode. \(mode.blurb)"
-                    : "Switches to \(mode.label) view. \(mode.blurb)")
+                    : "Switches to \(mode.label) view. \(mode.blurb) Shortcut: Option Command \(index + 1).")
                 .accessibilityAddTraits(selection == mode ? .isSelected : [])
             }
         }

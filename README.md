@@ -55,7 +55,9 @@ For help or to report a problem, see [Yank Support](SUPPORT.md).
 | `⌘T` | Add tag to selected item |
 | `⌘S` | Save image to disk (image items) |
 | `⌘⌫` | Delete selected item |
-| `⎋` Esc | Close history window |
+| `⌘,` | Open Settings from the history window |
+| `⌥⌘1`–`⌥⌘5` | Switch layout: List, Grid, Masonry, Gallery, Split |
+| `⎋` Esc | Clear the search text; press again to close the history window |
 
 ## Install
 
