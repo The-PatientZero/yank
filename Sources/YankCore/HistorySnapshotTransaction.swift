@@ -66,24 +66,6 @@ enum HistorySnapshotTransaction {
         historyURL.appendingPathExtension("transaction")
     }
 
-    static func makeEnvelopeData(
-        items: [ClipboardItem],
-        preservedElements: [HeldHistoryElement] = [],
-        tombstones: [UUID: Date],
-        writeOptions: Data.WritingOptions,
-        filePermissions: Int?,
-        fileProtection: FileProtectionType?
-    ) throws -> Data {
-        try encodeSnapshot(
-            items: items,
-            preservedElements: preservedElements,
-            tombstones: tombstones,
-            writeOptions: writeOptions,
-            filePermissions: filePermissions,
-            fileProtection: fileProtection
-        ).envelopeData
-    }
-
     static func encodeSnapshot(
         items: [ClipboardItem],
         preservedElements: [HeldHistoryElement] = [],
