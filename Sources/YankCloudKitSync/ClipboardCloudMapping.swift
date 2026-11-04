@@ -181,7 +181,8 @@ enum ClipboardCloudMapping {
         from item: ClipboardItem,
         in zoneID: CKRecordZone.ID,
         blobURL: URL? = nil,
-        policy: PlainContentPolicy = .dualWrite
+        policy: PlainContentPolicy = .dualWrite,
+        omitsFileFields: Bool = false
     ) -> CKRecord? {
         guard let filenames = validatedBlobFilenames(
             type: item.type,
@@ -204,8 +205,13 @@ enum ClipboardCloudMapping {
             record[Key.aiTags] = item.aiTags
             record[Key.aiTitle] = item.aiTitle
         }
-        record[Key.textFilename] = filenames.textFilename
-        record[Key.imageFilename] = filenames.imageFilename
+        // Left unset, not set and cleared: a save that sends neither the file nor its names leaves
+        // the server's file and names as they are, so a replaced file cannot end up under the
+        // wrong name.
+        if !omitsFileFields {
+            record[Key.textFilename] = filenames.textFilename
+            record[Key.imageFilename] = filenames.imageFilename
+        }
         record[Key.isPinned] = item.isPinned ? 1 : 0
         record[Key.isBookmarked] = item.isBookmarked ? 1 : 0
         record[Key.isTruncated] = item.isTruncated ? 1 : 0
@@ -223,11 +229,22 @@ enum ClipboardCloudMapping {
                 clipID: item.id
             )
         }
-        if let blobURL {
+        if let blobURL, !omitsFileFields {
             record[Key.blob] = CKAsset(fileURL: blobURL)
         }
         return record
     }
+
+    /// Whether the server's copy of a clip already holds exactly the file this clip names. The
+    /// record only needs its file name fields for this.
+    static func serverHoldsFile(of item: ClipboardItem, in serverRecord: CKRecord) -> Bool {
+        guard item.textFilename != nil || item.imageFilename != nil else { return false }
+        return serverRecord[Key.textFilename] as? String == item.textFilename
+            && serverRecord[Key.imageFilename] as? String == item.imageFilename
+    }
+
+    /// The fields that name a clip's file, for a fetch that only compares them.
+    static let fileNameKeys: [CKRecord.FieldKey] = [Key.textFilename, Key.imageFilename]
 
     /// Builds the encrypted copy. In `dualWrite`, when plain fields plus payload would exceed the
     /// record budget the largest of the search index, OCR text and text moves out of the payload

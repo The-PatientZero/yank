@@ -1587,6 +1587,7 @@ public final class CloudKitSyncService {
         let prepared = try await prepareClipPushRecords(
             itemsToPush.filter { !$0.isDeleted },
             policy: policy,
+            receipts: existingReceipts,
             generation: generation
         )
         // A clip CloudKit cannot represent (blob file gone, unusable blob metadata) is skipped
@@ -1620,6 +1621,10 @@ public final class CloudKitSyncService {
         }
 
         try requireActive(generation)
+        let withoutFileCount = recordsToSave.filter(\.withoutFile).count
+        syncLog.notice(
+            "Sync push (records: \(recordsToSave.count, privacy: .public), without a file: \(withoutFileCount, privacy: .public))"
+        )
         var committedReceipts = existingReceipts
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
@@ -1894,6 +1899,8 @@ public final class CloudKitSyncService {
         let itemID: UUID
         let record: CKRecord
         let modifiedAt: Date
+        /// The record carries neither the file nor its names, because iCloud already holds them.
+        var withoutFile = false
     }
 
     struct PreparedPushRecords {
@@ -1907,6 +1914,7 @@ public final class CloudKitSyncService {
         _ items: [ClipboardItem],
         in zoneID: CKRecordZone.ID,
         policy: ClipboardCloudMapping.PlainContentPolicy = .dualWrite,
+        blobHeldByServer: Set<UUID> = [],
         blobURL: (ClipboardItem) -> URL?
     ) -> PreparedPushRecords {
         var records: [PreparedPushRecord] = []
@@ -1921,17 +1929,24 @@ public final class CloudKitSyncService {
                 skippedClips.append(SyncWaitingClip(id: item.id, reason: .contentFileMissing))
                 continue
             }
+            let withoutFile = itemBlobURL != nil && blobHeldByServer.contains(item.id)
             guard let record = ClipboardCloudMapping.record(
                 from: item,
                 in: zoneID,
                 blobURL: itemBlobURL,
-                policy: policy
+                policy: policy,
+                omitsFileFields: withoutFile
             ) else {
                 skippedItemIDs.append(item.id)
                 skippedClips.append(SyncWaitingClip(id: item.id, reason: .contentInvalid))
                 continue
             }
-            records.append(PreparedPushRecord(itemID: item.id, record: record, modifiedAt: item.modifiedAt))
+            records.append(PreparedPushRecord(
+                itemID: item.id,
+                record: record,
+                modifiedAt: item.modifiedAt,
+                withoutFile: withoutFile
+            ))
         }
 
         return PreparedPushRecords(records: records, skippedItemIDs: skippedItemIDs, skippedClips: skippedClips)
