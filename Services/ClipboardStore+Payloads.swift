@@ -174,3 +174,15 @@ enum ImageExportError: Error, LocalizedError {
         }
     }
 }
+
+extension ClipboardItem {
+    /// Whether Paste as Text is expected to have something to insert, mirroring
+    /// `ClipboardStore.pasteAsTextContent(for:)`. Advisory for text clips: an empty or unreadable
+    /// file passes here and is reported when the paste is tried.
+    var canPasteAsText: Bool {
+        switch type {
+        case .text: true
+        case .image: recognizedText != nil
+        }
+    }
+}

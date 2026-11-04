@@ -197,7 +197,8 @@ final class ClipboardController {
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
             onOpenFullHistory: { [weak self] in self?.showHistoryWindow() },
             onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() },
-            onResumeCapture: { [weak self] in self?.setCapturePaused(false) }
+            onResumeCapture: { [weak self] in self?.setCapturePaused(false) },
+            isPasteSequenceActive: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.isActive ?? false }
         )
 
         let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
