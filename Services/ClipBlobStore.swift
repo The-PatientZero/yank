@@ -203,6 +203,10 @@ final class ClipBlobStore {
     private let fileManager = FileManager.default
     private let storageDirectoryOverride: URL?
 
+    /// Filenames named by history elements this build cannot read. No deletion path removes
+    /// them, even when a readable clip shares the same file.
+    var protectedFilenames: Set<String> = []
+
     /// Security parameters for the history snapshot writer and synced-blob writes, which
     /// live on `ClipboardStore` but must use the same permissions/protection as blob files.
     nonisolated static var writeOptions: Data.WritingOptions { ClipboardStoreFileSecurity.writeOptions }
@@ -416,7 +420,7 @@ final class ClipBlobStore {
     // MARK: - Blob deletion
 
     func deleteBlobReferences(_ references: [ClipboardBlobReference]) {
-        for reference in references {
+        for reference in references where !protectedFilenames.contains(reference.filename) {
             guard let url = blobURL(for: reference) else { continue }
             try? fileManager.removeItem(at: url)
         }
@@ -445,6 +449,7 @@ final class ClipBlobStore {
     }
 
     func deleteSyncedBlob(_ reference: SyncBlobReference) {
+        guard !protectedFilenames.contains(reference.filename) else { return }
         let directory = directory(for: reference.kind)
         guard let url = reference.containedURL(in: directory) else { return }
         try? fileManager.removeItem(at: url)

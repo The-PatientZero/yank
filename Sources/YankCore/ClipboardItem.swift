@@ -47,7 +47,8 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// User-defined tags attached to the clip.
     public var tags: [String] = []
 
-    /// Extracted OCR text, persisted after first extraction.
+    /// Extracted OCR text, persisted after first extraction. Read `recognizedText` instead of this
+    /// raw value when showing or using the text; only sync copy-through reads it directly.
     public var ocrText: String?
 
     /// On-device AI tag suggestions. Advisory and subordinate to user `tags`: they don't
@@ -215,6 +216,21 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         textFilename != nil
     }
 
+    /// Sentence that older releases stored as OCR text when recognition found nothing. Copies
+    /// persist in histories and CloudKit, so it is ignored on read instead of being rewritten.
+    static let legacyNoTextOCRMessage = "No text found in this image."
+
+    /// Whether `text` is real recognized text: not blank and not the legacy no-result sentence.
+    static func isUsableOCRText(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text != legacyNoTextOCRMessage
+    }
+
+    /// The stored OCR text exactly as saved when it is usable, otherwise nil.
+    var recognizedText: String? {
+        guard let ocrText, Self.isUsableOCRText(ocrText) else { return nil }
+        return ocrText
+    }
+
     /// Rich-content availability for the current device.
     public var richContentState: RichContentState {
         if richFilename != nil { return .availableLocally }
@@ -238,7 +254,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public func matches(_ query: String) -> Bool {
         if textContent?.localizedCaseInsensitiveContains(query) == true { return true }
         if ClipboardSearchIndex.matches(searchIndex, query: query) { return true }
-        if ocrText?.localizedCaseInsensitiveContains(query) == true { return true }
+        if recognizedText?.localizedCaseInsensitiveContains(query) == true { return true }
         if aiTags.contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
         return false
     }
@@ -278,7 +294,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// description; the capture source is a safe fallback when OCR is unavailable.
     var imageAccessibilityLabel: String {
         let limit = 160
-        let candidate = [ocrText, sourceApp]
+        let candidate = [recognizedText, sourceApp]
             .compactMap { $0 }
             .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
             .first { !$0.isEmpty }
@@ -317,6 +333,34 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+
+    /// Whether every stored property matches. `==` compares only `id`, so it cannot tell an
+    /// edited clip from an unchanged one; anything deciding whether a write can be skipped
+    /// must use this. A new stored property must be added here.
+    func hasSamePersistedFields(as other: ClipboardItem) -> Bool {
+        id == other.id
+            && type == other.type
+            && timestamp == other.timestamp
+            && sourceApp == other.sourceApp
+            && textContent == other.textContent
+            && textFilename == other.textFilename
+            && imageFilename == other.imageFilename
+            && richFilename == other.richFilename
+            && hasRichContent == other.hasRichContent
+            && isPinned == other.isPinned
+            && isBookmarked == other.isBookmarked
+            && tags == other.tags
+            && ocrText == other.ocrText
+            && aiTags == other.aiTags
+            && aiTitle == other.aiTitle
+            && aiEnrichedAt == other.aiEnrichedAt
+            && isTruncated == other.isTruncated
+            && originalSizeBytes == other.originalSizeBytes
+            && searchIndex == other.searchIndex
+            && modifiedAt == other.modifiedAt
+            && deletedAt == other.deletedAt
+            && deviceOrigin == other.deviceOrigin
     }
 }
 

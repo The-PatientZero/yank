@@ -4,9 +4,9 @@ import Foundation
 /// and normalizing lazily up to the result limit, so the memory-constrained keyboard never holds
 /// a second copy of the history's text (the store already holds it once).
 enum KeyboardClipSearch {
-    /// Live, insertable text clips, order preserved. Used to decide whether the keyboard has
-    /// anything to show before building the search UI.
-    static func insertableItems(from items: [ClipboardItem]) -> [ClipboardItem] {
+    /// Live text clips, order preserved, including preview-only ones (listed but not insertable).
+    /// Used to decide whether the keyboard has anything to show before building the search UI.
+    static func listableItems(from items: [ClipboardItem]) -> [ClipboardItem] {
         items.filter { !$0.isDeleted && $0.textContent != nil }
     }
 

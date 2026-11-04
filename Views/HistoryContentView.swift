@@ -164,6 +164,8 @@ struct HistoryContentView: View {
                     store: store,
                     axPermission: axPermission,
                     appStatus: appStatus,
+                    onDeleteClip: { deleteClipWithUndo($0) },
+                    onUndoDelete: { _ = undoPendingDelete() },
                     manager: settings
                 )
                     .transition(screenTransition(edge: .trailing))
@@ -193,6 +195,9 @@ struct HistoryContentView: View {
         VStack(spacing: 0) {
             if store.storageUnavailable {
                 StorageUnavailableBanner()
+            }
+            if store.heldClipCount > 0 {
+                HeldClipsNotice(count: store.heldClipCount)
             }
 
             HistorySearchHeader(
@@ -226,10 +231,10 @@ struct HistoryContentView: View {
                 selectionCount: selectedIDs.count,
                 clickToPaste: singleClickPastesInCurrentLayout,
                 hasPendingUndo: store.pendingDeletion != nil,
-                focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.ocrText != nil,
+                focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.recognizedText != nil,
                 quickLookAvailable: searchText.isEmpty && !detail.showTagInput && selectedItem != nil,
                 axUntrusted: axUntrusted,
-                onGrantAccess: { axPermission?.openSettingsAndAwaitGrant() }
+                onGrantAccess: { axPermission?.grantAccess() }
             )
 
             if let pending = store.pendingDeletion {
@@ -278,12 +283,12 @@ struct HistoryContentView: View {
         .onChange(of: searchText) { _, newValue in
             showTagAutocomplete = newValue.hasPrefix("#")
             searchDebounceTask?.cancel()
-            if newValue.hasPrefix("#") || newValue.isEmpty {
+            if ClipQuery.appliesWithoutDebounce(newValue) {
                 searchTextDebounced = newValue
                 updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
             } else {
                 searchDebounceTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(120))
+                    try? await Task.sleep(for: ClipQuery.searchDebounce)
                     searchTextDebounced = newValue
                     updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
                 }

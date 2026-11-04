@@ -3,6 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     var store: ClipStore
     @Bindable var settings: IOSSettings
+    var onRetrySync: (() async -> Void)? = nil
+    var onKeepLocalOnly: (([UUID]) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showClearConfirm = false
@@ -75,6 +77,7 @@ struct SettingsView: View {
                 Label("iCloud Sync", systemImage: "icloud")
             }
             syncStatusRow
+            waitingClipsRow
             encryptionStatusRow
         } header: {
             Text("Sync")
@@ -157,16 +160,57 @@ struct SettingsView: View {
             .accessibilityValue(Text(lastSynced, style: .relative))
         case .failed(let message):
             VStack(alignment: .leading, spacing: Space.xs) {
-                Label("Sync failed", systemImage: "exclamationmark.icloud.fill")
+                Label(SyncCopy.problemHeadline, systemImage: "exclamationmark.icloud.fill")
                     .foregroundStyle(Color.yankDanger)
                     .font(.yank(.subheadline))
                 Text(message)
                     .font(.yank(.caption))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if let hint = SyncCopy.pathHint(for: store.syncFailureKind) {
+                    Text(hint)
+                        .font(.yank(.caption))
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: Space.md) {
+                    ForEach(SyncCopy.actions(for: store.syncFailureKind), id: \.self) { action in
+                        failureActionButton(action)
+                    }
+                }
+                .padding(.top, Space.xs)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Sync failed. \(message)")
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    @ViewBuilder private func failureActionButton(_ action: SyncCopy.FailureAction) -> some View {
+        switch action {
+        case .openSettings:
+            Button(SyncCopy.title(for: action)) {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .buttonStyle(.bordered)
+        case .tryAgain:
+            if let onRetrySync {
+                Button(SyncCopy.title(for: action)) {
+                    Task { await onRetrySync() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    @ViewBuilder private var waitingClipsRow: some View {
+        let waiting = store.visibleWaitingClips
+        if !waiting.isEmpty {
+            NavigationLink {
+                WaitingClipsView(store: store, onKeepLocalOnly: onKeepLocalOnly)
+            } label: {
+                Label(SyncCopy.waitingCount(waiting.count), systemImage: "exclamationmark.icloud")
+                    .foregroundStyle(Color.yankDanger)
+                    .font(.yank(.subheadline))
+            }
         }
     }
 
@@ -312,7 +356,10 @@ struct SettingsView: View {
                 Button("Clear History", role: .destructive) { store.clear() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Removes every clip from this device. With sync on, the clearance propagates to your other devices.")
+                Text([
+                    "Removes every clip from this device. With sync on, the clearance propagates to your other devices.",
+                    HeldClipsNotice.clearWarning(count: store.heldClipCount)
+                ].compactMap { $0 }.joined(separator: " "))
             }
             Toggle(isOn: $settings.includeHistoryInBackups) {
                 Label("Include History in Device Backups", systemImage: "externaldrive.badge.icloud")

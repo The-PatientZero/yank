@@ -117,6 +117,12 @@ struct ForegroundCaptureDecisionView: View {
 }
 
 extension HistoryView {
+    var loadingState: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Loading clips")
+    }
+
     var syncingState: some View {
         EmptyStateView(glyphOpacity: 0.85) {
             YankWordmark(size: wordmarkSize)
@@ -158,16 +164,17 @@ extension HistoryView {
     }
 
     var iCloudSignedOutState: some View {
-        EmptyStateView(glyphOpacity: 0.85) {
+        let isRestricted = store.syncFailureKind == .accountRestricted
+        return EmptyStateView(glyphOpacity: 0.85) {
             YankWordmark(size: wordmarkSize)
             Image(systemName: "icloud.slash")
                 .font(.system(size: TypeScale.stat))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text("Sign in to iCloud to sync")
+            Text(isRestricted ? "iCloud is restricted" : "Sign in to iCloud to sync")
                 .font(.yank(.subheadline, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text(SyncCopy.signedOut)
+            Text(isRestricted ? SyncFailure(kind: .accountRestricted).message : SyncCopy.signedOut)
                 .font(.yank(.footnote))
                 .foregroundStyle(Color.yankTextTertiary)
                 .multilineTextAlignment(.center)

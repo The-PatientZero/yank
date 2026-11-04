@@ -271,10 +271,12 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
 /// What one CloudKit account probe means for the sync lifecycle. `.temporarilyUnavailable`/
 /// `.couldNotDetermine` are recoverable (maintenance, pre-unlock probe, network hiccup); treating
 /// them as sign-out would drop push delivery until relaunch — only absent/restricted accounts tear sync down.
+/// A restricted account is its own decision so the screen can say so instead of asking to sign in.
 enum IOSCloudAccountDecision: Equatable {
     case proceed
     case hardUnavailable(reason: SyncStatus.Reason)
-    case transient(message: String)
+    case restricted
+    case transient(SyncFailure)
 }
 
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
@@ -297,7 +299,7 @@ final class IOSCloudSyncController {
 
     private enum UnavailableStatus {
         case unavailable(SyncStatus.Reason)
-        case failed(String)
+        case failed(SyncFailure)
     }
 
     private static let containerID = "iCloud.com.thepatientzero.yank"
@@ -378,16 +380,27 @@ final class IOSCloudSyncController {
         self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 
+    // Sync waits for the saved history: a pull applied over an unloaded store would lose the
+    // remote clips, and the pull-position restart reads a marker the load may still be writing.
     func refreshForeground() async {
+        await store.hydrate()
         _ = await run(.foreground(refreshExisting: true))
     }
 
     func start(force: Bool = false) async {
+        await store.hydrate()
         _ = await run(.start(force: force))
     }
 
     func handleRemoteChange() async -> Bool {
-        await run(.remote)
+        await store.hydrate()
+        return await run(.remote)
+    }
+
+    /// Stops waiting for these clips; they stay on this iPhone until edited. Only reachable
+    /// while a service exists, because the waiting list is cleared when it is torn down.
+    func keepLocalOnly(clipIDs: [UUID]) {
+        sync?.keepLocalOnly(clipIDs: clipIDs)
     }
 
     func stop() {
@@ -482,11 +495,19 @@ final class IOSCloudSyncController {
                     generation: generation
                 )
                 return false
-            case .transient(let message):
+            case .restricted:
+                // The account screen stays up, but says "restricted" rather than "sign in".
+                iCloudSignedOut = true
+                tearDownService(
+                    status: .failed(SyncFailure(kind: .accountRestricted)),
+                    generation: generation
+                )
+                return false
+            case .transient(let failure):
                 // Keep the service and its push registration: the account is expected back, and
                 // the next foreground refresh or silent push resumes sync without a relaunch.
                 iCloudSignedOut = false
-                store.markSyncFailed(message)
+                store.markSyncFailure(failure)
                 // Only the original observation schedules a retry — if the retry itself lands on
                 // another transient result, the next real foreground/push is the fallback, not a
                 // chained timer, so an unreachable account can't be polled forever.
@@ -497,8 +518,9 @@ final class IOSCloudSyncController {
             }
         } catch {
             guard isActive(generation) else { return false }
+            clipStoreLog.error("iCloud account lookup failed: \(error.localizedDescription, privacy: .public)")
             tearDownService(
-                status: .failed(error.localizedDescription),
+                status: .failed(CloudKitSyncFailureClassifier.classify(error)),
                 generation: generation
             )
             return false
@@ -583,9 +605,9 @@ final class IOSCloudSyncController {
         case .started:
             syncStarted = true
             return true
-        case .failed(let message):
+        case .failed:
+            // `start()` already reported the typed failure on the store.
             syncStarted = false
-            store.markSyncFailed(message)
             return false
         }
     }
@@ -627,12 +649,12 @@ final class IOSCloudSyncController {
         switch status {
         case .available:
             .proceed
-        case .noAccount, .restricted:
+        case .noAccount:
             .hardUnavailable(reason: .notAuthenticated)
-        case .temporarilyUnavailable:
-            .transient(message: "iCloud is temporarily unavailable. Sync will retry.")
-        case .couldNotDetermine:
-            .transient(message: "Could not determine iCloud account status")
+        case .restricted:
+            .restricted
+        case .temporarilyUnavailable, .couldNotDetermine:
+            .transient(SyncFailure(kind: .accountUnavailable))
         @unknown default:
             .proceed
         }
@@ -650,8 +672,9 @@ final class IOSCloudSyncController {
         switch status {
         case .unavailable(let reason):
             store.markSyncUnavailable(reason: reason)
-        case .failed(let message):
-            store.markSyncFailed(message)
+        case .failed(let failure):
+            store.markClipsWaiting([])
+            store.markSyncFailure(failure)
         }
     }
 
@@ -682,11 +705,8 @@ struct YankApp: App {
 
     init() {
         let appGroup = AppGroupContext.live()
-        let store = ClipStore(context: appGroup)
+        let store = ClipStore(context: appGroup, deferHistoryLoad: true)
         let settings = IOSSettings(defaults: appGroup?.defaults)
-        if !store.items.isEmpty {
-            settings.completeCaptureSetup()
-        }
         _store = State(initialValue: store)
         _settings = State(initialValue: settings)
         _syncController = State(
@@ -705,6 +725,7 @@ struct YankApp: App {
                 settings: settings,
                 iCloudSignedOut: syncController.iCloudSignedOut,
                 onRetrySync: { await syncController.start(force: true) },
+                onKeepLocalOnly: { syncController.keepLocalOnly(clipIDs: $0) },
                 openRequest: historyOpenRequest
             )
                 .sheet(isPresented: Binding(
@@ -735,9 +756,16 @@ struct YankApp: App {
                     appDelegate.remoteChangeHandler = { [weak syncController] in
                         await syncController?.handleRemoteChange() ?? false
                     }
+                    // The list shows a loading state until the saved history has been read.
+                    await store.hydrate()
+                    // An install whose capture setup was never marked complete only because the
+                    // list used to be non-empty at launch.
+                    if !store.items.isEmpty {
+                        settings.completeCaptureSetup()
+                    }
                     store.enforceRetentionAndLimit()
                     await refreshForeground()
-                    refreshSpotlightIndex()
+                    await refreshSpotlightIndex()
                 }
                 .onChange(of: scenePhase) { oldPhase, newPhase in
                     if oldPhase == .active && newPhase != .active {
@@ -755,7 +783,7 @@ struct YankApp: App {
                         store.reconcileBackupExclusionInBackground()
                         Task {
                             await refreshForeground()
-                            refreshSpotlightIndex()
+                            await refreshSpotlightIndex()
                             if returnedFromBackground {
                                 historyOpenRequest &+= 1
                             }
@@ -836,7 +864,10 @@ struct YankApp: App {
         )
     }
 
-    private func refreshSpotlightIndex() {
+    /// Waits for the saved history: reconciling against an unloaded store would clear the whole
+    /// Yank Spotlight domain.
+    private func refreshSpotlightIndex() async {
+        await store.hydrate()
         if spotlightEnabled {
             SpotlightIndexer.index(store.items)
         } else {

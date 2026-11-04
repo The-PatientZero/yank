@@ -3,6 +3,16 @@ import Foundation
 /// The history search/filter, shared by the macOS history window and the iOS list so
 /// both resolve `@app`, `#tag`, and plain-text queries identically. Pure and testable.
 enum ClipQuery {
+    /// How long typing must pause before the list is filtered for the typed text, so a burst of
+    /// keystrokes scans the history once instead of once per key.
+    static let searchDebounce: Duration = .milliseconds(120)
+
+    /// An empty field or a `#tag` query is applied at once: clearing the field restores the full
+    /// list without lag, and a tag query is a cheap prefix match. Everything else waits for the pause.
+    static func appliesWithoutDebounce(_ text: String) -> Bool {
+        text.isEmpty || text.hasPrefix("#")
+    }
+
     /// Filter and order clips for display: `@app` matches source app (contains), `#tag` matches
     /// a tag prefix, plain text searches content/OCR — all case-insensitive. `activeTag` ANDs
     /// with the search box. Pinned clips float to top; everything else keeps input order.

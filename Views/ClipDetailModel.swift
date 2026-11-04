@@ -8,6 +8,10 @@ struct ChunkedTextState {
     var loadedCharCount: Int = 0
     var reachedEOF: Bool = true
     var isLoadingMore: Bool = false
+    /// Where the next page starts in the file, so a page reads only its own bytes.
+    var nextByteOffset: Int = 0
+    /// The clip these pages belong to, so a page that arrives after focus moved on is dropped.
+    var itemID: UUID?
     static let chunkSize = 2_000
     static let initialChars = 2_000
     var hasMore: Bool { !reachedEOF && loadedCharCount >= Self.initialChars }
@@ -22,12 +26,19 @@ final class ClipDetailModel {
     var previewImage: NSImage?
     var chunkedText = ChunkedTextState()
     var isExtractingText = false
+    /// The clip whose last extraction found no usable text; cleared when focus moves or a new run starts.
+    private(set) var noTextFoundItemID: UUID?
     var itemSize: Int?
     var showTagInput = false
     var tagInputText = ""
 
     private let store: ClipboardStore
     private let previewMaxPixel = 1_200
+    /// Identifies the extraction run whose result may still update the UI; `reset()` invalidates it.
+    private var activeExtractionRun: UUID?
+
+    /// Shown (and announced) when text recognition returns nothing, including when it failed.
+    static let noTextFoundMessage = "Couldn't read any text from this image."
 
     init(store: ClipboardStore) { self.store = store }
 
@@ -35,6 +46,8 @@ final class ClipDetailModel {
         previewImage = nil
         chunkedText = ChunkedTextState()
         isExtractingText = false
+        noTextFoundItemID = nil
+        activeExtractionRun = nil
         itemSize = nil
         showTagInput = false
         tagInputText = ""
@@ -47,6 +60,7 @@ final class ClipDetailModel {
         reset()
         showTagInput = beginTagInput
         guard let item = item else { return }
+        chunkedText.itemID = item.id
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
@@ -75,11 +89,13 @@ final class ClipDetailModel {
         let result = await Task.detached(priority: .userInitiated) {
             ClipboardStore.textChunk(for: item, textURL: textURL, charCount: ChunkedTextState.initialChars)
         }.value
+        guard chunkedText.itemID == item.id else { return }
         if let result = result {
             chunkedText.visibleText = result.text
             chunkedText.totalBytes = result.totalBytes
             chunkedText.loadedCharCount = result.text.count
             chunkedText.reachedEOF = result.reachedEOF
+            chunkedText.nextByteOffset = result.nextByteOffset
         }
         chunkedText.isLoadingMore = false
     }
@@ -87,16 +103,24 @@ final class ClipDetailModel {
     func loadNextChunk(_ item: ClipboardItem) async {
         guard !chunkedText.isLoadingMore && chunkedText.hasMore else { return }
         chunkedText.isLoadingMore = true
-        let nextCharCount = chunkedText.loadedCharCount + ChunkedTextState.chunkSize
+        let startOffset = chunkedText.nextByteOffset
         let textURL = store.blobURL(for: item)
         let result = await Task.detached(priority: .userInitiated) {
-            ClipboardStore.textChunk(for: item, textURL: textURL, charCount: nextCharCount)
+            ClipboardStore.textChunk(
+                for: item,
+                textURL: textURL,
+                charCount: ChunkedTextState.chunkSize,
+                byteOffset: startOffset
+            )
         }.value
+        // Appending to another clip's text would corrupt it; the new clip's own load resets this.
+        guard chunkedText.itemID == item.id, chunkedText.nextByteOffset == startOffset else { return }
         if let result = result {
-            chunkedText.visibleText = result.text
+            chunkedText.visibleText += result.text
             chunkedText.totalBytes = result.totalBytes
-            chunkedText.loadedCharCount = result.text.count
+            chunkedText.loadedCharCount += result.text.count
             chunkedText.reachedEOF = result.reachedEOF
+            chunkedText.nextByteOffset = result.nextByteOffset
         }
         chunkedText.isLoadingMore = false
     }
@@ -104,10 +128,25 @@ final class ClipDetailModel {
     func extractText(from item: ClipboardItem) async {
         // Convert on the main actor so only the Sendable CGImage crosses to the OCR task.
         guard let cgImage = previewImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        let run = UUID()
+        activeExtractionRun = run
         isExtractingText = true
-        let text = await OCRService.shared.recognizeText(from: cgImage) ?? "No text found in this image."
+        noTextFoundItemID = nil
+        let text = await OCRService.shared.recognizeText(from: cgImage)
+        // Usable text is stored for the clip it was read from even if focus has moved on.
         store.setOCRText(text, for: item)
+        // Focus moving to another clip reset this state already; a late result must not restore it.
+        guard activeExtractionRun == run else { return }
+        activeExtractionRun = nil
         isExtractingText = false
+        if text.map(ClipboardItem.isUsableOCRText) != true {
+            noTextFoundItemID = item.id
+            NSAccessibility.post(
+                element: NSApp as Any,
+                notification: .announcementRequested,
+                userInfo: [.announcement: Self.noTextFoundMessage, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        }
     }
 
     func saveImageToDisk(_ item: ClipboardItem) {

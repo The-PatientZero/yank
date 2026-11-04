@@ -14,6 +14,13 @@ final class HubController {
 
     private var primaryPanelProvider: (@MainActor () -> HubPrimaryPanel)?
 
+    /// A sync problem has to last this long before the icon shows a dot, so a push that fails
+    /// once and recovers on its first retry (5 s) never flashes it.
+    private static let syncAttentionDelay: Duration = .seconds(30)
+    private var syncAttentionShown = false
+    private var syncAttentionTask: Task<Void, Never>?
+    private var tooltipParts: (headline: String, syncProblem: String?, hint: String) = ("", nil, "")
+
     init(footer: HubAppFooter, settings: SettingsManager = .shared) {
         self.footer = footer
         self.settings = settings
@@ -26,6 +33,8 @@ final class HubController {
                                                name: .yankDidCapture, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateStateChanged),
                                                name: .yankUpdateStateChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(syncStatusChanged),
+                                               name: .yankSyncStatusChanged, object: nil)
     }
 
     func setPrimaryPanelProvider(_ provider: (@MainActor () -> HubPrimaryPanel)?) {
@@ -36,8 +45,16 @@ final class HubController {
         statusItem.button?.alphaValue = dimmed ? 0.4 : 1.0
     }
 
-    func setTooltip(_ text: String) {
-        statusItem.button?.toolTip = text
+    /// The tooltip is the shortcut line, then the sync problem while the icon shows its dot, then
+    /// the hint, so the three never overwrite each other.
+    func setTooltip(headline: String, syncProblem: String?, hint: String) {
+        tooltipParts = (headline, syncProblem, hint)
+        applyTooltip()
+    }
+
+    private func applyTooltip() {
+        let lines = [tooltipParts.headline, syncAttentionShown ? tooltipParts.syncProblem : nil, tooltipParts.hint]
+        statusItem.button?.toolTip = lines.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     func statusItemAnchorFrame() -> NSRect? {
@@ -61,6 +78,50 @@ final class HubController {
 
     @objc private func updateStateChanged() {
         refreshMenu()
+    }
+
+    @objc private func syncStatusChanged() {
+        refreshMenu()
+        evaluateSyncAttention()
+    }
+
+    /// Decides whether the icon shows the attention dot. It never changes while sync is running,
+    /// so "Sync now" does not make a visible dot flicker off and back on.
+    private func evaluateSyncAttention() {
+        let summary = primaryPanelProvider?().sync ?? .off
+        if summary.isSyncing { return }
+        guard summary.hasProblem else {
+            cancelSyncAttentionTimer()
+            setSyncAttention(shown: false)
+            return
+        }
+        if summary.needsImmediateAttention || syncAttentionShown {
+            cancelSyncAttentionTimer()
+            setSyncAttention(shown: true)
+            return
+        }
+        guard syncAttentionTask == nil else { return }
+        syncAttentionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.syncAttentionDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.syncAttentionTask = nil
+            let latest = self.primaryPanelProvider?().sync ?? .off
+            if latest.hasProblem && !latest.isSyncing { self.setSyncAttention(shown: true) }
+        }
+    }
+
+    private func cancelSyncAttentionTimer() {
+        syncAttentionTask?.cancel()
+        syncAttentionTask = nil
+    }
+
+    private func setSyncAttention(shown: Bool) {
+        let changed = shown != syncAttentionShown
+        syncAttentionShown = shown
+        if changed {
+            statusItem.button?.image = shown ? Self.attentionGlyph : Self.brandGlyph
+        }
+        applyTooltip()
     }
 
     /// Spring-like scale bounce on the brand glyph confirming a capture (visual counterpart to the
@@ -113,6 +174,39 @@ final class HubController {
         image.accessibilityDescription = "Yank"
         return image
     }()
+
+    /// The brand glyph with a small dot in the top-right corner. The dot is the danger ink with a
+    /// thin ring in the menu-bar ground colour, so it separates from the amber arrow and clears
+    /// 3:1 against both a light and a dark menu bar. Drawn per appearance at render time.
+    private static let attentionGlyph: NSImage = {
+        let size = brandGlyph.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            brandGlyph.draw(in: rect)
+            let dotRect = NSRect(
+                x: rect.maxX - AttentionDot.diameter - AttentionDot.inset,
+                y: rect.maxY - AttentionDot.diameter - AttentionDot.inset,
+                width: AttentionDot.diameter,
+                height: AttentionDot.diameter
+            )
+            let ring = NSBezierPath(ovalIn: dotRect.insetBy(dx: -AttentionDot.ringWidth, dy: -AttentionDot.ringWidth))
+            AttentionDot.ringColor.setFill()
+            ring.fill()
+            NSColor.yankDanger.setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = "Yank, sync problem"
+        return image
+    }()
+
+    private enum AttentionDot {
+        static let diameter: CGFloat = 7
+        static let ringWidth: CGFloat = 1.5
+        static let inset: CGFloat = 0
+        /// Close to the menu-bar ground in each appearance.
+        static let ringColor = NSColor.yankDynamic(light: 0xF2F2F2, dark: 0x1E1E1E)
+    }
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
         guard let event = NSApp.currentEvent else {
@@ -179,6 +273,10 @@ final class HubController {
             onIgnoreNextCopy: { [weak self] in panel?.onIgnoreNextCopy(); self?.dismissMenu() },
             onFixShortcut: { [weak self] in self?.dismissMenu(); panel?.onFixShortcut() },
             onSettings: { [weak self] in self?.dismissMenu(); panel?.onSettings() },
+            sync: panel?.sync ?? .off,
+            // Stays open so the status line shows "Syncing…" and then the new time.
+            onSyncNow: { panel?.onSyncNow() },
+            onSyncOpenSettings: { [weak self] in self?.dismissMenu(); panel?.onSyncOpenSettings() },
             onUpdateAction: { [weak self] action in self?.performUpdateAction(action) },
             onClear: { [weak self] in self?.dismissMenu(); panel?.onClear() },
             onRestart: { [weak self] in self?.dismissMenu(); self?.footer.onRestart() },

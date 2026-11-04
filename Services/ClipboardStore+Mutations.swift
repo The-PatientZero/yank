@@ -27,7 +27,7 @@ extension ClipboardStore {
         pendingDeletion = nil
         let ids = Set(pending.items.map(\.id))
         let result = ClipboardMutations.removeItems(ids: ids, from: items)
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()
@@ -69,7 +69,8 @@ extension ClipboardStore {
         persist()
     }
 
-    func setOCRText(_ text: String, for item: ClipboardItem) {
+    func setOCRText(_ text: String?, for item: ClipboardItem) {
+        guard let text, ClipboardItem.isUsableOCRText(text) else { return }
         ClipboardMutations.setOCRText(text, id: item.id, in: &items)
         persist()
     }
@@ -90,8 +91,9 @@ extension ClipboardStore {
 
     func clear() {
         resetCaptureSuppression()
+        heldElements = []
         let result = ClipboardMutations.removeItems(ids: Set(items.map(\.id)), from: items)
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()

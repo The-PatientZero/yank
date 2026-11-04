@@ -98,6 +98,7 @@ targets:
       - Shared/ClipKindIcon.swift
       - Shared/UndoDeleteBanner.swift
       - Shared/StorageUnavailableBanner.swift
+      - Shared/HeldClipsNotice.swift
       - Shared/AppNotifications.swift
       - Sources/YankCore
       - Sources/YankCloudKitSync
@@ -117,6 +118,7 @@ targets:
       - iOS/HistoryEmptyStates.swift
       - iOS/HistorySupportViews.swift
       - iOS/SettingsView.swift
+      - iOS/WaitingClipsView.swift
       - iOS/ClipRowView.swift
       - iOS/ClipTileView.swift
       - iOS/ClipThumbnailView.swift

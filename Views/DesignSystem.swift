@@ -210,7 +210,7 @@ enum YankMotion {
 // MARK: - AppKit panel tokens
 
 enum YankPanelTokens {
-    static let compactToastPanelSize = NSSize(width: 360, height: 214)
+    static let compactToastPanelSize = NSSize(width: 360, height: 244)
     static let cornerRadius = Radius.window
     static let contentInset: CGFloat = Space.xxxl
     static let stackSpacing: CGFloat = Space.lg

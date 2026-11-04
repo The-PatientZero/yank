@@ -62,4 +62,94 @@ enum SyncCopy {
     static let disabled = "iCloud sync is off."
     static let signedOut = "Sign in to iCloud to sync your clips across devices."
     static let notProvisioned = "iCloud sync is not available in this build."
+
+    // MARK: - Status vocabulary shared by both apps
+
+    static let syncingHeadline = "Syncing…"
+    static let syncedHeadline = "Synced"
+    static let problemHeadline = "Sync problem"
+    static let syncNow = "Sync now"
+    static let tryAgain = "Try again"
+
+    /// Symbol names per state, so the Mac and the iPhone draw the same shapes.
+    enum Symbol {
+        static let syncing = "arrow.triangle.2.circlepath"
+        static let synced = "checkmark.icloud"
+        static let problem = "exclamationmark.icloud"
+        static let off = "xmark.icloud"
+    }
+
+    /// Under this many seconds the age reads "just now" instead of a relative time.
+    private static let justNowSeconds: TimeInterval = 60
+
+    /// "Synced just now" for the first minute, then "Synced 5 minutes ago" and so on.
+    static func syncedText(lastSynced: Date, now: Date = Date()) -> String {
+        if now.timeIntervalSince(lastSynced) < justNowSeconds {
+            return "\(syncedHeadline) just now"
+        }
+        return "\(syncedHeadline) \(lastSynced.formatted(.relative(presentation: .named)))"
+    }
+
+    /// What the person can do about a failure. Anything not listed is a plain retry.
+    enum FailureAction: Equatable {
+        case openSettings
+        case tryAgain
+    }
+
+    /// Actions for a failure, most useful first. `nil` kind is a failure with an unknown cause.
+    static func actions(for kind: SyncFailureKind?) -> [FailureAction] {
+        switch kind {
+        case .some(.signedOut), .some(.accountRestricted):
+            [.openSettings]
+        case .some(.storageFull):
+            [.openSettings, .tryAgain]
+        default:
+            [.tryAgain]
+        }
+    }
+
+    #if os(macOS)
+    static let openSettingsTitle = "Open System Settings"
+    private static let storageFullPathHint = "On this Mac: System Settings, then Apple ID, then iCloud."
+    #else
+    static let openSettingsTitle = "Open Settings"
+    private static let storageFullPathHint = "On this iPhone: Settings, then your name, then iCloud."
+    #endif
+
+    static func title(for action: FailureAction) -> String {
+        switch action {
+        case .openSettings: openSettingsTitle
+        case .tryAgain: tryAgain
+        }
+    }
+
+    /// Extra sentence naming where to go, for the failures that send the person to system settings.
+    static func pathHint(for kind: SyncFailureKind?) -> String? {
+        kind == .storageFull ? storageFullPathHint : nil
+    }
+
+    // MARK: - Clips that cannot upload
+
+    static let waitingListHeading = "These clips can't be uploaded as they are"
+    static let keepOnDevice = "Keep on this device"
+    static let keepAllOnDevice = "Keep all on this device"
+    static let deleteWaitingClip = "Delete"
+
+    static func waitingCount(_ count: Int) -> String {
+        count == 1 ? "1 clip waiting to sync" : "\(count) clips waiting to sync"
+    }
+
+    static func waitingReason(_ reason: SyncWaitingReason) -> String {
+        switch reason {
+        case .contentInvalid: "Its saved data is damaged and can't be uploaded"
+        default: "Its saved file is missing on this device"
+        }
+    }
+
+    /// The one line naming what is wrong, for the menu-bar tooltip and accessibility text.
+    /// Nil while nothing needs attention.
+    static func problemLine(status: SyncStatus, waitingCount: Int) -> String? {
+        if case .failed(let message) = status { return message }
+        return waitingCount > 0 ? Self.waitingCount(waitingCount) : nil
+    }
 }

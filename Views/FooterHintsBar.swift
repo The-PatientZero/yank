@@ -7,9 +7,9 @@ struct FooterHintsBar: View {
     var focusedItemHasOCR: Bool = false
     var quickLookAvailable: Bool = true
     var axUntrusted: Bool = false
-    /// Opens System Settings and polls for the grant. Injected so the footer drives the same shared
-    /// permission object Settings uses (one source of truth), not a fire-and-forget static call.
-    var onGrantAccess: () -> Void = { AccessibilityPermission.openSettings() }
+    /// Runs the shared grant flow. Injected so the footer drives the same shared permission object
+    /// Settings uses (one source of truth); required so the button can never be a silent no-op.
+    let onGrantAccess: () -> Void
 
     var body: some View {
         HStack(spacing: Space.lg) {

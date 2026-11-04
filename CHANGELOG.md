@@ -11,6 +11,7 @@ and passes that section to `gh release create --notes-file`.
 ### Added
 
 - Added Include History in Device Backups to Settings on iPhone and iPad. It is off by default: Yank asks iOS to leave your history, deletion log, attachments, keyboard copy and share inbox out of device backups, as it already does on the Mac. Existing iPhone and iPad installs stop putting history in new device backups unless you turn the setting on. A device restored from a backup without history gets recent clips back through iCloud sync, up to your history limit, when sync is on. iOS treats the request as guidance, not a guarantee.
+- Made iCloud sync state visible on Mac and iPhone. The Mac menu-bar menu now shows whether sync is working and has a Sync now row, and the menu-bar icon shows a small dot when sync has a problem. Failures are explained in plain words with a button for what to do next, such as free up iCloud storage, sign in or try again. Clips that cannot be uploaded (for example because their saved file is missing) are listed in Settings, where you can keep them on the device or delete them.
 
 ### Fixed
 

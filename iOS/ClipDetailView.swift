@@ -12,6 +12,7 @@ struct ClipDetailView: View {
     @State private var model: ClipDetailContentModel
     @State private var localOCR: String?
     @State private var isExtracting = false
+    @State private var foundNoText = false
     @State private var newTag = ""
     @State private var copied = false
     @State private var tagSuggestions: [String] = []
@@ -27,7 +28,7 @@ struct ClipDetailView: View {
 
     /// Re-read from the store so pin/bookmark/tag toggles reflect immediately.
     private var current: ClipboardItem { store.items.first { $0.id == item.id } ?? item }
-    private var ocrText: String? { current.ocrText ?? localOCR }
+    private var ocrText: String? { current.recognizedText ?? localOCR }
     private var canExtract: Bool { current.type == .image && model.previewImage != nil && ocrText == nil }
 
     var body: some View {
@@ -38,7 +39,11 @@ struct ClipDetailView: View {
                 if current.richContentState != .none {
                     richContentNote
                 }
-                if let ocr = ocrText { ocrSection(ocr) }
+                if let ocr = ocrText {
+                    ocrSection(ocr)
+                } else if foundNoText {
+                    noTextFoundNote
+                }
                 tagSection
             }
             .padding(Space.lg)
@@ -51,6 +56,7 @@ struct ClipDetailView: View {
         .animation(IOSMotion.state(reduceMotion), value: copied)
         .animation(IOSMotion.state(reduceMotion), value: isExtracting)
         .animation(IOSMotion.state(reduceMotion), value: ocrText)
+        .animation(IOSMotion.state(reduceMotion), value: foundNoText)
         .animation(IOSMotion.present(reduceMotion), value: model.previewImage != nil)
         .task(id: item.id) { await model.load(current) }
     }
@@ -146,6 +152,17 @@ struct ClipDetailView: View {
             }
         }
     }
+
+    /// Shown when text recognition returned nothing (including when it failed); the extraction
+    /// action stays available for another try.
+    private var noTextFoundNote: some View {
+        Text(Self.noTextFoundMessage)
+            .font(.yank(.caption))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static let noTextFoundMessage = "Couldn't read any text from this image."
 
     private var truncationNote: some View {
         Label(
@@ -311,10 +328,14 @@ struct ClipDetailView: View {
         // Convert on the main actor so only the Sendable CGImage crosses to the OCR task.
         guard let cgImage = model.previewImage?.cgImage else { return }
         isExtracting = true
+        foundNoText = false
         defer { isExtracting = false }
-        if let text = await OCRService.shared.recognizeText(from: cgImage) {
+        if let text = await OCRService.shared.recognizeText(from: cgImage), ClipboardItem.isUsableOCRText(text) {
             store.setOCRText(text, for: current)
             withAnimation(IOSMotion.state(reduceMotion)) { localOCR = text }
+        } else {
+            withAnimation(IOSMotion.state(reduceMotion)) { foundNoText = true }
+            UIAccessibility.post(notification: .announcement, argument: Self.noTextFoundMessage)
         }
     }
 }
@@ -329,6 +350,10 @@ final class ClipDetailContentModel {
     var reachedEOF = true
     var isLoadingMore = false
     var itemSize: Int?
+    /// Where the next page starts in the file, so a page reads only its own bytes.
+    private var nextByteOffset = 0
+    /// The clip these pages belong to, so a page that arrives after focus moved on is dropped.
+    private var itemID: UUID?
 
     private let store: ClipStore
 
@@ -343,9 +368,11 @@ final class ClipDetailContentModel {
 
     func load(_ item: ClipboardItem) async {
         previewImage = nil
+        itemID = item.id
         visibleText = ""
         totalBytes = 0
         loadedCharCount = 0
+        nextByteOffset = 0
         reachedEOF = true
         isLoadingMore = false
         itemSize = store.itemSize(for: item)
@@ -354,7 +381,7 @@ final class ClipDetailContentModel {
             previewImage = await loadImage(item)
         case .text:
             if item.isFileBacked {
-                await loadChunk(item, charCount: Self.initialChars)
+                await loadChunk(item, charCount: Self.initialChars, byteOffset: 0)
             } else {
                 visibleText = item.textContent ?? ""
                 reachedEOF = true
@@ -364,20 +391,26 @@ final class ClipDetailContentModel {
 
     func loadNextChunk(_ item: ClipboardItem) async {
         guard !isLoadingMore && hasMore else { return }
-        await loadChunk(item, charCount: loadedCharCount + Self.chunkSize)
+        await loadChunk(item, charCount: Self.chunkSize, byteOffset: nextByteOffset)
     }
 
-    private func loadChunk(_ item: ClipboardItem, charCount: Int) async {
+    /// Reads one page starting at `byteOffset` and appends it, so a page costs its own bytes
+    /// however much is already shown.
+    private func loadChunk(_ item: ClipboardItem, charCount: Int, byteOffset: Int) async {
         isLoadingMore = true
         let textURL = store.blobURL(for: item)
         let result = await Task.detached(priority: .userInitiated) {
-            ClipStore.textChunk(for: item, textURL: textURL, charCount: charCount)
+            ClipStore.textChunk(for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset)
         }.value
+        // Appending to another clip's text would corrupt it; the new clip's own load resets this.
+        guard itemID == item.id, nextByteOffset == byteOffset else { return }
         if let result {
-            visibleText = result.text
+            // The first page replaces, so two overlapping loads of the same clip cannot double it.
+            visibleText = byteOffset == 0 ? result.text : visibleText + result.text
             totalBytes = result.totalBytes
-            loadedCharCount = result.text.count
+            loadedCharCount = byteOffset == 0 ? result.text.count : loadedCharCount + result.text.count
             reachedEOF = result.reachedEOF
+            nextByteOffset = result.nextByteOffset
         }
         isLoadingMore = false
     }

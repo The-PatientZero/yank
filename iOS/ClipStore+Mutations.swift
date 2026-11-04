@@ -68,7 +68,8 @@ extension ClipStore {
         mutate { ClipboardMutations.removeTag(tag, id: item.id, in: &$0) }
     }
 
-    func setOCRText(_ text: String, for item: ClipboardItem) {
+    func setOCRText(_ text: String?, for item: ClipboardItem) {
+        guard let text, ClipboardItem.isUsableOCRText(text) else { return }
         mutate { ClipboardMutations.setOCRText(text, id: item.id, in: &$0) }
     }
 
@@ -132,10 +133,13 @@ extension ClipStore {
     nonisolated static func textChunk(
         for item: ClipboardItem,
         textURL: URL?,
-        charCount: Int
+        charCount: Int,
+        byteOffset: Int = 0
     ) -> TextChunkPage? {
         if let textURL, item.textFilename != nil {
-            return TextChunkReader.page(for: item, textURL: textURL, charCount: charCount) { error in
+            return TextChunkReader.page(
+                for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset
+            ) { error in
                 clipStoreLog.error("Failed to read iOS text chunk: \(error.localizedDescription)")
             }
         }

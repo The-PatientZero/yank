@@ -25,11 +25,15 @@ struct HistoryView: View {
     var settings: IOSSettings
     var iCloudSignedOut: Bool = false
     var onRetrySync: (() async -> Void)? = nil
+    var onKeepLocalOnly: (([UUID]) -> Void)? = nil
     /// Bumped by the app each time it returns from the background; resets search, filter and scroll.
     var openRequest = 0
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
+    /// The query the list is filtered by: `query` once typing has paused.
+    @State private var appliedQuery = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var activeTag: String?
     @State private var showSettings = false
 
@@ -50,7 +54,7 @@ struct HistoryView: View {
     @ScaledMetric(relativeTo: .title2) var wordmarkSize: CGFloat = TypeScale.stat
 
     private var filtered: [ClipboardItem] {
-        store.filteredItems(search: query, activeTag: activeTag)
+        store.filteredItems(search: appliedQuery, activeTag: activeTag)
     }
 
     private var visibleItems: [ClipboardItem] {
@@ -106,7 +110,11 @@ struct HistoryView: View {
 
     private var browse: some View {
         Group {
-            if store.items.isEmpty {
+            if !store.hasLoaded {
+                // Neutral until the saved history has been read, so "No clips", the onboarding
+                // screen or a sync problem never flashes over a history that is about to appear.
+                loadingState
+            } else if store.items.isEmpty {
                 switch emptyPresentation {
                 case .iCloudSignedOut:
                     iCloudSignedOutState
@@ -124,8 +132,13 @@ struct HistoryView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if store.storageUnavailable {
-                StorageUnavailableBanner()
+            VStack(spacing: 0) {
+                if store.storageUnavailable {
+                    StorageUnavailableBanner()
+                }
+                if store.heldClipCount > 0 {
+                    HeldClipsNotice(count: store.heldClipCount)
+                }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -145,6 +158,7 @@ struct HistoryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .modifier(HistorySearchModifier(query: $query, isEnabled: !store.items.isEmpty))
         .onSubmit(of: .search) { applyTagSuggestion() }
+        .onChange(of: query) { _, newValue in scheduleSearch(for: newValue) }
         .onChange(of: openRequest) { _, _ in
             query = ""
             activeTag = nil
@@ -154,7 +168,12 @@ struct HistoryView: View {
         .animation(IOSMotion.state(reduceMotion), value: activeTag)
         .animation(IOSMotion.state(reduceMotion), value: openItem?.id)
         .sheet(isPresented: $showSettings) {
-            SettingsView(store: store, settings: settings)
+            SettingsView(
+                store: store,
+                settings: settings,
+                onRetrySync: onRetrySync,
+                onKeepLocalOnly: onKeepLocalOnly
+            )
         }
         .sheet(isPresented: $showShare) { ShareSheet(items: shareItems) }
         .sensoryFeedback(.success, trigger: successPulse)
@@ -283,12 +302,19 @@ struct HistoryView: View {
 
     private var syncPausedStrip: some View {
         HStack(spacing: Space.md) {
-            Label("Sync paused", systemImage: "exclamationmark.icloud")
-                .font(.yank(.caption))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                Label(SyncCopy.problemHeadline, systemImage: "exclamationmark.icloud")
+                    .font(.yank(.caption, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if case .failed(let message) = store.syncStatus {
+                    Text(message)
+                        .font(.yank(.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 0)
             if let onRetrySync {
-                Button("Retry") {
+                Button(SyncCopy.tryAgain) {
                     Task { await onRetrySync() }
                 }
                 .font(.yank(.caption, weight: .semibold))
@@ -492,6 +518,23 @@ struct HistoryView: View {
 
     private var tagChipTransition: AnyTransition {
         reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity)
+    }
+
+    // MARK: - Search
+
+    /// Filters at once for an empty or `#` query, otherwise after typing pauses; a newer keystroke
+    /// cancels the pending filter.
+    private func scheduleSearch(for text: String) {
+        searchDebounceTask?.cancel()
+        if ClipQuery.appliesWithoutDebounce(text) {
+            appliedQuery = text
+            return
+        }
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: ClipQuery.searchDebounce)
+            guard !Task.isCancelled else { return }
+            appliedQuery = text
+        }
     }
 
     // MARK: - Tag autocomplete
