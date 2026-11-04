@@ -283,12 +283,12 @@ struct HistoryContentView: View {
         .onChange(of: searchText) { _, newValue in
             showTagAutocomplete = newValue.hasPrefix("#")
             searchDebounceTask?.cancel()
-            if newValue.hasPrefix("#") || newValue.isEmpty {
+            if ClipQuery.appliesWithoutDebounce(newValue) {
                 searchTextDebounced = newValue
                 updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
             } else {
                 searchDebounceTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(120))
+                    try? await Task.sleep(for: ClipQuery.searchDebounce)
                     searchTextDebounced = newValue
                     updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
                 }
