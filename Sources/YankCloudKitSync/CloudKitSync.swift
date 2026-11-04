@@ -799,6 +799,9 @@ public final class CloudKitSyncService {
         var moreComing = true
         var isFirstPage = true
         var reportsProgress = false
+        // A pull from nothing needs every file, so it asks for full records. A pull from a saved
+        // position asks for the fields only, until too many of its records need the file.
+        var asksForFullRecords = startedFromNothing
         var fetchedChanges = 0
         var changedHistory = 0
         var clipsDelivered = 0
@@ -815,7 +818,7 @@ public final class CloudKitSyncService {
                 let changes = try await database.fetchZoneChanges(
                     zoneID,
                     since: token,
-                    desiredKeys: nil,
+                    desiredKeys: asksForFullRecords ? nil : ClipboardCloudMapping.pullFieldKeys,
                     resultsLimit: Self.pullPageSize
                 )
                 try requireActive(generation)
@@ -835,16 +838,31 @@ public final class CloudKitSyncService {
                     changes.failedRecords,
                     quarantine: &quarantine
                 )
-                for record in changes.changedRecords {
+                var filesFetched = Self.assetCount(in: changes.changedRecords)
+                var pagePlan = MetadataPagePlan()
+                if changes.assetsOmitted {
+                    pagePlan = planMetadataPage(changes.changedRecords, store: store)
+                    if pagePlan.exceedsFullFetchShare { asksForFullRecords = true }
+                }
+                for record in changes.changedRecords
+                where !pagePlan.needsFullRecord.contains(record.recordID.recordName) {
                     try requireActive(generation)
                     try await accumulateRemoteRecord(
                         record,
                         into: store,
                         accumulation: &accumulation,
                         quarantine: &quarantine,
+                        assetKnownPresent: pagePlan.knownPresent.contains(record.recordID.recordName),
                         generation: generation
                     )
                 }
+                filesFetched += try await accumulateFullRecords(
+                    named: pagePlan.needsFullRecord.sorted(),
+                    into: store,
+                    accumulation: &accumulation,
+                    quarantine: &quarantine,
+                    generation: generation
+                )
                 for recordName in changes.deletedRecordNames {
                     // A record deleted server-side has nothing left to recover.
                     quarantine.clear(recordName)
@@ -854,7 +872,7 @@ public final class CloudKitSyncService {
                     }
                 }
                 syncLog.notice(
-                    "Sync pull page (clips: \(pageClipCount, privacy: .public), files fetched: \(Self.assetCount(in: changes.changedRecords), privacy: .public))"
+                    "Sync pull page (clips: \(pageClipCount, privacy: .public), files fetched: \(filesFetched, privacy: .public))"
                 )
                 changedHistory += try await applyPulledPage(
                     accumulation,
@@ -1002,6 +1020,115 @@ public final class CloudKitSyncService {
         return nil
     }
 
+    /// Past this share of a page's file-bearing records needing the file, a pull stops asking for
+    /// fields only: fetching most files one batch at a time costs more than the page would.
+    private nonisolated static let metadataModeMaximumFullFetchShare = 0.5
+
+    /// Records fetched in full at a time when a page came without files. Bounds the temporary
+    /// disk the downloaded files take.
+    private nonisolated static let fullFetchBatchSize = 20
+
+    /// How a page that came without files splits.
+    private struct MetadataPagePlan {
+        /// Records whose file this device already holds and iCloud is known to hold.
+        var knownPresent: Set<String> = []
+        /// Records that have to be fetched again with their file or their content.
+        var needsFullRecord: Set<String> = []
+        var fileBearingCount = 0
+        var fileBearingNeedingFullRecord = 0
+
+        var exceedsFullFetchShare: Bool {
+            fileBearingCount > 0
+                && Double(fileBearingNeedingFullRecord) / Double(fileBearingCount)
+                    > CloudKitSyncService.metadataModeMaximumFullFetchShare
+        }
+    }
+
+    /// Decides which records of a page that came without files can be used as delivered. A clip
+    /// is known present only when this device holds the same file, the local clip names it and a
+    /// push receipt says iCloud accepted the clip; anything less asks for the full record, which
+    /// is what a pull has always done. A live clip with no readable content at all is fetched in
+    /// full too, in case the page left out the encrypted copy.
+    private func planMetadataPage(_ records: [CKRecord], store: SyncableStore) -> MetadataPagePlan {
+        var plan = MetadataPagePlan()
+        let localByID = Dictionary(
+            store.itemsForSync().map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for record in records where record.recordType == ClipboardCloudMapping.recordType {
+            guard record[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+                  let item = ClipboardCloudMapping.item(from: record) else { continue }
+            let recordName = record.recordID.recordName
+            guard let blob = item.syncBlobReference else {
+                if Self.lacksReadableContent(record) { plan.needsFullRecord.insert(recordName) }
+                continue
+            }
+            plan.fileBearingCount += 1
+            let localClip = localByID[item.id]
+            let holdsFile = store.blobURL(for: blob).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            if holdsFile, localClip?.isDeleted == false, localClip?.syncBlobReference == blob,
+               pushReceipts?[item.id] != nil, !Self.lacksReadableContent(record) {
+                plan.knownPresent.insert(recordName)
+            } else {
+                plan.needsFullRecord.insert(recordName)
+                plan.fileBearingNeedingFullRecord += 1
+            }
+        }
+        return plan
+    }
+
+    private nonisolated static func lacksReadableContent(_ record: CKRecord) -> Bool {
+        switch ClipboardCloudMapping.encryptedCopyState(of: record) {
+        case .absent, .unreadable: !ClipboardCloudMapping.hasPlainContent(record)
+        case .newerFormat, .stale, .current: false
+        }
+    }
+
+    /// Fetches the named records with their files, a batch at a time, and folds each batch into
+    /// the page before the next is fetched, so only one batch of downloaded files exists at once.
+    /// Returns how many of them arrived with a file. A record CloudKit no longer has is skipped.
+    /// A record it neither returned nor reported gone failed transiently, which holds the page.
+    private func accumulateFullRecords(
+        named recordNames: [String],
+        into store: SyncableStore,
+        accumulation: inout PullAccumulation,
+        quarantine: inout QuarantineState,
+        generation: UInt64
+    ) async throws -> Int {
+        var filesFetched = 0
+        for batch in recordNames.chunked(into: Self.fullFetchBatchSize) {
+            try requireActive(generation)
+            let fetched = try await database.fetchRecords(for: batch, in: zoneID, desiredKeys: nil)
+            try requireActive(generation)
+            if fetched.encryptedDataKeyWasReset {
+                noteEncryptedDataKeyReset(during: "pull")
+            }
+            let answered = Set(fetched.records.map(\.recordID.recordName))
+                .union(fetched.permanentlyMissingRecordNames)
+            let unanswered = batch.filter { !answered.contains($0) }
+            if fetched.encryptedDataKeyWasReset {
+                // Quarantined like a failed feed record: re-fetched after the re-upload.
+                for recordName in unanswered {
+                    quarantine.record(recordName, reason: CloudKitSyncError.encryptedDataKeyReset.localizedDescription)
+                }
+            } else if !unanswered.isEmpty {
+                throw CloudKitSyncError.partialRecordFailures(unanswered.count)
+            }
+            filesFetched += Self.assetCount(in: fetched.records)
+            for record in fetched.records {
+                try requireActive(generation)
+                try await accumulateRemoteRecord(
+                    record,
+                    into: store,
+                    accumulation: &accumulation,
+                    quarantine: &quarantine,
+                    generation: generation
+                )
+            }
+        }
+        return filesFetched
+    }
+
     /// How many of the records arrived with their file attached.
     private nonisolated static func assetCount(in records: [CKRecord]) -> Int {
         records.filter { $0[ClipboardCloudMapping.Key.blob] is CKAsset }.count
@@ -1085,6 +1212,7 @@ public final class CloudKitSyncService {
         into store: SyncableStore,
         accumulation: inout PullAccumulation,
         quarantine: inout QuarantineState,
+        assetKnownPresent: Bool = false,
         generation: UInt64
     ) async throws {
         try requireActive(generation)
@@ -1113,6 +1241,7 @@ public final class CloudKitSyncService {
             resolved = try await resolveRemoteItem(
                 from: record,
                 into: store,
+                assetKnownPresent: assetKnownPresent,
                 generation: generation
             )
         } catch let error where Self.isPermanentRecordResolutionFailure(error) {
@@ -1256,9 +1385,12 @@ public final class CloudKitSyncService {
         )
     }
 
+    /// `assetKnownPresent` says the record came without its file because this device already
+    /// knows iCloud holds it; the missing asset is then not a sign of a lost file.
     private func resolveRemoteItem(
         from record: CKRecord,
         into store: SyncableStore,
+        assetKnownPresent: Bool,
         generation: UInt64
     ) async throws -> RemoteItemResolution? {
         try requireActive(generation)
@@ -1266,6 +1398,7 @@ public final class CloudKitSyncService {
         let refreshesEncryptedCopy = Self.logEncryptedRefresh(for: record, itemID: item.id)
         if !item.isDeleted,
            let blob = item.syncBlobReference,
+           !assetKnownPresent,
            (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL == nil,
            Self.localTombstoneDominates(item, in: store.itemsForSync()) {
             syncLog.info(
@@ -1277,6 +1410,7 @@ public final class CloudKitSyncService {
             from: record,
             for: item,
             into: store,
+            assetKnownPresent: assetKnownPresent,
             generation: generation
         ) {
         case .notRequired:
@@ -1819,6 +1953,7 @@ public final class CloudKitSyncService {
         from record: CKRecord,
         for item: ClipboardItem,
         into store: SyncableStore,
+        assetKnownPresent: Bool,
         generation: UInt64
     ) async throws -> RemoteBlobResolution {
         try requireActive(generation)
@@ -1826,9 +1961,9 @@ public final class CloudKitSyncService {
         let assetURL = (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL
         // A blob is immutable per filename (an edit mints a new one), so an on-disk file needs no
         // fetch. This skips re-reading the full (up to 32 MB) CKAsset on every metadata-only edit
-        // (pin/tag), which re-surfaces the record in the change feed with its asset attached.
+        // (pin/tag) of a record that arrives with its asset attached.
         if let localURL = store.blobURL(for: blob), FileManager.default.fileExists(atPath: localURL.path) {
-            let requiresLocalRepush = assetURL == nil
+            let requiresLocalRepush = assetURL == nil && !assetKnownPresent
             if requiresLocalRepush {
                 syncLog.error(
                     "synced clip \(item.id.uuidString, privacy: .public) is missing its asset; scheduling repair"

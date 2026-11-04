@@ -65,6 +65,19 @@ enum ClipboardCloudMapping {
         Key.encContent, Key.modifiedAt, Key.deletedAt
     ]
 
+    /// Every field a pull reads from a clip record except the file itself, plus the settings
+    /// record's fields: what a change-feed page asks for when this device already holds the
+    /// files. Any new field that `item(from:)` or the encrypted-copy code reads must be added
+    /// here, or a pull without files would read it as its default (for example "not pinned").
+    static let pullFieldKeys: [CKRecord.FieldKey] = contentFetchKeys + [
+        Key.type, Key.timestamp, Key.textFilename, Key.imageFilename, Key.isPinned,
+        Key.isBookmarked, Key.isTruncated, Key.originalSizeBytes, Key.deviceOrigin,
+        Key.hasRichContent, Key.aiEnrichedAt,
+        SyncedSettingsCloudMapping.Key.historyLimit,
+        SyncedSettingsCloudMapping.Key.retentionDays,
+        SyncedSettingsCloudMapping.Key.updatedAt
+    ]
+
     /// CloudKit does not keep sub-millisecond `Date` precision, and rounding may differ by one
     /// millisecond between writer and reader.
     private static let contentStampToleranceMilliseconds: Int64 = 1
