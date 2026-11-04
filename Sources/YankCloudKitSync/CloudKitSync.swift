@@ -807,9 +807,11 @@ public final class CloudKitSyncService {
         var moreComing = true
         var isFirstPage = true
         var reportsProgress = false
-        // A pull from nothing needs every file, so it asks for full records. A pull from a saved
-        // position asks for the fields only, until too many of its records need the file.
-        var asksForFullRecords = startedFromNothing
+        // A pull from nothing on a device with no history needs every file, so it asks for full
+        // records. Any other pull, including a refetch from the start on a device that already
+        // holds its files, asks for the fields only and fetches the missing files per record,
+        // until too many of its records need the file.
+        var asksForFullRecords = startedFromNothing && store.itemsForSync().isEmpty
         var fetchedChanges = 0
         var changedHistory = 0
         var clipsDelivered = 0
