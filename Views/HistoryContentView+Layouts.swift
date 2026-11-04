@@ -149,46 +149,26 @@ extension HistoryContentView {
         )
     }
 
-    @ViewBuilder
+    // Staged because one chain of all these modifiers exceeds the type checker's limits on CI.
     func selectable<Content: View>(_ item: ClipboardItem, _ index: Int, @ViewBuilder content: () -> Content) -> some View {
-        content()
+        clipAccessibility(clipInteraction(content(), item, index), item, index)
+            .contextMenu { ClipContextMenu(item: item, actions: clipActions(for: item)) }
+    }
+
+    private func clipInteraction(_ cell: some View, _ item: ClipboardItem, _ index: Int) -> some View {
+        cell
             .contentShape(Rectangle())
-            // Keyboard-focus ring on the selected cell: the system 2pt focus colour, kept
-            // distinct from the accent fill per WCAG 2.4.7/1.4.1 (can't rely on hue alone).
-            // Dims while the search field is typed into so the two rings don't compete.
-            .overlay {
-                if item.id == selectedID {
-                    // Match the cell's own corner so the ring stays concentric: tiles round
-                    // at Radius.md, rows/split at the shared clipRowCornerRadius.
-                    RoundedRectangle(cornerRadius: viewMode.isTiled ? Radius.md : clipRowCornerRadius)
-                        .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor),
-                                      lineWidth: 2)
-                        .opacity(listHasKeyboardFocus ? 1 : 0.7)
-                        .accessibilityHidden(true)
-                }
-            }
+            .overlay { focusRing(for: item) }
             .overlay(
                 ClickDetector { modifiers, clickCount in
-                    selectedIndex = index
-                    let action = ClipClickPolicy.action(
-                        for: ClipClickModifiers(
+                    handleClipClick(
+                        item, index,
+                        modifiers: ClipClickModifiers(
                             hasCommand: modifiers.hasCommand,
                             hasShift: modifiers.hasShift
                         ),
-                        clickCount: clickCount,
-                        singleClickPastes: singleClickPastesInCurrentLayout
+                        clickCount: clickCount
                     )
-                    switch action {
-                    case .paste:
-                        selectSingle(item.id)
-                        pasteWithPulse(item)
-                    case .selectSingle:
-                        selectSingle(item.id)
-                    case .toggleSelection:
-                        toggleSelection(item.id)
-                    case .extendSelection:
-                        extendSelectionTo(item.id)
-                    }
                 }
             )
             .scaleEffect(pulseID == item.id ? YankMotion.pasteScale : 1.0)
@@ -205,9 +185,51 @@ extension HistoryContentView {
                               alignment: viewMode.isTiled ? .bottomTrailing : .trailing,
                               isEnabled: viewMode != .split)
             .animation(YankMotion.quick(reduceMotion), value: listHasKeyboardFocus)
-            // Mouse-tracking and the global key monitor bypass VoiceOver entirely, so every
-            // pointer- or hotkey-only action gets an explicit accessibilityAction here (paste
-            // is the default; see the Copy/Pin/Bookmark/Delete actions below).
+    }
+
+    /// Keyboard-focus ring on the selected cell: the system 2pt focus colour, kept distinct
+    /// from the accent fill per WCAG 2.4.7/1.4.1 (can't rely on hue alone). Dims while the
+    /// search field is typed into so the two rings don't compete.
+    @ViewBuilder
+    private func focusRing(for item: ClipboardItem) -> some View {
+        if item.id == selectedID {
+            // Match the cell's own corner so the ring stays concentric: tiles round
+            // at Radius.md, rows/split at the shared clipRowCornerRadius.
+            RoundedRectangle(cornerRadius: viewMode.isTiled ? Radius.md : clipRowCornerRadius)
+                .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor),
+                              lineWidth: 2)
+                .opacity(listHasKeyboardFocus ? 1 : 0.7)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func handleClipClick(
+        _ item: ClipboardItem, _ index: Int, modifiers: ClipClickModifiers, clickCount: Int
+    ) {
+        selectedIndex = index
+        let action = ClipClickPolicy.action(
+            for: modifiers,
+            clickCount: clickCount,
+            singleClickPastes: singleClickPastesInCurrentLayout
+        )
+        switch action {
+        case .paste:
+            selectSingle(item.id)
+            pasteWithPulse(item)
+        case .selectSingle:
+            selectSingle(item.id)
+        case .toggleSelection:
+            toggleSelection(item.id)
+        case .extendSelection:
+            extendSelectionTo(item.id)
+        }
+    }
+
+    // Mouse-tracking and the global key monitor bypass VoiceOver entirely, so every
+    // pointer- or hotkey-only action gets an explicit accessibilityAction here (paste
+    // is the default; see the Copy/Pin/Bookmark/Delete actions below).
+    private func clipAccessibility(_ cell: some View, _ item: ClipboardItem, _ index: Int) -> some View {
+        cell
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
                 item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt)
@@ -239,11 +261,9 @@ extension HistoryContentView {
             .accessibilityAction(named: "Delete") {
                 deleteClipWithUndo(item)
             }
-            .contextMenu { ClipContextMenu(item: item, actions: clipActions(for: item)) }
     }
 
-    /// Whether the stream's keyboard-focus ring should show at full strength — see the
-    /// selection ring rationale in `selectable`.
+    /// Whether the stream's keyboard-focus ring should show at full strength; see `focusRing(for:)`.
     var listHasKeyboardFocus: Bool { !isSearchFocused }
 
     /// A subtle drag image reusing the tile, so what lifts off the stream reads as the

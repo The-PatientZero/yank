@@ -358,12 +358,7 @@ struct HistoryContentView: View {
         }
         .onChange(of: masonryKey) { _, _ in rebuildMasonryIfNeeded() }
         .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
-            searchText = ""
-            searchTextDebounced = ""
-            activeTagFilter = nil
-            openFocusID = nil
-            pendingFocusID = nil
-            pendingOpenSteps = Self.openSteps(for: viewMode)
+            resetForNewShow()
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankHistoryFocusRequested)) { _ in
             focusRequestedClip()
@@ -372,31 +367,9 @@ struct HistoryContentView: View {
             if allRun { openFocusID = nil }
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
-            axPermission?.refresh()
-            keepWindowOpen = settings.keepHistoryWindowOpen
-            store.commitPendingDeleteIfNeeded()
-            showTagAutocomplete = false
-            showQuickLook = false
-            tagPeekOwned = false
-            pendingTagInput = nil
-            detail.cancelTagInput()
-            if pendingOpenSteps.remove(.selectDefault) != nil {
-                let targetID = openSelectionTarget()
-                scrollTrigger = false
-                updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
-            }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(50))
-                isSearchFocused = true
-            }
+            prepareOpenedWindow()
         }
-        .task(id: detailLoadKey) {
-            let tagRequest = pendingTagInput
-            pendingTagInput = nil
-            guard showQuickLook || viewMode == .split else { return }
-            let item = selectedItem
-            await detail.load(item, beginTagInput: tagRequest != nil && tagRequest == item?.id)
-        }
+        .task(id: detailLoadKey) { await loadDetail() }
         .onChange(of: detail.showTagInput) { _, isOpen in
             // Every way of closing the field (Return, Esc, Cancel, a suggestion) ends here, so a
             // peek opened only for tagging goes with it and focus always returns to the search field.
@@ -418,6 +391,44 @@ struct HistoryContentView: View {
                 density = settings.density
             }
         }
+    }
+
+    private func resetForNewShow() {
+        searchText = ""
+        searchTextDebounced = ""
+        activeTagFilter = nil
+        openFocusID = nil
+        pendingFocusID = nil
+        pendingOpenSteps = Self.openSteps(for: viewMode)
+    }
+
+    private func prepareOpenedWindow() {
+        axPermission?.refresh()
+        keepWindowOpen = settings.keepHistoryWindowOpen
+        store.commitPendingDeleteIfNeeded()
+        showTagAutocomplete = false
+        showQuickLook = false
+        tagPeekOwned = false
+        pendingTagInput = nil
+        detail.cancelTagInput()
+        if pendingOpenSteps.remove(.selectDefault) != nil {
+            let targetID = openSelectionTarget()
+            scrollTrigger = false
+            updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            isSearchFocused = true
+        }
+    }
+
+    private func loadDetail() async {
+        let tagRequest = pendingTagInput
+        pendingTagInput = nil
+        guard showQuickLook || viewMode == .split else { return }
+        let item = selectedItem
+        let beginsTagInput = tagRequest != nil && tagRequest == item?.id
+        await detail.load(item, beginTagInput: beginsTagInput)
     }
 
     private var detailLoadKey: String {
