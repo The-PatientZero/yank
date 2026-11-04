@@ -128,6 +128,29 @@ struct AppStoreConnectReleaseToolTests {
         #expect(absent.status != 0)
     }
 
+    @Test("Failed requests report Apple's reasons")
+    func apiErrorsAreReported() throws {
+        let errors = try runTool(
+            arguments: ["api-errors-from-json"],
+            json: """
+            {
+              "errors": [
+                {"status":"422","code":"ENTITY_ERROR","title":"Invalid","detail":"Build is not valid."},
+                {"status":"409","code":"CONFLICT","title":"Conflict"}
+              ]
+            }
+            """
+        )
+        let unreadable = try runTool(arguments: ["api-errors-from-json"], json: "<html>")
+
+        #expect(errors.status == 0)
+        #expect(errors.standardOutput == """
+        422 ENTITY_ERROR: Build is not valid.
+        409 CONFLICT: Conflict
+        """)
+        #expect(unreadable.standardOutput == "the response had no readable error details")
+    }
+
     @Test("Beta review submission state is exact and unambiguous")
     func betaReviewSubmissionStateIsExactAndUnambiguous() throws {
         let waiting = try runTool(
