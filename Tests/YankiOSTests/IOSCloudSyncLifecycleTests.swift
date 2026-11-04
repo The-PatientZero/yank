@@ -813,7 +813,7 @@ struct IOSCloudSyncLifecycleTests {
         }
 
         accountGate.resume()
-        await foregroundTask.value
+        _ = await foregroundTask.value
         _ = await remoteTask.value
 
         // One pull from `start()`, one from the foreground refresh, and exactly one
