@@ -123,6 +123,9 @@ public final class CloudKitSyncService {
     private var pushRetryAttempt = 0
     private var activePush: (id: UUID, task: Task<Void, Error>)?
     private var activePull: PullFlight?
+    /// Changes every pull of this service fetched so far; a caller that cannot see a pull's own
+    /// count (the start) compares it before and after.
+    private(set) var fetchedChangesTotal = 0
     /// Pull requests made so far; a running pull serves the ones made before it started.
     private var pullRequestCount: UInt64 = 0
     /// A caller asked for a pull that fetches changes since the last pull started.
@@ -766,6 +769,7 @@ public final class CloudKitSyncService {
         syncLog.notice("Sync pull started (starting from: \(startingFrom, privacy: .public))")
         do {
             let fetched = try await fetchAndApplyZoneChanges(generation: generation)
+            fetchedChangesTotal += fetched
             syncLog.notice("Sync pull finished (changes: \(fetched, privacy: .public), result: ok)")
             return fetched
         } catch {

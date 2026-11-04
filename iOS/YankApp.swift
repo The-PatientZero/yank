@@ -279,6 +279,17 @@ enum IOSCloudAccountDecision: Equatable {
     case transient(SyncFailure)
 }
 
+/// What one sync run did, for the system's report after a background push.
+enum IOSSyncRunOutcome: Equatable, Sendable {
+    /// The run fetched changes from CloudKit.
+    case newData
+    /// The run succeeded and fetched nothing, or was held back until the phone is unlocked.
+    case noData
+    case failed
+
+    var succeeded: Bool { self != .failed }
+}
+
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
 /// A SwiftUI `App` is a value, so keeping the task here gives sync-disable a stable cancellation
 /// boundary and lets tests resume cancellation-ignoring account lookups deterministically.
@@ -297,6 +308,18 @@ final class IOSCloudSyncController {
         case remote
     }
 
+    /// A request that arrived while an operation was running and runs once it ends. A forced
+    /// start outranks a plain refresh, which a forced start also covers.
+    private enum PendingRequest: Int, Comparable {
+        case none
+        case remote
+        case forcedStart
+
+        static func < (lhs: PendingRequest, rhs: PendingRequest) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
+    }
+
     private enum UnavailableStatus {
         case unavailable(SyncStatus.Reason)
         case failed(SyncFailure)
@@ -313,6 +336,10 @@ final class IOSCloudSyncController {
     @ObservationIgnored private let makeContainer: @MainActor () -> ContainerHandle?
     @ObservationIgnored private let makeService:
         @MainActor (any CloudKitDatabase, ClipStore, any SyncedSettingsStore) -> CloudKitSyncService
+    @ObservationIgnored private let makeRecoveryTriggers: @MainActor (
+        _ onNetworkRestored: @escaping @MainActor () -> Void,
+        _ onAccountChanged: @escaping @MainActor () -> Void
+    ) -> SyncRecoveryTriggers?
     @ObservationIgnored private let registerForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let unregisterForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let transientRetryDelayNanoseconds: UInt64
@@ -326,11 +353,15 @@ final class IOSCloudSyncController {
     /// assigned before `start()` runs so a retry reuses the same instance, but a failed
     /// bring-up must not let later requests bypass straight to pull/push.
     @ObservationIgnored private var syncStarted = false
-    @ObservationIgnored private var operation: (id: UUID, task: Task<Bool, Never>)?
+    @ObservationIgnored private var operation: (id: UUID, task: Task<IOSSyncRunOutcome, Never>)?
     /// Bumped every time `run` starts a new operation, so a scheduled transient retry can
     /// tell whether some other request already ran in the meantime and skip itself.
     @ObservationIgnored private var operationSequence: UInt64 = 0
-    @ObservationIgnored private var pendingRemoteTrigger = false
+    @ObservationIgnored private var pendingRequest = PendingRequest.none
+    /// Watches the network and the iCloud account while sync is enabled. Kept through a
+    /// sign-out, so signing back in resumes sync without a relaunch.
+    @ObservationIgnored private var recoveryTriggers: SyncRecoveryTriggers?
+    @ObservationIgnored private var accountChangeTask: Task<Void, Never>?
     @ObservationIgnored private var transientRetryTask: Task<Void, Never>?
     /// The iCloud account identity resolved this controller lifecycle, so routine foregrounds
     /// don't re-probe it. Cleared in `stop()`.
@@ -360,6 +391,10 @@ final class IOSCloudSyncController {
             service.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: store)
             return service
         },
+        makeRecoveryTriggers: @escaping @MainActor (
+            _ onNetworkRestored: @escaping @MainActor () -> Void,
+            _ onAccountChanged: @escaping @MainActor () -> Void
+        ) -> SyncRecoveryTriggers? = IOSCloudSyncController.makeLiveRecoveryTriggers,
         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.registerForRemoteNotifications()
         },
@@ -373,6 +408,7 @@ final class IOSCloudSyncController {
         self.settings = settings
         self.makeContainer = makeContainer
         self.makeService = makeService
+        self.makeRecoveryTriggers = makeRecoveryTriggers
         self.registerForRemoteNotifications = registerForRemoteNotifications
         self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
         self.transientRetryDelayNanoseconds = transientRetryDelayNanoseconds
@@ -388,7 +424,7 @@ final class IOSCloudSyncController {
         _ = await run(.start(force: force))
     }
 
-    func handleRemoteChange() async -> Bool {
+    func handleRemoteChange() async -> IOSSyncRunOutcome {
         await run(.remote)
     }
 
@@ -404,7 +440,11 @@ final class IOSCloudSyncController {
         syncStarted = false
         transientRetryTask?.cancel()
         transientRetryTask = nil
-        pendingRemoteTrigger = false
+        accountChangeTask?.cancel()
+        accountChangeTask = nil
+        recoveryTriggers?.stop()
+        recoveryTriggers = nil
+        pendingRequest = .none
         cachedAccountIdentity = nil
         operation?.task.cancel()
         operation = nil
@@ -414,49 +454,153 @@ final class IOSCloudSyncController {
         store.markSyncUnavailable(reason: .disabled)
     }
 
-    private func run(_ request: Request, isTransientRetryAttempt: Bool = false) async -> Bool {
+    /// Runs `request`, or, when an operation is already running, remembers what it adds and
+    /// answers with the outcome of the run that serves it. The operation task runs the
+    /// remembered request after its own, so a caller never sees an earlier run's result for
+    /// work that arrived later.
+    private func run(
+        _ request: Request,
+        isTransientRetryAttempt: Bool = false
+    ) async -> IOSSyncRunOutcome {
         if let operation {
-            if case .remote = request {
-                pendingRemoteTrigger = true
-            }
+            remember(request)
             return await operation.task.value
         }
         guard settings.syncEnabled else {
             stop()
-            return false
+            return .failed
         }
+        startRecoveryTriggers()
 
         let generation = lifecycleGeneration
         let operationID = UUID()
         operationSequence &+= 1
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return false }
-            return await self.perform(
+        let task = Task { @MainActor [weak self] () -> IOSSyncRunOutcome in
+            guard let self else { return .failed }
+            var outcome = await self.perform(
                 request,
                 generation: generation,
                 isTransientRetryAttempt: isTransientRetryAttempt
             )
+            while let next = self.takePendingRequest(generation: generation) {
+                self.operationSequence &+= 1
+                outcome = await self.perform(next, generation: generation)
+            }
+            // No suspension since the last check for a remembered request, so one arriving
+            // after this point starts a new operation instead of waiting on a finished one.
+            if self.operation?.id == operationID {
+                self.operation = nil
+            }
+            return outcome
         }
         operation = (operationID, task)
-        let result = await task.value
-        if operation?.id == operationID {
-            operation = nil
+        return await task.value
+    }
+
+    private func remember(_ request: Request) {
+        switch request {
+        case .remote, .foreground(refreshExisting: true):
+            pendingRequest = max(pendingRequest, .remote)
+        case .start(force: true):
+            pendingRequest = .forcedStart
+            clipStoreLog.notice("Forced sync start queued behind running operation")
+        case .foreground(refreshExisting: false), .start(force: false):
+            break
         }
-        if pendingRemoteTrigger {
-            pendingRemoteTrigger = false
-            if settings.syncEnabled {
-                _ = await run(.remote)
+    }
+
+    private func takePendingRequest(generation: UInt64) -> Request? {
+        let pending = pendingRequest
+        pendingRequest = .none
+        guard isActive(generation) else { return nil }
+        switch pending {
+        case .none:
+            return nil
+        case .remote:
+            return .remote
+        case .forcedStart:
+            clipStoreLog.notice("Forced sync start running after the earlier operation")
+            return .start(force: true)
+        }
+    }
+
+    private func startRecoveryTriggers() {
+        guard recoveryTriggers == nil else { return }
+        let triggers = makeRecoveryTriggers(
+            { [weak self] in self?.networkDidReturn() },
+            { [weak self] in self?.accountDidChange() }
+        )
+        triggers?.start()
+        recoveryTriggers = triggers
+    }
+
+    /// Repeats setup if it never completed, otherwise pulls and pushes.
+    private func networkDidReturn() {
+        guard settings.syncEnabled else { return }
+        Task { @MainActor [weak self] in
+            _ = await self?.run(.remote)
+        }
+    }
+
+    /// The account notification also fires for events that are not a switch, so the running
+    /// service is replaced only when the account is gone or its identity differs from the one
+    /// the service was built for. A failed probe (offline) leaves everything as it is.
+    private func accountDidChange() {
+        guard settings.syncEnabled else { return }
+        accountChangeTask?.cancel()
+        let generation = lifecycleGeneration
+        accountChangeTask = Task { @MainActor [weak self] in
+            guard let self, await self.accountChangeRequiresNewService(),
+                  self.isActive(generation) else { return }
+            self.dropServiceForAccountChange()
+            _ = await self.run(.start(force: false))
+        }
+    }
+
+    private func accountChangeRequiresNewService() async -> Bool {
+        guard let probe = makeContainer() else { return false }
+        do {
+            switch Self.accountDecision(for: try await probe.accountStatus()) {
+            case .hardUnavailable, .restricted: return true
+            case .transient: return false
+            case .proceed: break
             }
+            let identity = try await probe.userRecordID().recordName
+            guard sync != nil, syncStarted,
+                  let known = cachedAccountIdentity ?? syncDefaults.string(forKey: Self.accountIdentityDefaultsKey)
+            else { return true }
+            return identity != known
+        } catch {
+            clipStoreLog.info("Could not check the iCloud account after a change: \(error.localizedDescription, privacy: .public)")
+            return false
         }
-        return result
+    }
+
+    /// Drops the service, the container and the cached identity so the next run builds them for
+    /// the account that is signed in now. Unlike `stop()` it keeps push registration and the
+    /// recovery triggers, and it replaces a running operation, which belongs to the old account.
+    private func dropServiceForAccountChange() {
+        lifecycleGeneration &+= 1
+        container = nil
+        cachedAccountIdentity = nil
+        sync?.stop()
+        sync = nil
+        syncStarted = false
+        transientRetryTask?.cancel()
+        transientRetryTask = nil
+        pendingRequest = .none
+        operation?.task.cancel()
+        operation = nil
     }
 
     private func perform(
         _ request: Request,
         generation: UInt64,
         isTransientRetryAttempt: Bool = false
-    ) async -> Bool {
-        guard isActive(generation) else { return false }
+    ) async -> IOSSyncRunOutcome {
+        guard isActive(generation) else { return .failed }
+        // Until the files can be read, the history and settings here are not the user's real ones.
+        guard !store.isAwaitingFirstUnlock else { return .noData }
         if case .remote = request, syncStarted, let sync {
             return await performRemoteChange(using: sync, generation: generation)
         }
@@ -464,24 +608,24 @@ final class IOSCloudSyncController {
         if container == nil {
             container = makeContainer()
         }
-        guard isActive(generation) else { return false }
+        guard isActive(generation) else { return .failed }
         guard let container else {
             tearDownService(
                 status: .unavailable(.notProvisioned),
                 generation: generation
             )
-            return false
+            return .failed
         }
 
         do {
             let status = try await container.accountStatus()
-            guard isActive(generation) else { return false }
+            guard isActive(generation) else { return .failed }
             switch Self.accountDecision(for: status) {
             case .proceed:
                 iCloudSignedOut = false
                 registerForRemoteNotifications()
                 await reconcileAccountIdentity(container: container, generation: generation)
-                guard isActive(generation) else { return false }
+                guard isActive(generation) else { return .failed }
                 restartPullPositionIfHistoryWasMissing()
             case .hardUnavailable(let reason):
                 iCloudSignedOut = true
@@ -489,7 +633,7 @@ final class IOSCloudSyncController {
                     status: .unavailable(reason),
                     generation: generation
                 )
-                return false
+                return .failed
             case .restricted:
                 // The account screen stays up, but says "restricted" rather than "sign in".
                 iCloudSignedOut = true
@@ -497,7 +641,7 @@ final class IOSCloudSyncController {
                     status: .failed(SyncFailure(kind: .accountRestricted)),
                     generation: generation
                 )
-                return false
+                return .failed
             case .transient(let failure):
                 // Keep the service and its push registration: the account is expected back, and
                 // the next foreground refresh or silent push resumes sync without a relaunch.
@@ -509,32 +653,39 @@ final class IOSCloudSyncController {
                 if !isTransientRetryAttempt {
                     scheduleTransientRetry(request: request, generation: generation)
                 }
-                return false
+                return .failed
             }
         } catch {
-            guard isActive(generation) else { return false }
+            guard isActive(generation) else { return .failed }
             clipStoreLog.error("iCloud account lookup failed: \(error.localizedDescription, privacy: .public)")
             tearDownService(
                 status: .failed(CloudKitSyncFailureClassifier.classify(error)),
                 generation: generation
             )
-            return false
+            return .failed
         }
 
-        guard isActive(generation) else { return false }
+        guard isActive(generation) else { return .failed }
         switch request {
         case .foreground(let refreshExisting):
             if refreshExisting, syncStarted, let sync {
                 return await performRemoteChange(using: sync, generation: generation)
             }
             return await performStart(force: false, container: container, generation: generation)
+                ? .noData : .failed
         case .start(let force):
             return await performStart(force: force, container: container, generation: generation)
+                ? .noData : .failed
         case .remote:
+            let existing = sync
+            let fetchedBefore = existing?.fetchedChangesTotal ?? 0
             guard await performStart(force: false, container: container, generation: generation),
                   isActive(generation),
-                  let sync else { return false }
-            return await performRemoteChange(using: sync, generation: generation)
+                  let sync else { return .failed }
+            // A service built or restarted by this run pulled before the remote change below.
+            let fetchedByStart = sync.fetchedChangesTotal - (sync === existing ? fetchedBefore : 0)
+            let outcome = await performRemoteChange(using: sync, generation: generation)
+            return outcome == .noData && fetchedByStart > 0 ? .newData : outcome
         }
     }
 
@@ -560,6 +711,7 @@ final class IOSCloudSyncController {
                 containerIdentifier: Self.containerID,
                 defaults: syncDefaults
             )
+            clipStoreLog.info("iCloud account changed; reset CloudKit sync checkpoints.")
         }
         syncDefaults.set(identity, forKey: Self.accountIdentityDefaultsKey)
         cachedAccountIdentity = identity
@@ -627,11 +779,15 @@ final class IOSCloudSyncController {
     private func performRemoteChange(
         using service: CloudKitSyncService,
         generation: UInt64
-    ) async -> Bool {
-        guard isActive(generation), sync === service else { return false }
-        let changed = await service.handleRemoteChange()
-        guard isActive(generation), sync === service else { return false }
-        return changed
+    ) async -> IOSSyncRunOutcome {
+        guard isActive(generation), sync === service else { return .failed }
+        let outcome = await service.handleRemoteChangeOutcome()
+        guard isActive(generation), sync === service else { return .failed }
+        switch outcome {
+        case .newData: return .newData
+        case .noData: return .noData
+        case .failed: return .failed
+        }
     }
 
     private func isActive(_ generation: UInt64) -> Bool {
@@ -673,6 +829,18 @@ final class IOSCloudSyncController {
         }
     }
 
+    private static func makeLiveRecoveryTriggers(
+        onNetworkRestored: @escaping @MainActor () -> Void,
+        onAccountChanged: @escaping @MainActor () -> Void
+    ) -> SyncRecoveryTriggers? {
+        guard CloudContainerProvisioning.isProvisioned(for: containerID) else { return nil }
+        return SyncRecoveryTriggers(
+            container: CKContainer(identifier: containerID),
+            onNetworkRestored: onNetworkRestored,
+            onAccountChanged: onAccountChanged
+        )
+    }
+
     private static func makeLiveContainer() -> ContainerHandle? {
         guard CloudContainerProvisioning.isProvisioned(for: containerID) else { return nil }
         let container = CKContainer(identifier: containerID)
@@ -699,17 +867,10 @@ struct YankApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        let appGroup = AppGroupContext.live()
-        let store = ClipStore(context: appGroup)
-        let settings = IOSSettings(defaults: appGroup?.defaults)
-        if !store.items.isEmpty {
-            settings.completeCaptureSetup()
-        }
-        _store = State(initialValue: store)
-        _settings = State(initialValue: settings)
-        _syncController = State(
-            initialValue: IOSCloudSyncController(store: store, settings: settings)
-        )
+        let runtime = IOSAppRuntime.shared
+        _store = State(initialValue: runtime.store)
+        _settings = State(initialValue: runtime.settings)
+        _syncController = State(initialValue: runtime.syncController)
     }
 
     private var spotlightEnabled: Bool {
@@ -750,10 +911,6 @@ struct YankApp: App {
                 }
                 .tint(settings.theme.foreground)
                 .task {
-                    let syncController = syncController
-                    appDelegate.remoteChangeHandler = { [weak syncController] in
-                        await syncController?.handleRemoteChange() ?? false
-                    }
                     store.enforceRetentionAndLimit()
                     await refreshForeground()
                     refreshSpotlightIndex()
@@ -814,6 +971,8 @@ struct YankApp: App {
     }
 
     private func refreshForeground() async {
+        // A launch before the first unlock leaves the history unread; the files are readable now.
+        IOSAppRuntime.shared.recoverProtectedStorage()
         await IOSForegroundRefreshPipeline.refresh(
             currentMode: { settings.foregroundCaptureMode },
             drainExplicitCaptures: { await store.drainShareInbox() },
