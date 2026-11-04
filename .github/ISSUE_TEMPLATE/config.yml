@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/The-PatientZero/yank/security/advisories/new
+    about: Report security problems privately, never in a public issue.
+  - name: Help with using Yank
+    url: https://github.com/The-PatientZero/yank/blob/main/SUPPORT.md
+    about: Setup steps for the keyboard, Share Sheet, Shortcuts and iCloud sync.
