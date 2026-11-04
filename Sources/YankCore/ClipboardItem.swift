@@ -1,5 +1,24 @@
 import Foundation
 
+/// When pin, bookmark and tags were each last changed by the user. Sync decides these three
+/// fields one by one with these times, so a pin on one device and a tag on another both survive.
+public struct AnnotationClocks: Codable, Hashable, Sendable {
+    public var pinnedAt: Date
+    public var bookmarkedAt: Date
+    public var tagsAt: Date
+
+    public init(pinnedAt: Date, bookmarkedAt: Date, tagsAt: Date) {
+        self.pinnedAt = pinnedAt
+        self.bookmarkedAt = bookmarkedAt
+        self.tagsAt = tagsAt
+    }
+
+    /// Clocks for a clip that never recorded any: every field counts as changed when the clip last was.
+    public init(allAt date: Date) {
+        self.init(pinnedAt: date, bookmarkedAt: date, tagsAt: date)
+    }
+}
+
 /// Persisted clipboard-history record. Small text stays inline; large text and images
 /// point at blob files. Rich pasteboard archives are macOS-local and not synced.
 public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
@@ -72,6 +91,10 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// multi-MB blobs on every keystroke.
     public let searchIndex: String?
 
+    /// Per-field change times for pin, bookmark and tags. Nil means never recorded (every clip
+    /// before this existed); readers then treat each time as `modifiedAt`.
+    public var annotationClocks: AnnotationClocks?
+
     /// Last-writer-wins sync clock.
     public var modifiedAt: Date
     /// Soft-delete tombstone timestamp; non-nil means the delete should propagate.
@@ -79,7 +102,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// Device identifier that last authored this record.
     public var deviceOrigin: String
 
-    public init(id: UUID = UUID(), type: ClipboardItemType, timestamp: Date = Date(), sourceApp: String? = nil, textContent: String? = nil, textFilename: String? = nil, imageFilename: String? = nil, richFilename: String? = nil, hasRichContent: Bool = false, isPinned: Bool = false, isBookmarked: Bool = false, tags: [String] = [], ocrText: String? = nil, isTruncated: Bool = false, originalSizeBytes: Int? = nil, searchIndex: String? = nil, aiTags: [String] = [], aiTitle: String? = nil, aiEnrichedAt: Date? = nil, modifiedAt: Date? = nil, deletedAt: Date? = nil, deviceOrigin: String = "") {
+    public init(id: UUID = UUID(), type: ClipboardItemType, timestamp: Date = Date(), sourceApp: String? = nil, textContent: String? = nil, textFilename: String? = nil, imageFilename: String? = nil, richFilename: String? = nil, hasRichContent: Bool = false, isPinned: Bool = false, isBookmarked: Bool = false, tags: [String] = [], ocrText: String? = nil, isTruncated: Bool = false, originalSizeBytes: Int? = nil, searchIndex: String? = nil, aiTags: [String] = [], aiTitle: String? = nil, aiEnrichedAt: Date? = nil, modifiedAt: Date? = nil, deletedAt: Date? = nil, deviceOrigin: String = "", annotationClocks: AnnotationClocks? = nil) {
         self.id = id
         self.type = type
         self.timestamp = timestamp
@@ -102,6 +125,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.modifiedAt = modifiedAt ?? timestamp
         self.deletedAt = deletedAt
         self.deviceOrigin = deviceOrigin
+        self.annotationClocks = annotationClocks
     }
 
     enum CodingKeys: String, CodingKey {
@@ -110,6 +134,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         case modifiedAt, deletedAt, deviceOrigin
         case hasRichContent
         case aiTags, aiTitle, aiEnrichedAt
+        case annotationClocks
     }
 
     public init(from decoder: Decoder) throws {
@@ -136,6 +161,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.aiTags = try container.decodeIfPresent([String].self, forKey: .aiTags) ?? []
         self.aiTitle = try container.decodeIfPresent(String.self, forKey: .aiTitle)
         self.aiEnrichedAt = try container.decodeIfPresent(Date.self, forKey: .aiEnrichedAt)
+        self.annotationClocks = try container.decodeIfPresent(AnnotationClocks.self, forKey: .annotationClocks)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -162,6 +188,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         try container.encode(aiTags, forKey: .aiTags)
         try container.encodeIfPresent(aiTitle, forKey: .aiTitle)
         try container.encodeIfPresent(aiEnrichedAt, forKey: .aiEnrichedAt)
+        try container.encodeIfPresent(annotationClocks, forKey: .annotationClocks)
     }
 
     /// Create an inline text clip.
@@ -361,6 +388,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             && modifiedAt == other.modifiedAt
             && deletedAt == other.deletedAt
             && deviceOrigin == other.deviceOrigin
+            && annotationClocks == other.annotationClocks
     }
 }
 

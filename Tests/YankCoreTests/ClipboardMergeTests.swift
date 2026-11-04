@@ -135,12 +135,11 @@ import Foundation
     }
 
     @Test func newerLiveEditResurrectsStaleTombstone() {
-        // Last-writer-wins has no clock-independent way to tell "edited before the delete was
-        // known" from "recreated after": a live copy with a newer modifiedAt always beats an
-        // older tombstone. This is the intended tradeoff — history-deduplication relies on the
-        // same clock to revive a clip when the same text is copied again.
+        // A delete beats an edit made after it, but a clip captured or reused again after the
+        // delete (a later `timestamp`) is new use and comes back: history-deduplication relies on
+        // this to revive a clip when the same text is copied again.
         let staleTomb = item(12, ts: 1000, mod: 1000, deleted: 1000)
-        let newerLive = item(12, ts: 1000, mod: 2000)
+        let newerLive = item(12, ts: 2000, mod: 2000)
         let merged = ClipboardMerge.reconcile([staleTomb], [newerLive])
         #expect(merged.count == 1)
         #expect(!merged[0].isDeleted)

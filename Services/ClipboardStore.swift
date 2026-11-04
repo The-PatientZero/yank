@@ -290,7 +290,7 @@ final class ClipboardStore {
         // matching capture while retaining its stable identity and annotations; older
         // pre-existing duplicates remain untouched for forward-compatible history handling.
         // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
-        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
+        let pendingIDs = pendingDeletionIDs
         guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
             for: item,
             in: items,
@@ -338,7 +338,8 @@ final class ClipboardStore {
             aiEnrichedAt: item.aiEnrichedAt,
             modifiedAt: item.modifiedAt,
             deletedAt: item.deletedAt,
-            deviceOrigin: item.deviceOrigin
+            deviceOrigin: item.deviceOrigin,
+            annotationClocks: item.annotationClocks
         )
     }
 
@@ -485,3 +486,4 @@ final class ClipboardStore {
 extension ClipboardStore: SyncableStore {}
 extension ClipboardStore: SyncEncryptionStatusReporting {}
 extension ClipboardStore: SyncIssueReporting {}
+extension ClipboardStore: PendingDeletionReporting {}

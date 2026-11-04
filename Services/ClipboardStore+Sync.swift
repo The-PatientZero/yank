@@ -65,6 +65,10 @@ extension ClipboardStore {
         encryptionStatus = status
     }
 
+    var pendingDeletionIDs: Set<UUID> {
+        Set(pendingDeletion?.items.map(\.id) ?? [])
+    }
+
     /// Canonical set for the sync transport: live items plus materialised tombstones.
     func itemsForSync() -> [ClipboardItem] {
         items + SyncReconcile.tombstoneItems(tombstones)

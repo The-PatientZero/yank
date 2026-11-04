@@ -12,7 +12,7 @@ let clipStoreLog = Logger(subsystem: "com.thepatientzero.yank", category: "store
 /// Group so the keyboard and share extensions read the same data.
 @MainActor
 @Observable
-final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueReporting {
+final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueReporting, PendingDeletionReporting {
     private struct PendingForegroundTextCapture {
         let pasteboardGeneration: Int
         let item: ClipboardItem
@@ -663,7 +663,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// remains UUID-based; this is invoked only from explicit local capture/ingestion paths.
     private func refreshDuplicateCapture(with incoming: ClipboardItem) -> UUID? {
         // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
-        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
+        let pendingIDs = pendingDeletionIDs
         guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
             for: incoming,
             in: items,
@@ -814,6 +814,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     func markEncryptionStatus(_ status: SyncEncryptionStatus?) {
         encryptionStatus = status
+    }
+
+    var pendingDeletionIDs: Set<UUID> {
+        Set(pendingDeletion?.items.map(\.id) ?? [])
     }
 
     func itemsForSync() -> [ClipboardItem] {

@@ -31,6 +31,16 @@ public protocol SyncableStore: AnyObject {
     func markSyncUnavailable(reason: SyncStatus.Reason)
 }
 
+/// Reports the clips waiting out their undo window. They are still in the sync snapshot as live
+/// clips, so sync needs to know them to keep a pulled duplicate from collapsing into one that
+/// is about to be deleted. A separate protocol so `SyncableStore` stays source compatible: a
+/// store that does not adopt it reports none.
+@MainActor
+public protocol PendingDeletionReporting: AnyObject {
+    /// The IDs of the clips the user deleted that can still be undone.
+    var pendingDeletionIDs: Set<UUID> { get }
+}
+
 public extension SyncableStore {
     /// Default for stores that only offer the blocking variant.
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
