@@ -183,23 +183,23 @@ enum YankMotion {
     }
 
     static func instant(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : expoOut(duration: 0.10)
+        reduceMotion ? nil : expoOut(duration: MotionDuration.instant)
     }
 
     static func quick(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.14)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.quick)
     }
 
     static func state(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.20)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.state)
     }
 
     static func navigation(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.28)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.navigation)
     }
 
     static func present(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : expoOut(duration: 0.24)
+        reduceMotion ? nil : expoOut(duration: MotionDuration.present)
     }
 
     static func shimmer(_ reduceMotion: Bool) -> Animation? {

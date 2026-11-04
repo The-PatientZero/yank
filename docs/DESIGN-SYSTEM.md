@@ -186,7 +186,9 @@ Pills use a `Capsule`, not a radius.
 Intentionally short timings: Yank is a power-user tool, so motion adds tactility without
 slowing keyboard workflows. Every helper returns `nil` under Reduce Motion. Source:
 [`Views/DesignSystem.swift`](../Views/DesignSystem.swift) (`YankMotion`) and
-[`Shared/DesignScale.swift`](../Shared/DesignScale.swift) (`MotionCurve`, `MotionScale`).
+[`Shared/DesignScale.swift`](../Shared/DesignScale.swift) (`MotionDuration`, `MotionCurve`, `MotionScale`).
+The duration tokens are defined once in `MotionDuration`; macOS `YankMotion` and iOS `IOSMotion`
+both read them, so a transition takes the same time on both platforms.
 
 ### Curves (shared control points)
 
