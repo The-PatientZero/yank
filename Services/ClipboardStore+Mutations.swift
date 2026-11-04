@@ -14,7 +14,7 @@ extension ClipboardStore {
         commitPendingDeleteIfNeeded()
         // At enqueue, not at commit: a copy made inside the undo window must not be dropped.
         resetCaptureSuppression()
-        pendingDeletion = PendingDeletion(items: toDelete, enqueuedAt: Date())
+        pendingDeletion = PendingDeletion(items: toDelete)
         Feedback.emit(.delete)
     }
 

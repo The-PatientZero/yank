@@ -655,7 +655,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func softDelete(_ toDelete: [ClipboardItem]) {
         commitPendingDelete()
-        pendingDeletion = PendingDeletion(items: toDelete, enqueuedAt: Date())
+        pendingDeletion = PendingDeletion(items: toDelete)
     }
 
     func undoPendingDelete() {
