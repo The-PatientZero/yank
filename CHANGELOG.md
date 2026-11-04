@@ -17,14 +17,23 @@ and passes that section to `gh release create --notes-file`.
 - Added a Copy button to clip rows and tiles on iPhone, so copying no longer depends on tapping the row.
 - Tapping a clip in Spotlight search now opens that clip in Yank.
 - First sync on a new device now shows how many clips have arrived so far, and files that this device already has are no longer downloaded again.
+- iPhone and iPad now cover the app with a plain screen when you leave Yank, so the app switcher does not show your clips.
+- Added a right-click menu to clips in the Mac history window, and keyboard shortcuts for layouts, Settings, pasting the first nine clips, peeking and undoing a delete. README lists them.
+- The iPhone and iPad first-run screen is now one screen for clipboard access, the ways to save and paste, and the iCloud choice. The Mac welcome window has an iCloud Sync switch.
 
 ### Changed
 
 - On iPhone, Save Clipboard from Shortcuts now puts the text in history and in the keyboard straight away, even if Yank is closed, and sends it to your other devices when iCloud sync is on. The result says exactly what happened: saved, saved with syncing still to finish, or only queued until Yank next opens. The action also takes an optional Text input, which is saved instead of the clipboard, and a missing text now says "No text was received" instead of claiming the clipboard is empty. Text shared from the Share Sheet shows in the keyboard right away; history and iCloud follow the next time Yank opens.
 - The iPhone Share Sheet now saves every item you share, up to ten, and offers Yank for up to ten photos at once. Rich text is saved as readable text, a web page saves its address once, and files are refused with a clear message. A share that fails or only partly works now stays on screen until you tap Done, and says how many items were saved and which were not. Text of only spaces is reported as empty instead of as a storage problem.
-- The iPhone keyboard now narrows your clips with filter chips (All, Pinned, Bookmarked and the kinds of clip you have, such as Links, Code and Email) instead of a search box, because a custom keyboard cannot type into its own text field. Clip rows show their pin, bookmark and tags, and the key that switches to another keyboard stays in a fixed footer so it is always reachable.
+- The iPhone keyboard now narrows your clips with filter chips (All, Pinned, Bookmarked and the kinds of clip you have, such as Links, Code and Email) instead of a search box, because a custom keyboard cannot type into its own text field. The Pinned and Bookmarked chips filter by pin and bookmark, VoiceOver reads each row's pin, bookmark and tags, and the key that switches to another keyboard stays in a fixed footer so it is always reachable.
 - On the Mac, pausing clipboard capture now survives quitting and relaunching, including restarts and update relaunches, until you resume. Before, a relaunch cleared the pause. The setting stays on this Mac and is not synced. If you pause Yank and then go back to an older version, that version captures again, and updating again brings the pause back.
 - Clip text, tags, text recognized in images and the source app are now stored in an end-to-end encrypted iCloud field, which Apple cannot read. While your devices update, Yank keeps a readable copy too. After at least 14 days, and once it has seen no activity from an older version of Yank in the last 60 days, it stops writing readable copies and erases the ones already in iCloud. Settings shows how far this has come. An older version of Yank signed in to the same iCloud account cannot read the encrypted field and shows clips without their text, so update every device. See PRIVACY.md for details.
+
+- Shortening auto-delete now asks you to confirm on Mac and iPhone, because it deletes older clips on every device that syncs.
+- The history window and the Quick Picker now open with the newest clip selected and the search cleared.
+- Paste on the Mac now copies the clip and tells you to press Command-V when Accessibility access is off, instead of prompting for it.
+- The updater now refuses an update archive larger than 128 MB and only accepts update files from the expected GitHub release location.
+- Removed Command-B from the global shortcut presets, because Command-B bookmarks a clip in the history window. A shortcut you already set stays as it is.
 
 ### Fixed
 
@@ -33,6 +42,7 @@ and passes that section to `gh release create --notes-file`.
 - Stopped recording copies that carry the older concealed and transient markers used by 1Password and some text expanders, on Mac and iPhone. Clips an earlier version already stored stay in history.
 - On the Mac, a copy made in an excluded app is no longer recorded when you switch to another app within half a second. A copy is also skipped when the app named in its source hint is excluded; the hint can only add exclusions. iPhone still cannot exclude by app.
 - Auto-delete now waits for iCloud sync to catch up when Yank opens, so a clip you copied again on another device while this one was away is no longer deleted everywhere. Re-saving a shared clip that is older than its last use no longer moves it down in history.
+- Moving the history window or the Quick Picker no longer switches "Open at" to Last position by itself. An install that already has Last position set shows a note under the setting with Restore default and Keep.
 
 ## [1.2.0] - 2026-08-21
 
