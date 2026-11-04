@@ -21,6 +21,9 @@ enum CloudKitDeviceRegistry {
         static let encryptedOnlySince = "encryptedOnlySince"
         static let sweepCompletedAt = "sweepCompletedAt"
         static let olderOrigins = "olderOrigins"
+        /// Last-seen time of each entry in `olderOrigins`, same order. Absent in records written by
+        /// builds that publish only the identifiers.
+        static let olderOriginSeen = "olderOriginSeen"
     }
 
     /// The fields a device publishes about itself. The record name is the device identifier; the
@@ -29,12 +32,24 @@ enum CloudKitDeviceRegistry {
         var encryptedOnlySince: Date?
         var sweepCompletedAt: Date?
         var olderOrigins: [String]
+        /// When each origin in `olderOrigins` was last active, same order. May be shorter than
+        /// `olderOrigins` (or empty) when the record comes from a build that did not publish times.
+        var olderOriginSeen: [Date] = []
+
+        /// When `origin` was last active according to this record, if the record says.
+        func lastSeen(of origin: String) -> Date? {
+            guard let index = olderOrigins.firstIndex(of: origin), olderOriginSeen.indices.contains(index) else {
+                return nil
+            }
+            return olderOriginSeen[index]
+        }
 
         /// Compares the way the server stores the values: dates to the millisecond, the list as a set.
         func matches(_ other: Content) -> Bool {
             Self.milliseconds(encryptedOnlySince) == Self.milliseconds(other.encryptedOnlySince)
                 && Self.milliseconds(sweepCompletedAt) == Self.milliseconds(other.sweepCompletedAt)
                 && Set(olderOrigins) == Set(other.olderOrigins)
+                && olderOrigins.allSatisfy { Self.milliseconds(lastSeen(of: $0)) == Self.milliseconds(other.lastSeen(of: $0)) }
         }
 
         private static func milliseconds(_ date: Date?) -> Int64? {
@@ -68,6 +83,11 @@ enum CloudKitDeviceRegistry {
         record[Key.encryptedOnlySince] = content.encryptedOnlySince
         record[Key.sweepCompletedAt] = content.sweepCompletedAt
         record[Key.olderOrigins] = content.olderOrigins.isEmpty ? nil : Array(content.olderOrigins.prefix(maximumOlderOrigins))
+        // Only written when every published origin has a time, so the two lists stay aligned.
+        let publishedCount = min(content.olderOrigins.count, maximumOlderOrigins)
+        record[Key.olderOriginSeen] = publishedCount > 0 && content.olderOriginSeen.count >= publishedCount
+            ? Array(content.olderOriginSeen.prefix(publishedCount))
+            : nil
         return record
     }
 
@@ -80,7 +100,8 @@ enum CloudKitDeviceRegistry {
             content: Content(
                 encryptedOnlySince: record[Key.encryptedOnlySince] as? Date,
                 sweepCompletedAt: record[Key.sweepCompletedAt] as? Date,
-                olderOrigins: record[Key.olderOrigins] as? [String] ?? []
+                olderOrigins: record[Key.olderOrigins] as? [String] ?? [],
+                olderOriginSeen: record[Key.olderOriginSeen] as? [Date] ?? []
             )
         )
     }

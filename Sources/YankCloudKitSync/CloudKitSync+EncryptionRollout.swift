@@ -356,8 +356,9 @@ extension CloudKitSyncService {
     }
 
     /// Older-device evidence: activity of origins that have no device record, kept past history
-    /// trimming and unioned with what the other devices publish. An origin another device saw but
-    /// this one has no time for is credited now, which can only make the rollout wait longer.
+    /// trimming and unioned with what the other devices publish. An origin another device saw is
+    /// credited with the time that device published, so the window runs from the original activity
+    /// and ends on every device together. Only a record without times is credited now.
     private func updatedOlderOriginEvidence(
         deviceID: String,
         states: [String: CloudKitDeviceRegistry.DeviceState],
@@ -370,7 +371,7 @@ extension CloudKitSyncService {
         }
         for other in states.values where other.deviceID != deviceID {
             for origin in other.content.olderOrigins where !known.contains(origin) && evidence[origin] == nil {
-                evidence[origin] = now
+                evidence[origin] = other.content.lastSeen(of: origin).map { min($0, now) } ?? now
             }
         }
         let window = EncryptionRolloutTiming.activityWindow
@@ -391,11 +392,11 @@ extension CloudKitSyncService {
         let published = olderOrigins
             .sorted { $0.value > $1.value }
             .prefix(CloudKitDeviceRegistry.maximumOlderOrigins)
-            .map(\.key)
         let desired = CloudKitDeviceRegistry.Content(
             encryptedOnlySince: state.encryptedOnlySince,
             sweepCompletedAt: state.sweepCompletedAt,
-            olderOrigins: Array(published)
+            olderOrigins: published.map(\.key),
+            olderOriginSeen: published.map(\.value)
         )
         let existing = devices[deviceID]
         if let existing, existing.state.content.matches(desired) { return }
