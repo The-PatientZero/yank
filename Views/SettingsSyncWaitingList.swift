@@ -1,7 +1,6 @@
 import SwiftUI
 
-// The clips this Mac cannot upload as they are, with the two ways out: keep a clip on this Mac
-// or delete it.
+// Clips this Mac cannot upload: keep one on this Mac or delete it.
 extension SettingsView {
     @ViewBuilder
     func waitingClipsSection(_ store: ClipboardStore) -> some View {

@@ -99,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // and sync) is built only afterwards, so nothing can capture, sync or show history over
         // an unloaded store, and a push that arrives during the load is covered by the pull that
         // starting the controller begins.
+        // Age retention waits for sync to read the synced settings when sync will run, so a stale
+        // local window never deletes clips the user chose to keep from another device.
+        clipboardStore.isRetentionHeldForSettings = settings.syncEnabled
+            && CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID)
         Task { @MainActor in
             await clipboardStore.hydrate()
             let clipboard = ClipboardController(

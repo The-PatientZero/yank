@@ -65,7 +65,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// loading from a genuinely empty one and never flash "No clips" or the onboarding screen.
     private(set) var hasLoaded = false
 
-    private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+    private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned) {
+        didSet { isSyncOff = ClipboardRetention.isSyncOff(syncStatus) }
+    }
+
+    /// Whether sync has reported that it is off. False until it does, however the status starts,
+    /// so a launch with sync on never ages out a delete that has not been pushed yet.
+    @ObservationIgnored private var isSyncOff = false
 
     /// Clip records iCloud has delivered so far in a pull that spans several pages; nil otherwise.
     private(set) var syncClipsReceived: Int?
@@ -169,6 +175,14 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private var prefs: UserDefaults? { appGroupContext?.defaults }
     private var historyLimit: Int { prefs?.integer(forKey: SettingsKeys.historyLimit) ?? 0 }
     private var retentionDays: Int { prefs?.integer(forKey: SettingsKeys.retentionDays) ?? 0 }
+    private var isSyncEnabled: Bool {
+        prefs?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
+    }
+
+    /// Whether sync has read the synced settings in this process. Until it has, age retention
+    /// waits when sync is on: this device's own window can be stale, and a clip expired under it
+    /// is deleted on every device, including clips the user chose to keep from another device.
+    private var hasReadSyncedSettings = false
 
     /// With `deferHistoryLoad` the saved history is not read here: call `hydrate()` and wait for
     /// it before anything captures, syncs or shows the history. The app does this so the load
@@ -711,8 +725,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             items: items,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
-            now: Date()
+            retentionDays: isSyncEnabled && !hasReadSyncedSettings ? 0 : retentionDays,
+            now: Date(),
+            agesOutUnpushedTombstones: isSyncOff
         )
         guard result.didChange else { return }
         blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
@@ -762,6 +777,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     private func recordSyncFailure(message: String, kind: SyncFailureKind?) {
+        // With no usable account no synced setting is coming to wait for.
+        if kind == .signedOut || kind == .accountRestricted {
+            markSyncedSettingsRead()
+        }
         syncStatus = .failed(message: message)
         syncFailureKind = kind
         syncClipsReceived = nil
@@ -775,7 +794,28 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         waitingClips = clips
     }
 
+    /// Sync is about to read the synced settings again, so age retention waits for it once more.
+    func holdRetentionForSettings() {
+        hasReadSyncedSettings = false
+    }
+
+    func markSyncedSettingsRead() {
+        guard !hasReadSyncedSettings else { return }
+        hasReadSyncedSettings = true
+        enforceRetentionAndLimit()
+    }
+
+    func discardAgedTombstones(among acknowledged: Set<UUID>) {
+        guard !isHistoryLoadPending else { return }
+        let kept = ClipboardRetention.prunedTombstones(tombstones, acknowledged: acknowledged, now: Date())
+        guard kept.count != tombstones.count else { return }
+        tombstones = kept
+        persist(notify: false)
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
+        // No sync is running, so no synced setting is coming to wait for.
+        markSyncedSettingsRead()
         syncStatus = .localOnly(reason: reason)
         syncFailureKind = nil
         syncClipsReceived = nil
@@ -785,6 +825,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         }
         waitingClips = []
         encryptionStatus = nil
+        // Nothing will push the deletes now, so the ones past the horizon can go.
+        enforceRetentionAndLimit()
     }
 
     func markEncryptionStatus(_ status: SyncEncryptionStatus?) {

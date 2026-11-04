@@ -87,7 +87,10 @@ extension CloudKitSyncService {
 
     /// Builds the records for live clips. In encrypted-only mode a clip is saved onto the
     /// server's copy with its old readable keys cleared: a fresh record leaves unset server keys
-    /// untouched, so an edit would otherwise leave the previous readable content behind.
+    /// untouched, so an edit would otherwise leave the previous readable content behind. The same
+    /// goes for `deletedAt`: a clip used again after another device deleted it is saved onto the
+    /// server's copy so the tombstone is cleared. In dual-write that applies to a clip without a
+    /// push receipt, which is new or had its receipt dropped by a pull that found it deleted.
     ///
     /// A clip with a push receipt whose file iCloud already holds under the same name is saved
     /// without the file and its names, so a pin, tag or OCR edit sends only the changed fields.
@@ -102,7 +105,7 @@ extension CloudKitSyncService {
         let candidates = items.filter { $0.syncBlobReference != nil && receipts[$0.id] != nil }
         guard policy == .encryptedOnly else {
             let held = try await blobsHeldByServer(among: candidates, generation: generation)
-            return Self.preparePushRecords(
+            let fresh = Self.preparePushRecords(
                 items,
                 in: zoneID,
                 policy: policy,
@@ -110,15 +113,46 @@ extension CloudKitSyncService {
             ) { item in
                 existingBlobURL(for: item)
             }
+            return try await savingOntoServerCopies(
+                fresh,
+                among: Set(items.filter { receipts[$0.id] == nil }.map(\.id)),
+                itemsByID: itemsByID,
+                fileOmittingCandidateIDs: [],
+                policy: policy,
+                generation: generation
+            )
         }
         let fresh = Self.preparePushRecords(items, in: zoneID, policy: policy) { item in
             existingBlobURL(for: item)
         }
-        guard !fresh.records.isEmpty else { return fresh }
-        let candidateIDs = Set(candidates.map(\.id))
-        var records: [PreparedPushRecord] = []
+        return try await savingOntoServerCopies(
+            fresh,
+            among: Set(fresh.records.map(\.itemID)),
+            itemsByID: itemsByID,
+            fileOmittingCandidateIDs: Set(candidates.map(\.id)),
+            policy: policy,
+            generation: generation
+        )
+    }
+
+    /// Fetches the server's copy of the clips in `mergeIDs` and merges each fresh record onto it;
+    /// the other records pass through as they are. A clip whose copy iCloud neither returned nor
+    /// reported missing (a transient per-record failure) is left out and counted as unconfirmed,
+    /// so the push reports a failure and the retry backoff tries it again.
+    private func savingOntoServerCopies(
+        _ fresh: PreparedPushRecords,
+        among mergeIDs: Set<UUID>,
+        itemsByID: [UUID: ClipboardItem],
+        fileOmittingCandidateIDs: Set<UUID>,
+        policy: ClipboardCloudMapping.PlainContentPolicy,
+        generation: UInt64
+    ) async throws -> PreparedPushRecords {
+        let toMerge = fresh.records.filter { mergeIDs.contains($0.itemID) }
+        guard !toMerge.isEmpty else { return fresh }
+        var records = fresh.records.filter { !mergeIDs.contains($0.itemID) }
         records.reserveCapacity(fresh.records.count)
-        for batch in fresh.records.chunked(into: 100) {
+        var unconfirmedCount = 0
+        for batch in toMerge.chunked(into: 100) {
             let fetched = try await database.fetchRecords(
                 for: batch.map { $0.record.recordID.recordName },
                 in: zoneID,
@@ -135,8 +169,14 @@ extension CloudKitSyncService {
             for prepared in batch {
                 let recordName = prepared.record.recordID.recordName
                 if let serverRecord = serverRecords[recordName] {
+                    // A pin, tag or enrichment edit made before this device pulled another
+                    // device's delete does not beat it. Leave the tombstone; the next pull
+                    // delivers the delete here.
+                    if Self.serverDeleteOutranks(prepared.record, serverRecord: serverRecord, clip: itemsByID[prepared.itemID]) {
+                        continue
+                    }
                     var source = prepared
-                    if candidateIDs.contains(prepared.itemID),
+                    if fileOmittingCandidateIDs.contains(prepared.itemID),
                        let item = itemsByID[prepared.itemID],
                        ClipboardCloudMapping.serverHoldsFile(of: item, in: serverRecord),
                        let withoutFile = ClipboardCloudMapping.record(
@@ -162,8 +202,9 @@ extension CloudKitSyncService {
                 } else if fetched.permanentlyMissingRecordNames.contains(recordName) {
                     records.append(prepared)
                 } else {
+                    unconfirmedCount += 1
                     syncLog.info(
-                        "server copy of clip \(recordName, privacy: .public) is not available yet; leaving it for the next push"
+                        "server copy of clip \(recordName, privacy: .public) is not available yet; retrying the push"
                     )
                 }
             }
@@ -171,13 +212,28 @@ extension CloudKitSyncService {
         return PreparedPushRecords(
             records: records,
             skippedItemIDs: fresh.skippedItemIDs,
-            skippedClips: fresh.skippedClips
+            skippedClips: fresh.skippedClips,
+            unconfirmedCount: unconfirmedCount
         )
     }
 
+    /// Whether the server copy is a tombstone that beats the live clip in `fresh`.
+    /// `clip` is the local clip `fresh` was built from; its pin, bookmark and tag times are not
+    /// all readable from a record in encrypted-only mode.
+    private static func serverDeleteOutranks(
+        _ fresh: CKRecord,
+        serverRecord: CKRecord,
+        clip: ClipboardItem?
+    ) -> Bool {
+        guard fresh[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+              let serverDeletedAt = serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date,
+              let clip else { return false }
+        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: serverDeletedAt, live: clip)
+    }
+
     /// Asks iCloud for the file names of the given clips, a batch at a time, and returns the
-    /// ones whose stored file is the file the clip names now. A failed probe only means the file
-    /// is attached again, as it was before this check existed.
+    /// ones whose stored file is the file the clip names. A failed probe only means the file is
+    /// attached again.
     private func blobsHeldByServer(
         among candidates: [ClipboardItem],
         generation: UInt64
@@ -222,17 +278,21 @@ extension CloudKitSyncService {
     /// first launch of an upgraded build, when the rollout is already open, the local change token is
     /// cleared once so the next pull re-reads every record and the heal rule repairs the blanks
     /// from the encrypted copy. Adoption is checked before that pull. Only the local token is
-    /// cleared; nothing on the server changes.
-    func prepareBlankRepairIfNeeded(generation: UInt64) async throws {
+    /// cleared; nothing on the server changes. Returns `false` when the devices zone could not be
+    /// read, so whether the rollout is open is unknown and the caller must leave the repair for
+    /// the next launch.
+    func prepareBlankRepairIfNeeded(generation: UInt64) async throws -> Bool {
         guard rolloutDeviceID != nil,
               !defaults.bool(forKey: encryptedCopyBackfillKey),
-              !rolloutState.blankRepairDone else { return }
+              !rolloutState.blankRepairDone else { return true }
         try await reconcileEncryptionRollout(generation: generation)
-        guard isEncryptedOnly else { return }
+        guard deviceZoneReadSucceeded else { return false }
+        guard isEncryptedOnly else { return true }
         syncLog.info("repairing blank clips from the encrypted copy")
         try persistToken(nil, generation: generation)
         changeToken = nil
         rolloutState.blankRepairDone = true
+        return true
     }
 
     // MARK: - Rollout evaluation
@@ -279,10 +339,12 @@ extension CloudKitSyncService {
             try await database.ensureZone(devicesZoneID)
             let devices = try await fetchDeviceRecords()
             guard canMutate(generation) else { return }
+            deviceZoneReadSucceeded = true
             let evidence = applyRolloutDecision(deviceID: deviceID, devices: devices)
             try await publishOwnDeviceRecord(deviceID: deviceID, devices: devices, olderOrigins: evidence)
         } catch {
             guard canMutate(generation) else { return }
+            deviceZoneReadSucceeded = false
             syncLog.error("could not update device records: \(error.localizedDescription, privacy: .public)")
         }
         guard canMutate(generation) else { return }
@@ -356,8 +418,9 @@ extension CloudKitSyncService {
     }
 
     /// Older-device evidence: activity of origins that have no device record, kept past history
-    /// trimming and unioned with what the other devices publish. An origin another device saw but
-    /// this one has no time for is credited now, which can only make the rollout wait longer.
+    /// trimming and unioned with what the other devices publish. An origin another device saw is
+    /// credited with the time that device published, so the window runs from the original activity
+    /// and ends on every device together. Only a record without times is credited now.
     private func updatedOlderOriginEvidence(
         deviceID: String,
         states: [String: CloudKitDeviceRegistry.DeviceState],
@@ -369,8 +432,12 @@ extension CloudKitSyncService {
             evidence[item.deviceOrigin] = max(evidence[item.deviceOrigin] ?? .distantPast, item.modifiedAt)
         }
         for other in states.values where other.deviceID != deviceID {
-            for origin in other.content.olderOrigins where !known.contains(origin) && evidence[origin] == nil {
-                evidence[origin] = now
+            for origin in other.content.olderOrigins where !known.contains(origin) {
+                if let seen = other.content.lastSeen(of: origin) {
+                    evidence[origin] = max(evidence[origin] ?? .distantPast, min(seen, now))
+                } else if evidence[origin] == nil {
+                    evidence[origin] = now
+                }
             }
         }
         let window = EncryptionRolloutTiming.activityWindow
@@ -391,11 +458,11 @@ extension CloudKitSyncService {
         let published = olderOrigins
             .sorted { $0.value > $1.value }
             .prefix(CloudKitDeviceRegistry.maximumOlderOrigins)
-            .map(\.key)
         let desired = CloudKitDeviceRegistry.Content(
             encryptedOnlySince: state.encryptedOnlySince,
             sweepCompletedAt: state.sweepCompletedAt,
-            olderOrigins: Array(published)
+            olderOrigins: published.map(\.key),
+            olderOriginSeen: published.map(\.value)
         )
         let existing = devices[deviceID]
         if let existing, existing.state.content.matches(desired) { return }
@@ -501,6 +568,8 @@ extension CloudKitSyncService {
             syncLog.info("erasing readable copy of clip \(erasure.record.recordID.recordName, privacy: .public)")
             erasures.append(erasure)
         }
+        var replayCount = 0
+        var replayFailure: SyncFailure?
         for batch in erasures.chunked(into: 100) {
             let result: CloudKitRecordSaveResult
             do {
@@ -516,16 +585,35 @@ extension CloudKitSyncService {
             if result.encryptedDataKeyWasReset {
                 noteEncryptedDataKeyReset(during: "erase")
             }
-            let notSaved = Set(result.failedRecordNames).union(result.conflictedRecordNames)
+            let failed = Set(result.failedRecordNames)
+            let conflicted = Set(result.conflictedRecordNames)
             var erased = rolloutState.erasedVersions
             for erasure in batch {
                 let recordName = erasure.record.recordID.recordName
-                if notSaved.contains(recordName) {
+                if failed.contains(recordName) {
+                    // Only a conflict is guaranteed to come back in the change feed. A record that
+                    // failed to save would never be read again once the token moves on, so the
+                    // page is replayed, a bounded number of times.
+                    let attempts = readableCopyEraseAttempts[recordName, default: 0] + 1
+                    readableCopyEraseAttempts[recordName] = attempts
+                    if attempts < PlaintextSweepLimits.attemptLimit {
+                        replayCount += 1
+                        replayFailure = replayFailure ?? result.failure
+                        syncLog.info(
+                            "readable copy of clip \(recordName, privacy: .public) could not be erased; the page is replayed"
+                        )
+                    } else {
+                        syncLog.error(
+                            "gave up erasing the readable copy of clip \(recordName, privacy: .public) after repeated failures"
+                        )
+                    }
+                } else if conflicted.contains(recordName) {
                     syncLog.info(
-                        "readable copy of clip \(recordName, privacy: .public) changed or could not be erased; the next pull looks again"
+                        "readable copy of clip \(recordName, privacy: .public) changed; the next pull looks again"
                     )
                 } else {
                     erased[recordName] = erasure.version
+                    readableCopyEraseAttempts[recordName] = nil
                 }
             }
             rolloutState.erasedVersions = Self.prunedErasedVersions(erased)
@@ -534,6 +622,9 @@ extension CloudKitSyncService {
             #endif
         }
         publishEncryptionStatus()
+        if replayCount > 0 {
+            throw CloudKitSyncError.partialRecordSaves(replayCount, replayFailure)
+        }
     }
 
     func forgetErasedVersion(of recordName: String) {

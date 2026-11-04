@@ -26,8 +26,13 @@ enum ClipboardRetention {
     /// `days <= 0` disables expiry. Protected items are never expired.
     static func expiredItems(_ items: [ClipboardItem], olderThanDays days: Int, now: Date) -> [ClipboardItem] {
         guard days > 0 else { return [] }
-        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+        let cutoff = retentionCutoff(days: days, now: now)
         return items.filter { !$0.isProtected && $0.timestamp < cutoff }
+    }
+
+    /// Clips captured before this moment are older than `days`.
+    private static func retentionCutoff(days: Int, now: Date) -> Date {
+        now.addingTimeInterval(-Double(days) * 86_400)
     }
 
     /// Trim to the newest `limit` clips, always keeping protected (pinned / bookmarked
@@ -96,11 +101,18 @@ enum ClipboardRetention {
         tombstones: [UUID: Date],
         historyLimit: Int,
         retentionDays: Int,
-        now: Date
+        now: Date,
+        agesOutUnpushedTombstones: Bool = false
     ) -> EnforcementResult {
         let originalItems = items
         var nextItems = items
-        var nextTombstones = tombstones
+        // With sync on, deletes are not aged out here: one dated past the horizon (a clip last
+        // used long ago) must be kept until iCloud has taken it, see
+        // `prunedTombstones(_:acknowledged:now:)`. With sync off nothing can push them, so they
+        // age out here. Only deletes recorded before this pass do, so one created below and dated
+        // past the horizon survives until the next pass.
+        var nextTombstones = agesOutUnpushedTombstones ? prunedTombstones(tombstones, now: now) : tombstones
+        let prunedCount = tombstones.count - nextTombstones.count
         var expired: [ClipboardItem] = []
 
         if retentionDays > 0 {
@@ -112,8 +124,8 @@ enum ClipboardRetention {
                     now: now
                 )
                 nextItems = result.items
-                for (id, date) in result.tombstones {
-                    nextTombstones[id] = date
+                for item in expired {
+                    nextTombstones[item.id] = expiryTombstoneDate(for: item)
                 }
             }
         }
@@ -125,17 +137,29 @@ enum ClipboardRetention {
             capped = result.removedItems
         }
 
-        let beforePruneCount = nextTombstones.count
-        nextTombstones = prunedTombstones(nextTombstones, now: now)
-
         return EnforcementResult(
             items: nextItems,
             tombstones: nextTombstones,
             expiredItems: expired,
             cappedItems: capped,
             blobReferencesToDelete: ClipboardBlobCleanup.referencesRemoved(from: originalItems, keeping: nextItems),
-            prunedTombstoneCount: beforePruneCount - nextTombstones.count
+            prunedTombstoneCount: prunedCount
         )
+    }
+
+    /// When the delete for an expired clip is dated. Not `now`: a device that was off expires clips
+    /// from an old history, and a delete dated `now` would beat a copy another device used again
+    /// meanwhile. It is dated just past the newest time this device recorded for the clip
+    /// (capture, edit, pin, bookmark, tags), so a later use or protection elsewhere outranks it. For
+    /// a very old clip it may already be past the tombstone horizon; it is still kept and pushed,
+    /// and ages out once iCloud has taken it.
+    static func expiryTombstoneDate(for item: ClipboardItem) -> Date {
+        var clocks = [item.timestamp, item.modifiedAt]
+        if let annotation = item.annotationClocks {
+            clocks += [annotation.pinnedAt, annotation.bookmarkedAt, annotation.tagsAt]
+        }
+        let newestClock = clocks.max() ?? item.modifiedAt
+        return newestClock.addingTimeInterval(ClipboardMerge.mergeBumpInterval)
     }
 
     // MARK: - Tombstone Age-Out
@@ -153,5 +177,26 @@ enum ClipboardRetention {
         // is exactly `horizonDays` old (date == cutoff, age == horizon) ages out, matching the
         // `now - date >= horizon` rule above.
         return tombstones.filter { $0.value > cutoff }
+    }
+
+    /// Ages out only the deletes past the horizon that iCloud has acknowledged. One not yet pushed
+    /// is kept however old it is, because dropping it would leave the clip on the server for good.
+    static func prunedTombstones(
+        _ tombstones: [UUID: Date],
+        acknowledged: Set<UUID>,
+        now: Date
+    ) -> [UUID: Date] {
+        let young = prunedTombstones(tombstones, now: now)
+        return tombstones.filter { young[$0.key] != nil || !acknowledged.contains($0.key) }
+    }
+
+    /// Whether sync is switched off or unavailable on this build, so nothing will push a delete
+    /// and `enforce` may age them out itself. A signed-out account is not included: it can come
+    /// back, and the deletes made meanwhile must still reach iCloud.
+    static func isSyncOff(_ status: SyncStatus) -> Bool {
+        switch status {
+        case .localOnly(reason: .disabled), .localOnly(reason: .notProvisioned): true
+        case .localOnly(reason: .notAuthenticated), .syncing, .healthy, .failed: false
+        }
     }
 }

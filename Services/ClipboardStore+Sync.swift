@@ -25,6 +25,10 @@ extension ClipboardStore {
 
     func markSyncFailure(_ failure: SyncFailure) {
         setSyncState(.failed(message: failure.message), failureKind: failure.kind)
+        // With no usable account no synced setting is coming to wait for.
+        if failure.kind == .signedOut || failure.kind == .accountRestricted {
+            isRetentionHeldForSettings = false
+        }
     }
 
     func markClipsWaiting(_ clips: [SyncWaitingClip]) {
@@ -48,10 +52,26 @@ extension ClipboardStore {
         NotificationCenter.default.post(name: .yankSyncStatusChanged, object: nil)
     }
 
+    func markSyncedSettingsRead() {
+        isRetentionHeldForSettings = false
+    }
+
+    func discardAgedTombstones(among acknowledged: Set<UUID>) {
+        guard !isHistoryLoadPending else { return }
+        let kept = ClipboardRetention.prunedTombstones(tombstones, acknowledged: acknowledged, now: Date())
+        guard kept.count != tombstones.count else { return }
+        tombstones = kept
+        persist(notify: false)
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
+        // No sync is running, so no synced setting is coming to wait for.
+        isRetentionHeldForSettings = false
         encryptionStatus = nil
         waitingClips = []
         setSyncState(.localOnly(reason: reason), failureKind: nil)
+        // Nothing will push the deletes now, so the ones past the horizon can go.
+        pruneExpired()
     }
 
     /// Puts back a state captured before a manual sync that ended without reporting anything.

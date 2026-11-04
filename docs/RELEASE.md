@@ -53,8 +53,16 @@ The device record is a separate step, because it is a new record type rather tha
 1. Run a Debug build against Development with iCloud sync on. It saves one `DeviceSyncFormat`
    record, named with the install's device ID, in the zone `YankDevicesZone`.
 2. In CloudKit Console (Development), confirm the record type `DeviceSyncFormat` exists with
-   its four fields: `encryptedFormat`, `encryptedOnlySince`, `sweepCompletedAt` and
-   `olderOrigins`. To see all four, run the proof that opens the rollout and finishes the sweep.
+   its five fields: `encryptedFormat`, `encryptedOnlySince`, `sweepCompletedAt`, `olderOrigins`
+   and `olderOriginSeen`. `encryptedFormat` appears with the first save. `encryptedOnlySince`
+   and `sweepCompletedAt` appear once the rollout opens and the sweep finishes. `olderOrigins`
+   and `olderOriginSeen` (a list of dates) appear only when a device record is saved that names
+   an older origin, meaning clips from a device that has no device record. To reach those states
+   without waiting days, launch the Debug build with the arguments in
+   `Sources/YankCloudKitSync/DebugRolloutOverrides.swift`, for example
+   `-yankRolloutSoakSeconds 30 -yankLegacyActivityWindowSeconds 30
+   -yankRolloutEvaluationIntervalSeconds 10`. A field missing from Development will be
+   missing from Production too, because the next step deploys what Development has.
 3. Deploy the Development schema to Production and confirm `DeviceSyncFormat` appears there.
    Without it, device records fail to save, the encrypted-only rollout never opens, and clip
    sync is otherwise unaffected.

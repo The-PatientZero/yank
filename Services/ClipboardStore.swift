@@ -44,7 +44,13 @@ final class ClipboardStore {
     /// quit. Surfaced for the UI to warn the user; never silently swallowed.
     private(set) var storageUnavailable = false
 
-    var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+    var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned) {
+        didSet { isSyncOff = ClipboardRetention.isSyncOff(syncStatus) }
+    }
+
+    /// Whether sync has reported that it is off. False until it does, however the status starts,
+    /// so a launch with sync on never ages out a delete that has not been pushed yet.
+    @ObservationIgnored private(set) var isSyncOff = false
 
     /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
     var syncFailureKind: SyncFailureKind?
@@ -113,6 +119,16 @@ final class ClipboardStore {
     /// running it every capture is wasted work — gated to at most once per `expirySweepInterval`.
     /// Explicit triggers (settings change, retention notification, launch) bypass the gate.
     @ObservationIgnored private var lastExpirySweep: Date = .distantPast
+
+    /// While true, age retention waits until sync has read the synced settings once in this
+    /// process. This device's own retention window can be stale: a clip expired under it is
+    /// deleted on every device, including clips the user chose to keep from another device.
+    /// Set before the history loads; clearing it runs the pass that was held back.
+    @ObservationIgnored var isRetentionHeldForSettings = false {
+        didSet {
+            if oldValue, !isRetentionHeldForSettings { pruneExpired() }
+        }
+    }
 
     /// Minimum spacing between capture-path expiry sweeps. Retention is a day-granularity
     /// policy, so a one-minute floor is imperceptible while collapsing a burst of captures
@@ -201,9 +217,11 @@ final class ClipboardStore {
     }
 
     /// One-shot sweep for blob files a reconcile's deferred delete missed — a crash between the
-    /// durable flush and the file delete leaves them behind for good. Runs in `init`, before the
-    /// watcher or sync can write a blob, so an in-flight capture can never look orphaned.
+    /// durable flush and the file delete leaves them behind for good. Runs once the history has
+    /// loaded, before the watcher or sync can write a blob, so an in-flight capture can never look
+    /// orphaned. Skipped when the load failed: every blob would look orphaned.
     private func sweepOrphanedBlobsAtLaunch() {
+        guard !historyWritesDisabled else { return }
         guard let present = blobStore.allBlobReferences() else { return }
         let referenced = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
         let orphaned = present.subtracting(referenced)
@@ -395,8 +413,9 @@ final class ClipboardStore {
             items: items,
             tombstones: tombstones,
             historyLimit: maxItems,
-            retentionDays: captureSettings.retentionDays,
-            now: now
+            retentionDays: isRetentionHeldForSettings ? 0 : captureSettings.retentionDays,
+            now: now,
+            agesOutUnpushedTombstones: isSyncOff
         )
         guard result.didChange else { return false }
         blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)

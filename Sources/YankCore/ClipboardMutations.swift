@@ -103,7 +103,8 @@ enum ClipboardMutations {
         let refreshed = ClipboardItem(
             id: existing.id,
             type: incoming.type,
-            timestamp: incoming.timestamp,
+            // A queued capture can be older than the clip's last use; neither clock moves back.
+            timestamp: max(existing.timestamp, incoming.timestamp),
             sourceApp: incoming.sourceApp,
             textContent: incoming.textContent,
             textFilename: incoming.textFilename,
@@ -120,7 +121,7 @@ enum ClipboardMutations {
             aiTags: existing.aiTags,
             aiTitle: existing.aiTitle,
             aiEnrichedAt: existing.aiEnrichedAt,
-            modifiedAt: incoming.modifiedAt,
+            modifiedAt: max(existing.modifiedAt, incoming.modifiedAt),
             deletedAt: incoming.deletedAt,
             deviceOrigin: incoming.deviceOrigin,
             annotationClocks: existing.annotationClocks ?? AnnotationClocks(allAt: existing.modifiedAt)

@@ -1,37 +1,12 @@
 import Foundation
 
-/// Pure keyboard-extension search/index helper. The extension renders only text clips, scanning
-/// and normalizing lazily up to the result limit, so the memory-constrained keyboard never holds
-/// a second copy of the history's text (the store already holds it once).
+/// Pure keyboard-extension list helper. The extension renders only text clips and works from the
+/// history the host already loaded, so the memory-constrained keyboard never holds a second copy
+/// of the history's text (the store already holds it once).
 enum KeyboardClipSearch {
     /// Live text clips, order preserved, including preview-only ones (listed but not insertable).
-    /// Used to decide whether the keyboard has anything to show before building the search UI.
+    /// Used to decide whether the keyboard has anything to show and to build its filtered lists.
     static func listableItems(from items: [ClipboardItem]) -> [ClipboardItem] {
         items.filter { !$0.isDeleted && $0.textContent != nil }
-    }
-
-    static func results(
-        from items: [ClipboardItem],
-        query: String,
-        emptyLimit: Int,
-        searchLimit: Int
-    ) -> [ClipboardItem] {
-        let normalizedQuery = normalize(query.trimmingCharacters(in: .whitespacesAndNewlines))
-        let limit = max(0, normalizedQuery.isEmpty ? emptyLimit : searchLimit)
-        guard limit > 0 else { return [] }
-
-        let insertable = items.lazy.filter { !$0.isDeleted && $0.textContent != nil }
-        if normalizedQuery.isEmpty {
-            return Array(insertable.prefix(limit))
-        }
-        return Array(
-            insertable
-                .filter { normalize($0.textContent ?? "").contains(normalizedQuery) }
-                .prefix(limit)
-        )
-    }
-
-    private static func normalize(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 }

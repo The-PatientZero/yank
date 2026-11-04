@@ -24,7 +24,7 @@ final class IOSAppRuntime {
         self.store = store
         self.settings = settings
         self.syncController = IOSCloudSyncController(store: store, settings: settings)
-        // A bonus: the foreground path calls `recoverProtectedStorage()` too and is the one to rely on.
+        // Best effort; the foreground path calls `recoverProtectedStorage()` too and is the one to rely on.
         protectedDataObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.protectedDataDidBecomeAvailableNotification,
             object: nil,
@@ -36,9 +36,14 @@ final class IOSAppRuntime {
         }
     }
 
-    /// What the app delegate runs for a CloudKit push.
+    /// What the app delegate runs for a CloudKit push. Settles the settings first: a process
+    /// started in the background before the first unlock would otherwise keep the empty defaults,
+    /// read sync as off and turn it off.
     var remoteChangeHandler: () async -> IOSSyncRunOutcome {
-        { [syncController] in await syncController.handleRemoteChange() }
+        { [self] in
+            await hydrate()
+            return await syncController.handleRemoteChange()
+        }
     }
 
     /// Reads the saved history off the main thread, then lets the settings seed what is missing

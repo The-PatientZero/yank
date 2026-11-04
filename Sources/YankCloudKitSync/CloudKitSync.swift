@@ -152,9 +152,14 @@ public final class CloudKitSyncService {
     weak var encryptionStatusReporter: (any SyncEncryptionStatusReporting)?
     var lastRolloutEvaluation: Date?
     var rolloutReevaluationRequested = false
+    /// Whether the last rollout evaluation could read the devices zone; `false` until one has.
+    var deviceZoneReadSucceeded = false
     var activeRolloutEvaluation: (id: UUID, task: Task<Void, Never>)?
     var activeSweep: (id: UUID, task: Task<Void, Never>)?
     var loggedBlankClipIDs: Set<UUID> = []
+    /// Failed saves per clip of the erase of its readable copy, so a clip that keeps failing stops
+    /// holding its page back after a few attempts. Kept in memory: a relaunch starts counting again.
+    var readableCopyEraseAttempts: [String: Int] = [:]
 
     /// Live entry point: binds to the container's private database. `CKContainer(identifier:)`
     /// hard-traps on a binary not provisioned for the container, so callers must gate on
@@ -363,8 +368,11 @@ public final class CloudKitSyncService {
             // Bring-up always reconciles the settings record, which is what recovers a record
             // an earlier build could not read and one this device never managed to publish.
             settingsReconciliationPending = true
-            try await prepareBlankRepairIfNeeded(generation: generation)
-            try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
+            // The backfill marker ends the blank repair for good, so it waits until the repair could
+            // tell whether the rollout is open.
+            if try await prepareBlankRepairIfNeeded(generation: generation) {
+                try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
+            }
             try await coalescedPull(generation: generation)
             try requireActive(generation)
             // Before observers and the first push, so nothing is built in the wrong write mode.
@@ -698,9 +706,9 @@ public final class CloudKitSyncService {
 
     /// The lowest history limit this device has applied since its change token last started
     /// from nothing; the clips above it were trimmed here and are still in iCloud. A device from
-    /// a build that predates the marker is assumed to have been trimmed to the default limit,
-    /// which repairs devices that were already affected. `nil` while there is no token to
-    /// describe, because the next pull starts from nothing and records the limit itself.
+    /// a build that predates the marker is assumed to have been trimmed to the default limit.
+    /// `nil` while there is no token to describe, because the next pull starts from nothing and
+    /// records the limit itself.
     private func historyCoverage() -> Int? {
         if let stored = defaults.object(forKey: historyCoverageKey) as? Int { return stored }
         return changeToken == nil ? nil : HistoryLimit.essential.rawValue
@@ -807,9 +815,11 @@ public final class CloudKitSyncService {
         var moreComing = true
         var isFirstPage = true
         var reportsProgress = false
-        // A pull from nothing needs every file, so it asks for full records. A pull from a saved
-        // position asks for the fields only, until too many of its records need the file.
-        var asksForFullRecords = startedFromNothing
+        // A pull from nothing on a device with no history needs every file, so it asks for full
+        // records. Any other pull, including a refetch from the start on a device that already
+        // holds its files, asks for the fields only and fetches the missing files per record,
+        // until too many of its records need the file.
+        var asksForFullRecords = startedFromNothing && store.itemsForSync().isEmpty
         var fetchedChanges = 0
         var changedHistory = 0
         var clipsDelivered = 0
@@ -1070,9 +1080,9 @@ public final class CloudKitSyncService {
 
     /// Decides which records of a page that came without files can be used as delivered. A clip
     /// is known present only when this device holds the same file, the local clip names it and a
-    /// push receipt says iCloud accepted the clip; anything less asks for the full record, which
-    /// is what a pull has always done. A live clip with no readable content at all is fetched in
-    /// full too, in case the page left out the encrypted copy.
+    /// push receipt says iCloud accepted the clip; anything less asks for the full record. A live
+    /// clip with no readable content at all is fetched in full too, in case the page left out the
+    /// encrypted copy.
     private func planMetadataPage(_ records: [CKRecord], store: SyncableStore) -> MetadataPagePlan {
         var plan = MetadataPagePlan()
         let localByID = Dictionary(
@@ -1475,7 +1485,7 @@ public final class CloudKitSyncService {
             return false
         }
         guard let deletedAt = localWinner.deletedAt else { return false }
-        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: deletedAt, liveTimestamp: remoteItem.timestamp)
+        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: deletedAt, live: remoteItem)
     }
 
     private nonisolated static func isExpiredChangeTokenError(_ error: any Error) -> Bool {
@@ -1569,6 +1579,7 @@ public final class CloudKitSyncService {
         var clipError: (any Error)?
         do {
             try await pushLocalClips(store: store, generation: generation)
+            discardAgedAcknowledgedTombstones(from: store, generation: generation)
         } catch {
             clipError = error
         }
@@ -1637,11 +1648,13 @@ public final class CloudKitSyncService {
             try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
             return
         }
-        let recordsToSave = prepared.records + tombstoneRecords
+        let recordsToSave = prepared.records + tombstoneRecords.records
         guard !recordsToSave.isEmpty else {
-            if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
-                try persistPushReceipts(garbageCollectedReceipts, generation: generation)
+            let settledReceipts = garbageCollectedReceipts.merging(tombstoneRecords.settled) { _, settled in settled }
+            if isReceiptMigration || settledReceipts != existingReceipts {
+                try persistPushReceipts(settledReceipts, generation: generation)
             }
+            try throwIfUnconfirmed(prepared)
             return
         }
 
@@ -1650,7 +1663,8 @@ public final class CloudKitSyncService {
         syncLog.notice(
             "Sync push (records: \(recordsToSave.count, privacy: .public), without a file: \(withoutFileCount, privacy: .public))"
         )
-        var committedReceipts = existingReceipts
+        // Deletes the server already holds count as pushed, so they stop being retried and can age out.
+        var committedReceipts = existingReceipts.merging(tombstoneRecords.settled) { _, settled in settled }
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
         do {
@@ -1670,18 +1684,39 @@ public final class CloudKitSyncService {
         #if DEBUG
         await logRecordShapes(for: recordsToSave.map(\.record.recordID.recordName))
         #endif
+        try throwIfUnconfirmed(prepared)
+    }
+
+    /// Lets the store age out the deletes past the tombstone horizon that iCloud now holds. A delete
+    /// counts as held when its receipt carries its own date; one left unsent never does.
+    private func discardAgedAcknowledgedTombstones(from store: SyncableStore, generation: UInt64) {
+        guard canMutate(generation), let receipts = pushReceipts else { return }
+        let acknowledged = Set(
+            store.itemsForSync().filter { $0.isDeleted && receipts[$0.id] == $0.modifiedAt }.map(\.id)
+        )
+        store.discardAgedTombstones(among: acknowledged)
+    }
+
+    /// Fails the push for clips that were left out because their server copy could not be read,
+    /// so the retry backoff uploads them instead of the sync reporting healthy over a missing clip.
+    private func throwIfUnconfirmed(_ prepared: PreparedPushRecords) throws {
+        guard prepared.unconfirmedCount == 0 else {
+            throw CloudKitSyncError.partialRecordFailures(prepared.unconfirmedCount)
+        }
     }
 
     /// Tombstones save onto the server's fetched record: only assignments on a fetched record
     /// mark `.changedKeys`, erasing the clip's content/asset. A record the server never had gets
     /// a minimal tombstone directly; one merely not handed over yet stays unsent, not downgraded.
+    /// A delete the server already holds, equal or newer and without content, needs no save: it
+    /// comes back as `settled` so the caller keeps its receipt.
     private func prepareTombstonePushRecords(
         _ tombstones: [ClipboardItem],
         generation: UInt64
-    ) async throws -> [PreparedPushRecord] {
-        guard !tombstones.isEmpty else { return [] }
-        var records: [PreparedPushRecord] = []
-        records.reserveCapacity(tombstones.count)
+    ) async throws -> PreparedTombstones {
+        guard !tombstones.isEmpty else { return PreparedTombstones() }
+        var prepared = PreparedTombstones()
+        prepared.records.reserveCapacity(tombstones.count)
         let itemsByRecordName = Dictionary(
             tombstones.map { ($0.id.uuidString, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -1699,8 +1734,26 @@ public final class CloudKitSyncService {
             for recordName in batch {
                 guard let item = itemsByRecordName[recordName] else { continue }
                 if let serverRecord = serverRecords[recordName] {
+                    // A copy another device used again or protected since this delete was dated
+                    // outranks it. Erasing that copy would lose its content for every device, so
+                    // the tombstone stays unsent and no receipt is kept; the next pull delivers
+                    // the live copy here, and it replaces the tombstone.
+                    if Self.liveServerCopyOutranks(item, serverRecord: serverRecord) { continue }
+                    // A server tombstone newer than this one already stands. Overwriting it would
+                    // lower the delete date, so the local one stays unsent and the next pull
+                    // brings the server's tombstone here. One as new as this one is overwritten
+                    // only to erase content it still carries; otherwise it stands as the push.
+                    switch Self.serverTombstoneStanding(against: item, serverRecord: serverRecord) {
+                    case .older, .sameDateHoldingContent:
+                        break
+                    case .newerHoldingContent:
+                        continue
+                    case .settled:
+                        prepared.settled[item.id] = item.modifiedAt
+                        continue
+                    }
                     ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
-                    records.append(PreparedPushRecord(
+                    prepared.records.append(PreparedPushRecord(
                         itemID: item.id,
                         record: serverRecord,
                         modifiedAt: item.modifiedAt
@@ -1709,7 +1762,7 @@ public final class CloudKitSyncService {
                     guard let record = ClipboardCloudMapping.record(from: item, in: zoneID) else {
                         continue
                     }
-                    records.append(PreparedPushRecord(
+                    prepared.records.append(PreparedPushRecord(
                         itemID: item.id,
                         record: record,
                         modifiedAt: item.modifiedAt
@@ -1717,7 +1770,59 @@ public final class CloudKitSyncService {
                 }
             }
         }
-        return records
+        return prepared
+    }
+
+    /// How the server record stands against the local delete `tombstone`.
+    enum ServerTombstoneStanding: Equatable {
+        /// The record is live, or a tombstone dated before the local one: the local delete is saved.
+        case older
+        /// A tombstone with the same date that still carries content: saved again to erase it.
+        case sameDateHoldingContent
+        /// A tombstone dated after the local one that still carries content: left as it is.
+        case newerHoldingContent
+        /// A tombstone dated the same or later with no content: it already says what the local one does.
+        case settled
+    }
+
+    nonisolated static func serverTombstoneStanding(
+        against tombstone: ClipboardItem,
+        serverRecord: CKRecord
+    ) -> ServerTombstoneStanding {
+        guard let serverDeletedAt = serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date else {
+            return .older
+        }
+        let localDeletedAt = tombstone.deletedAt ?? tombstone.modifiedAt
+        guard serverDeletedAt >= localDeletedAt else { return .older }
+        guard serverTombstoneHoldsContent(serverRecord) else { return .settled }
+        return serverDeletedAt > localDeletedAt ? .newerHoldingContent : .sameDateHoldingContent
+    }
+
+    /// Whether a server tombstone still carries a clip's encrypted or readable content, as a
+    /// delete from an older build leaves it.
+    private nonisolated static func serverTombstoneHoldsContent(_ serverRecord: CKRecord) -> Bool {
+        if ClipboardCloudMapping.encryptedRefreshReason(for: serverRecord) == .tombstoneHoldsContent {
+            return true
+        }
+        return [
+            ClipboardCloudMapping.Key.textContent,
+            ClipboardCloudMapping.Key.textFilename,
+            ClipboardCloudMapping.Key.imageFilename,
+            ClipboardCloudMapping.Key.blob
+        ].contains { serverRecord[$0] != nil }
+    }
+
+    /// Whether the server's copy is a live clip that beats the local delete `tombstone`.
+    private nonisolated static func liveServerCopyOutranks(
+        _ tombstone: ClipboardItem,
+        serverRecord: CKRecord
+    ) -> Bool {
+        guard serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+              let serverCopy = ClipboardCloudMapping.item(from: serverRecord) else { return false }
+        return !ClipboardMerge.deleteOutranksLiveCopy(
+            deletedAt: tombstone.deletedAt ?? tombstone.modifiedAt,
+            live: serverCopy
+        )
     }
 
     // MARK: - Synced settings
@@ -1763,7 +1868,11 @@ public final class CloudKitSyncService {
     /// a genuine mid-flight race rather than the guaranteed cost of every publish.
     private func reconcileSettings(generation: UInt64) async throws {
         try requireActive(generation)
-        guard settingsStore?.syncedSettings != nil else { return }
+        guard settingsStore?.syncedSettings != nil else {
+            // Nothing synced to read, so nothing for the store to wait on.
+            store?.markSyncedSettingsRead()
+            return
+        }
 
         for _ in 0..<Self.maximumSettingsSaveAttempts {
             try requireActive(generation)
@@ -1777,10 +1886,12 @@ public final class CloudKitSyncService {
             ) {
             case .idle:
                 settingsReconciliationPending = false
+                store?.markSyncedSettingsRead()
                 return
             case .adopt(let remote):
                 settingsStore?.applySyncedSettings(remote)
                 settingsReconciliationPending = false
+                store?.markSyncedSettingsRead()
                 return
             case .publish:
                 let record: CKRecord
@@ -1793,6 +1904,7 @@ public final class CloudKitSyncService {
                 if try await database.saveRecordIfUnchanged(record) == .saved {
                     try requireActive(generation)
                     settingsReconciliationPending = false
+                    store?.markSyncedSettingsRead()
                     return
                 }
                 // Someone wrote between the fetch and the save. Re-read and re-decide; if they
@@ -1928,11 +2040,20 @@ public final class CloudKitSyncService {
         var withoutFile = false
     }
 
+    /// The deletes to save, and the ones the server already holds, by clip with the date the local delete carries.
+    struct PreparedTombstones {
+        var records: [PreparedPushRecord] = []
+        var settled: [UUID: Date] = [:]
+    }
+
     struct PreparedPushRecords {
         let records: [PreparedPushRecord]
         let skippedItemIDs: [UUID]
         /// The same clips as `skippedItemIDs`, with why each one cannot be uploaded.
         var skippedClips: [SyncWaitingClip] = []
+        /// Clips left out because iCloud neither returned their server copy nor reported it
+        /// missing. The push reports a failure for them once it has saved the rest.
+        var unconfirmedCount = 0
     }
 
     nonisolated static func preparePushRecords(

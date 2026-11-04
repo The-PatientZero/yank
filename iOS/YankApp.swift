@@ -826,6 +826,9 @@ final class IOSCloudSyncController {
         let service = sync ?? makeService(container.database, store, settingsBridge)
         guard isActive(generation) else { return false }
         sync = service
+        // Bring-up reads the synced settings; until it has, this device's own retention window
+        // may be stale, also when sync is switched on or signs back in mid-run.
+        store.holdRetentionForSettings()
         let result = await service.start()
         guard isActive(generation), sync === service else { return false }
         switch result {

@@ -2755,8 +2755,9 @@ struct CloudKitSyncServiceTests {
         let defaults = isolatedDefaults()
         let containerID = "test.\(UUID().uuidString)"
         let database = FakeCloudKitDatabase()
-        // Not fetchable and not permanently missing: the fake models a transient gap, so the
-        // erase must be deferred rather than downgraded to a fresh content-preserving save.
+        // A transient gap: the erase must be deferred rather than downgraded to a fresh
+        // content-preserving save.
+        database.unansweredFetchRecordNames = [tombstone.id.uuidString]
         let store = FakeSyncableStore()
         store.items = [tombstone]
         let service = CloudKitSyncService(
@@ -3152,6 +3153,8 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
     var failedSaveCallIndices: Set<Int> = []
     var fetchableRecords: [String: CKRecord] = [:]
     var permanentlyMissingFetchRecordNames: Set<String> = []
+    /// Records CloudKit neither returns nor reports missing, as in a transient partial failure.
+    var unansweredFetchRecordNames: Set<String> = []
     var fetchRecordsError: (any Error)?
     var onFetchZoneChanges: (() async -> Void)?
     var onSaveRecords: (([CKRecord]) async -> Void)?
@@ -3228,8 +3231,8 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
                 fetched.permanentlyMissingRecordNames.insert(recordName)
             } else if let record = fetchableRecords[recordName] {
                 fetched.records.append(checkedOutCopy(of: record, named: recordName))
-            } else if recordName == SyncedSettingsCloudMapping.recordName {
-                // CloudKit answers "unknown item" for a settings record that was never written.
+            } else if !unansweredFetchRecordNames.contains(recordName) {
+                // CloudKit answers "unknown item" for a record that was never written.
                 fetched.permanentlyMissingRecordNames.insert(recordName)
             }
         }
