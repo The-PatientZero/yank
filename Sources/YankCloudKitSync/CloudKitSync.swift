@@ -852,13 +852,21 @@ public final class CloudKitSyncService {
                     throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
                 }
             }
-            let reconciled = ClipboardMerge.reconcile(
+            let merged = ClipboardMerge.reconcile(
                 Self.droppingHealedBlankItems(
                     from: local,
                     remote: accumulation.remote,
                     healable: accumulation.healableItemIDs
                 ),
                 accumulation.remote
+            )
+            // The same text copied on two devices before they synced is one clip. Only clips new
+            // to this device qualify, and never in a pull that started from nothing, so history
+            // already on a device and a full re-download are left as they are.
+            let reconciled = startedFromNothing ? merged : ClipboardMerge.collapsingCrossDeviceDuplicates(
+                merged,
+                arrivals: Self.arrivingClipIDs(remote: accumulation.remote, local: local),
+                pendingDeleteIDs: (store as? any PendingDeletionReporting)?.pendingDeletionIDs ?? []
             )
             try requireActive(generation)
             changedHistory = Self.changedItemCount(from: local, to: reconciled)
@@ -907,6 +915,12 @@ public final class CloudKitSyncService {
             }
             throw error
         }
+    }
+
+    /// The live clips in this pull that this device has neither as a clip nor as a deleted one.
+    nonisolated static func arrivingClipIDs(remote: [ClipboardItem], local: [ClipboardItem]) -> Set<UUID> {
+        let known = Set(local.map(\.id))
+        return Set(remote.filter { !$0.isDeleted && !known.contains($0.id) }.map(\.id))
     }
 
     /// How many canonical items are new to `local` or newer than its copy.
