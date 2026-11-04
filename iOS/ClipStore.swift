@@ -61,6 +61,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private(set) var firstSyncState: FirstSyncState = .idle
 
+    /// False until the saved history has been read, so the list can tell a history that is still
+    /// loading from a genuinely empty one and never flash "No clips" or the onboarding screen.
+    private(set) var hasLoaded = false
+
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
 
     /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
@@ -95,6 +99,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     @ObservationIgnored var tagCache: [String]?
 
     @ObservationIgnored private var historyWritesDisabled = false
+    /// True from `init(deferHistoryLoad: true)` until `hydrate()` has applied the saved history.
+    /// While it is set nothing may write the history file or apply synced state: an empty
+    /// in-memory list must never replace the unloaded file.
+    @ObservationIgnored private var isHistoryLoadPending = false
+    @ObservationIgnored private var hydrateTask: Task<Void, Never>?
+    /// A retention pass was requested while the history was still loading; `hydrate()` runs it.
+    @ObservationIgnored private var retentionPassOwed = false
     @ObservationIgnored private let appGroupContext: AppGroupContext?
     /// Keeps history storage out of device backups unless the user opted in; nil without an App Group.
     @ObservationIgnored private let backupExclusion: BackupExclusion?
@@ -141,13 +152,17 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private var historyLimit: Int { prefs?.integer(forKey: SettingsKeys.historyLimit) ?? 0 }
     private var retentionDays: Int { prefs?.integer(forKey: SettingsKeys.retentionDays) ?? 0 }
 
-    init(context: AppGroupContext? = AppGroupContext.live()) {
+    /// With `deferHistoryLoad` the saved history is not read here: call `hydrate()` and wait for
+    /// it before anything captures, syncs or shows the history. The app does this so the load
+    /// does not block launch; the default keeps the synchronous load for every other caller.
+    init(context: AppGroupContext? = AppGroupContext.live(), deferHistoryLoad: Bool = false) {
         self.appGroupContext = context
         self.backupExclusion = context.map(BackupExclusion.init(context:))
         self.blobStore = IOSClipBlobStore(directory: context?.blobsURL)
         guard let context else {
             storageUnavailable = true
             historyWritesDisabled = true
+            hasLoaded = true
             clipStoreLog.error("App Group container is unavailable; iOS storage is disabled.")
             return
         }
@@ -171,11 +186,59 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             clipStoreLog.error("Failed to set iOS blobs data-protection class: \(error.localizedDescription)")
         }
         protectExistingHistoryFiles()
-        load()
+        if deferHistoryLoad {
+            isHistoryLoadPending = true
+            return
+        }
+        let historyFileExisted = historyFileExistsOrIsPending()
+        applyLoadResult(
+            HistorySnapshotLoader.load(historyURL: context.historyURL, tombstonesURL: context.tombstonesURL),
+            historyFileExisted: historyFileExisted
+        )
+        finishLaunchLoad()
+    }
+
+    /// Reads the saved history off the main thread, then applies it and does the launch work
+    /// that follows a load. Concurrent and repeated callers share one load.
+    func hydrate() async {
+        if let hydrateTask {
+            await hydrateTask.value
+            return
+        }
+        guard isHistoryLoadPending else { return }
+        // Pending is only ever set with a context, so there is always somewhere to load from.
+        guard let historyURL, let tombstonesURL else {
+            isHistoryLoadPending = false
+            hasLoaded = true
+            return
+        }
+        let task = Task { @MainActor in
+            // Checked before loading, because the loader replays an interrupted write.
+            let historyFileExisted = self.historyFileExistsOrIsPending()
+            let result = await Task.detached(priority: .userInitiated) {
+                HistorySnapshotLoader.load(historyURL: historyURL, tombstonesURL: tombstonesURL)
+            }.value
+            // Cleared first, so everything below that persists is not swallowed by the guard.
+            self.isHistoryLoadPending = false
+            self.applyLoadResult(result, historyFileExisted: historyFileExisted)
+            self.finishLaunchLoad()
+        }
+        hydrateTask = task
+        await task.value
+    }
+
+    /// The work that follows a load: backup exclusion, orphan sweep, keyboard projection and any
+    /// retention pass that was requested meanwhile. Marks the history ready last.
+    private func finishLaunchLoad() {
         reconcileBackupExclusionInBackground()
         if !historyWritesDisabled {
             sweepOrphanBlobs()
             publishKeyboardProjection()
+        }
+        hasLoaded = true
+        if retentionPassOwed {
+            retentionPassOwed = false
+            enforceRetentionAndLimit()
         }
     }
 
@@ -214,6 +277,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         pasteboardGeneration: Int?,
         hasRichContent: Bool
     ) async -> IOSForegroundCaptureOutcome {
+        await hydrate()
         guard !historyWritesDisabled else { return .retryableFailure }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .terminalPolicyRejection
@@ -359,6 +423,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     @discardableResult
     func captureImage(pngData: Data, sourceApp: String? = nil) async -> Bool {
+        await hydrate()
         guard !historyWritesDisabled else { return false }
         guard let filename = await saveImageBlob(pngData) else { return false }
         var item = ClipboardItem.image(filename: filename, sourceApp: sourceApp)
@@ -379,6 +444,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     @discardableResult
     func drainShareInbox() async -> Set<String> {
         var successfulSources: Set<String> = []
+        await hydrate()
         guard !storageUnavailable,
               !historyWritesDisabled,
               !isDrainingShareInbox,
@@ -612,6 +678,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// settings change). Expired unprotected clips are tombstoned so deletion propagates via
     /// sync; the limit only trims local storage — capped clips stay in the cloud.
     func enforceRetentionAndLimit() {
+        guard !isHistoryLoadPending else {
+            retentionPassOwed = true
+            return
+        }
         let result = ClipboardRetention.enforce(
             items: items,
             tombstones: tombstones,
@@ -711,6 +781,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     func applyReconciled(_ canonical: [ClipboardItem]) {
+        guard !isHistoryLoadPending else { return }
         let outcome = applyReconciledInMemory(canonical)
         firstSyncState = .settled
         markSyncSucceeded(at: Date())
@@ -718,7 +789,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
-        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
+        guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
         let outcome = applyReconciledInMemory(canonical)
         firstSyncState = .settled
         markSyncSucceeded(at: Date())
@@ -728,7 +799,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
-        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
+        guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
         guard let historyWriter else { throw PersistenceError.appGroupUnavailable }
         let outcome = applyReconciledInMemory(canonical)
         firstSyncState = .settled
@@ -830,21 +901,26 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     // MARK: - Persistence
 
-    private func load() {
-        guard let historyURL, let tombstonesURL else {
-            storageUnavailable = true
-            historyWritesDisabled = true
-            return
-        }
-        // Checked before loading, because the loader replays an interrupted write and a write
-        // creates the file. A pending write means the history was here, not restored without it.
+    /// Whether the history was here before this launch. Checked before loading, because the loader
+    /// replays an interrupted write and a write creates the file. A pending write means the
+    /// history was here, not restored without it.
+    private func historyFileExistsOrIsPending() -> Bool {
+        guard let historyURL else { return true }
         let fileManager = FileManager.default
-        let historyFileExisted = fileManager.fileExists(atPath: historyURL.path)
+        return fileManager.fileExists(atPath: historyURL.path)
             || fileManager.fileExists(
                 atPath: HistorySnapshotTransaction.transactionURL(for: historyURL).path
             )
-        switch HistorySnapshotLoader.load(historyURL: historyURL, tombstonesURL: tombstonesURL) {
+    }
+
+    private func applyLoadResult(
+        _ result: Result<HistorySnapshotLoader.Snapshot, HistorySnapshotLoader.LoadError>,
+        historyFileExisted: Bool
+    ) {
+        switch result {
         case .success(let snapshot):
+            // Nothing may change the history before it is loaded, so this replaces an empty state.
+            assert(items.isEmpty && tombstones.isEmpty, "History changed before it finished loading.")
             items = snapshot.items
             tombstones = snapshot.tombstones
             heldElements = snapshot.heldElements
@@ -870,7 +946,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// Re-applies the backup choice off the main actor, because it creates folders and writes
     /// file attributes. `BackupExclusion.reconcile()` reads the setting itself when it runs.
     func reconcileBackupExclusionInBackground() {
-        guard let backupExclusion else { return }
+        // The load may still be replaying an interrupted write to these files; `hydrate()` runs
+        // this once it has finished.
+        guard let backupExclusion, !isHistoryLoadPending else { return }
         Task.detached(priority: .utility) {
             backupExclusion.reconcile()
         }
@@ -909,8 +987,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// notification (which schedules a sync push) is thread-agnostic on the receiver.
     @discardableResult
     private func persist(notify: Bool = true) -> HistorySnapshotWriteReceipt? {
-        guard !historyWritesDisabled, let historyWriter else {
-            clipStoreLog.error("Skipped iOS history save because the on-disk snapshot failed to load.")
+        guard !historyWritesDisabled, !isHistoryLoadPending, let historyWriter else {
+            clipStoreLog.error("Skipped iOS history save because the on-disk snapshot has not loaded.")
             return nil
         }
         releaseHeldElements()

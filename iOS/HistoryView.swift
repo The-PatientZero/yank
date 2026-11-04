@@ -110,7 +110,11 @@ struct HistoryView: View {
 
     private var browse: some View {
         Group {
-            if store.items.isEmpty {
+            if !store.hasLoaded {
+                // Neutral until the saved history has been read, so "No clips", the onboarding
+                // screen or a sync problem never flashes over a history that is about to appear.
+                loadingState
+            } else if store.items.isEmpty {
                 switch emptyPresentation {
                 case .iCloudSignedOut:
                     iCloudSignedOutState
