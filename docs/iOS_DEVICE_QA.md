@@ -71,9 +71,9 @@ Yank does not request Full Access. Verify the shipping read-only configuration:
 - [ ] Recent insertable clips load from the bounded App Group projection.
 - [ ] A short text shared to Yank appears first in the keyboard right away, before Yank is opened, and inserts correctly.
 - [ ] After opening Yank to import a shared clip, the keyboard shows it exactly once, and sharing the same text twice before opening Yank shows it once.
-- [ ] Search filters recent insertable clips.
+- [ ] Filter chips narrow the list; Pinned and Bookmarked show only clips among the keyboard's recent clips.
 - [ ] Selecting a text or link clip inserts it exactly once.
-- [ ] The globe/next-keyboard control works whenever the system requires it.
+- [ ] The globe/next-keyboard control works whenever the system requires it, and follows docking, undocking, floating and resizing on iPad: tap switches, long-press shows the keyboard list.
 - [ ] VoiceOver labels and focus order are usable.
 - [ ] Portrait, landscape, and iPad multitasking layouts do not clip required controls.
 - [ ] Empty, unavailable, protected-data, and storage-failure states explain recovery.
