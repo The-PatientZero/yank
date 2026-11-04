@@ -22,6 +22,7 @@ test-only parsers:
   app_store_connect.sh build-state-from-json <prerelease-response.json> <build-number>
   app_store_connect.sh relationship-has-build-from-json <relationship-response.json> <build-id>
   app_store_connect.sh beta-review-state-from-json <submission-response.json>
+  app_store_connect.sh api-errors-from-json <error-response.json>
 
 Live commands require ASC_KEY_PATH, ASC_KEY_ID, and ASC_ISSUER_ID.
 EOF
@@ -152,35 +153,31 @@ api_request() {
     local url="$2"
     local body="${3:-}"
     local token
+    local response
+    local -a arguments
 
     [[ "$url" == "${ASC_API_BASE}/v1/"* ]] || fail "refusing non-App-Store-Connect URL"
     token="$(generate_token)"
 
+    arguments=(
+        --fail-with-body
+        --silent
+        --show-error
+        --retry 3
+        --retry-all-errors
+        --retry-max-time 60
+        --request "$method"
+        --header "Authorization: Bearer ${token}"
+    )
     if [[ -n "$body" ]]; then
-        curl \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-max-time 60 \
-            --request "$method" \
-            --header "Authorization: Bearer ${token}" \
-            --header "Content-Type: application/json" \
-            --data "$body" \
-            "$url"
-    else
-        curl \
-            --fail-with-body \
-            --silent \
-            --show-error \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-max-time 60 \
-            --request "$method" \
-            --header "Authorization: Bearer ${token}" \
-            "$url"
+        arguments+=(--header "Content-Type: application/json" --data "$body")
     fi
+
+    if ! response="$(curl "${arguments[@]}" "$url")"; then
+        api_errors_from_json /dev/stdin <<<"$response" | sed 's/^/App Store Connect: /' >&2
+        return 1
+    fi
+    printf '%s\n' "$response"
 }
 
 fetch_all() {
@@ -302,6 +299,14 @@ relationship_has_build_from_json() {
     ' "$json_file" >/dev/null || fail "malformed build relationship response"
 
     jq -e --arg build "$build_id" 'any(.data[]; .id == $build)' "$json_file" >/dev/null
+}
+
+# Prints Apple's reasons for a failed request, one per line.
+api_errors_from_json() {
+    jq -er '
+        [.errors[]? | "\(.status // "unknown status") \(.code // "unknown code"): \(.detail // .title // "no detail")"]
+        | if length > 0 then .[] else error("no errors") end
+    ' "$1" 2>/dev/null || echo "the response had no readable error details"
 }
 
 beta_review_state_from_json() {
@@ -446,9 +451,13 @@ assign_build() {
     fi
 
     body="$(jq -cn --arg id "$build_id" '{data: [{type: "builds", id: $id}]}')"
-    api_request POST \
+    if ! api_request POST \
         "${ASC_API_BASE}/v1/betaGroups/${group_id}/relationships/builds" \
-        "$body" >/dev/null
+        "$body" >/dev/null; then
+        # A group with automatic distribution can add the build between the check above and this request.
+        assignment_exists "$group_id" "$build_id" \
+            || fail "could not add build ${build_id} to the group"
+    fi
 }
 
 assignment_exists() {
@@ -563,6 +572,10 @@ case "$command" in
     relationship-has-build-from-json)
         [[ "$#" -eq 3 ]] || usage
         relationship_has_build_from_json "$2" "$3"
+        ;;
+    api-errors-from-json)
+        [[ "$#" -eq 2 ]] || usage
+        api_errors_from_json "$2"
         ;;
     beta-review-state-from-json)
         [[ "$#" -eq 2 ]] || usage
