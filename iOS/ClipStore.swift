@@ -409,7 +409,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                     // handoff. A prior failed writer operation has already been consumed;
                     // seeing the ID in memory alone is not proof that it reached disk.
                     persist(notify: didImport)
-                    try flushPendingWrites()
+                    try await flushPendingWritesBeforeSuspension()
                     if !alreadyProcessed {
                         try await Task.detached(priority: .utility) {
                             try inbox.markProcessed(entryID)
@@ -681,7 +681,15 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         items + SyncReconcile.tombstoneItems(tombstones)
     }
 
-    func applyReconciled(_ canonical: [ClipboardItem]) {
+    private struct ReconcileOutcome {
+        let changed: Bool
+        let expiredVisibleCount: Int
+    }
+
+    /// Applies the canonical state in memory and reports whether anything a snapshot stores
+    /// changed. Nothing is assigned when nothing changed, so an echo of this device's own pushes
+    /// neither redraws the list nor writes the disk.
+    private func applyReconciledInMemory(_ canonical: [ClipboardItem]) -> ReconcileOutcome {
         let result = SyncReconcile.apply(
             canonical: canonical,
             replacing: items,
@@ -689,6 +697,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             retentionDays: retentionDays,
             now: Date()
         )
+        let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)
+        guard changed else { return ReconcileOutcome(changed: false, expiredVisibleCount: 0) }
         if result.cappedVisibleCount > 0 {
             clipStoreLog.info(
                 "Reconcile cap dropped \(result.cappedVisibleCount) clip(s); local limit is \(self.historyLimit)."
@@ -700,19 +710,52 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         pendingReconciledBlobDeletions.formUnion(result.blobReferencesToDelete)
         items = result.visibleItems
         tombstones = result.tombstones
+        return ReconcileOutcome(changed: true, expiredVisibleCount: result.expiredVisibleCount)
+    }
+
+    func applyReconciled(_ canonical: [ClipboardItem]) {
+        let outcome = applyReconciledInMemory(canonical)
         firstSyncState = .settled
         markSyncSucceeded(at: Date())
-        persist(notify: result.expiredVisibleCount > 0)
+        if outcome.changed { persist(notify: outcome.expiredVisibleCount > 0) }
     }
 
     func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
         guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
-        applyReconciled(canonical)
+        let outcome = applyReconciledInMemory(canonical)
+        firstSyncState = .settled
+        markSyncSucceeded(at: Date())
+        persist(notify: outcome.expiredVisibleCount > 0)
         try flushPendingWrites()
+        releaseDeferredBlobDeletions(pendingReconciledBlobDeletions)
+    }
+
+    func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
+        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
+        guard let historyWriter else { throw PersistenceError.appGroupUnavailable }
+        let outcome = applyReconciledInMemory(canonical)
+        firstSyncState = .settled
+        markSyncSucceeded(at: Date())
+        let batch = pendingReconciledBlobDeletions
+        try await historyWriter.awaitDurableSnapshot(
+            stateChanged: outcome.changed,
+            latestReceipt: latestHistoryWriteReceipt,
+            schedule: {
+                guard let receipt = persist(notify: outcome.expiredVisibleCount > 0) else {
+                    throw PersistenceError.writesDisabled
+                }
+                return receipt
+            }
+        )
+        releaseDeferredBlobDeletions(batch)
+    }
+
+    /// Deletes the batch's blob files that no current clip references, once the snapshot that
+    /// stopped referencing them is durable, and forgets exactly that batch.
+    private func releaseDeferredBlobDeletions(_ batch: Set<ClipboardBlobReference>) {
         let referencedBlobs = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
-        let orphanedBlobs = pendingReconciledBlobDeletions.subtracting(referencedBlobs)
-        deleteBlobReferences(Array(orphanedBlobs))
-        pendingReconciledBlobDeletions.removeAll()
+        deleteBlobReferences(Array(batch.subtracting(referencedBlobs)))
+        pendingReconciledBlobDeletions.subtract(batch)
     }
 
     func blobURL(for item: ClipboardItem) -> URL? {

@@ -62,6 +62,10 @@ final class ClipboardStore {
     /// failed sync retry, so the last durable snapshot never points at deleted content.
     @ObservationIgnored var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
 
+    /// The newest scheduled snapshot write. A sync pull that changed nothing still waits for it,
+    /// and retries it if it failed, so it never reports success over a state that is not on disk.
+    @ObservationIgnored var latestHistoryWriteReceipt: HistorySnapshotWriteReceipt?
+
     /// Bumped whenever the watcher's consecutive-repeat suppression must start over: a delete is
     /// enqueued, history is cleared, or a capture was not saved. The watcher compares it with the
     /// value it recorded, so a user who deletes a clip and copies the same text again keeps the copy.
@@ -388,16 +392,24 @@ final class ClipboardStore {
         if kept != heldElements { heldElements = kept }
     }
 
-    func persist(notify: Bool = true) {
+    /// Returns the receipt of the scheduled write, or nil when writes are disabled.
+    @discardableResult
+    func persist(notify: Bool = true) -> HistorySnapshotWriteReceipt? {
         guard !historyWritesDisabled else {
             Log.store.error("Skipped history save because the on-disk snapshot failed to load.")
-            return
+            return nil
         }
         releaseHeldElements()
-        historyWriter.scheduleSave(items: items, preservedElements: heldElements, tombstones: tombstones)
+        let receipt = historyWriter.scheduleSave(
+            items: items,
+            preservedElements: heldElements,
+            tombstones: tombstones
+        )
+        latestHistoryWriteReceipt = receipt
         if notify {
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
         }
+        return receipt
     }
 
     /// Flush any pending debounced write synchronously. Called on app termination so the

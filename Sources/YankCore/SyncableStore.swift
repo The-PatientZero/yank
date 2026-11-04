@@ -10,6 +10,11 @@ public protocol SyncableStore: AnyObject {
     /// Apply canonical sync state and make the resulting snapshot durable before returning.
     /// A failure must leave the caller's remote checkpoint unchanged so the state can be retried.
     func applyReconciledDurably(_ canonical: [ClipboardItem]) throws
+    /// Apply canonical sync state in memory at once, then suspend until the resulting snapshot is
+    /// durable, without blocking the calling actor while the disk write finishes. The in-memory
+    /// apply runs before the first suspension. A failure must leave the caller's remote
+    /// checkpoint unchanged so the state can be retried.
+    func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws
     /// Resolve a validated blob reference to a local file URL, if present.
     func blobURL(for reference: SyncBlobReference) -> URL?
     /// Persist blob bytes for a validated reference.
@@ -24,6 +29,13 @@ public protocol SyncableStore: AnyObject {
     func markSyncFailed(_ message: String)
     /// Mark sync as intentionally unavailable.
     func markSyncUnavailable(reason: SyncStatus.Reason)
+}
+
+public extension SyncableStore {
+    /// Default for stores that only offer the blocking variant.
+    func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
+        try applyReconciledDurably(canonical)
+    }
 }
 
 public extension Notification.Name {
