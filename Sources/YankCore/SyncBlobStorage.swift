@@ -6,11 +6,16 @@ import Foundation
 public enum SyncBlobStorage {
     private static let readChunkSize = 64 * 1024
 
+    /// Why a synced blob file could not be read or written.
     public enum Error: Swift.Error, LocalizedError, Equatable {
+        /// The path is not a regular file.
         case notRegularFile
+        /// The blob filename is not allowed.
         case unsafeFilename
+        /// The blob is larger than the allowed `maxBytes`.
         case oversizedBlob(actualBytes: Int, maxBytes: Int)
 
+        /// A sentence describing the failure.
         public var errorDescription: String? {
             switch self {
             case .notRegularFile:
@@ -23,6 +28,7 @@ public enum SyncBlobStorage {
         }
     }
 
+    /// Reads the file at `url` off the calling actor; throws `Error` if it is not a regular file or exceeds `maxBytes`.
     public static func read(from url: URL, maxBytes: Int = SyncBlobPolicy.maxSyncedBlobBytes) async throws -> Data {
         try await Task.detached(priority: .utility) {
             guard maxBytes >= 0 else {
@@ -56,6 +62,7 @@ public enum SyncBlobStorage {
         }.value
     }
 
+    /// Writes `data` to `url` off the calling actor, creating missing directories; throws `Error.oversizedBlob` when `maxBytes` is set and exceeded.
     public static func write(
         _ data: Data,
         to url: URL,

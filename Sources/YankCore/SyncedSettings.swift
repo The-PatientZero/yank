@@ -4,6 +4,7 @@ import Foundation
 /// value was last chosen. `updatedAt` is the whole conflict-resolution story: the strictly
 /// newer side wins, and a tie leaves whatever the reading device already has in place.
 public struct SyncedSettings: Equatable, Sendable {
+    /// How many clips to keep.
     public let historyLimit: HistoryLimit
     /// Auto-delete window in days (0 = keep forever). Optional because records written by
     /// builds that predate the field carry no opinion: `nil` means "unknown", and adoption
@@ -14,6 +15,7 @@ public struct SyncedSettings: Equatable, Sendable {
     /// decision is stable no matter which device evaluates it.
     public let updatedAt: Date
 
+    /// Creates settings stamped with the time the value was chosen.
     public init(historyLimit: HistoryLimit, retentionDays: Int? = nil, updatedAt: Date) {
         self.historyLimit = historyLimit
         self.retentionDays = retentionDays
@@ -30,8 +32,10 @@ public struct SyncedSettings: Equatable, Sendable {
 /// cross-device conflict resolution. Despite the name (kept for source compatibility) it carries
 /// every synced preference as one unit under a single stamp, so choosing either publishes both.
 public struct SyncedHistoryLimit: Equatable, Sendable {
+    /// The settings together with the stamp they carry.
     public private(set) var current: SyncedSettings
 
+    /// Creates a value; the default `updatedAt` of `.distantPast` means nobody has chosen it.
     public init(historyLimit: HistoryLimit, retentionDays: Int? = nil, updatedAt: Date = .distantPast) {
         self.current = SyncedSettings(
             historyLimit: historyLimit,
@@ -40,7 +44,9 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
         )
     }
 
+    /// The current history cap.
     public var historyLimit: HistoryLimit { current.historyLimit }
+    /// When the current value was last chosen, on this or another device.
     public var updatedAt: Date { current.updatedAt }
 
     /// A local user choice: stamped with the moment it was made. Returns whether anything
@@ -94,6 +100,7 @@ public protocol SyncedSettingsStore: AnyObject {
     func applySyncedSettings(_ settings: SyncedSettings)
 }
 
+/// Notifications for synced settings.
 public extension Notification.Name {
     /// A setting that syncs across devices was *chosen* locally, so the transport should
     /// reconcile it. Declared here beside the port rather than in the apps' notification list:
