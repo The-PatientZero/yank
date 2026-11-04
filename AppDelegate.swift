@@ -154,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showWelcomeWindow() {
         let syncAvailable = CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID)
-        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, manager: settings)
+        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, store: clipboardStore, manager: settings)
         controller.showWindow(nil)
         welcomeWindowController = controller
     }

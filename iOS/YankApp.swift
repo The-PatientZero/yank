@@ -1,6 +1,7 @@
 import SwiftUI
 import CloudKit
 import UIKit
+import UniformTypeIdentifiers
 
 /// Coordinates the two foreground-only freshness jobs iOS permits: importing the current
 /// plain-text pasteboard generation and pulling CloudKit. In-process generation tracking plus
@@ -256,6 +257,9 @@ enum IOSForegroundCaptureDisclosurePresentation: Equatable {
 
 struct IOSForegroundCaptureDisclosureSession: Equatable {
     private(set) var deferredForCurrentSession = false
+    /// The parts of the first-run screen being shown; nil while the screen is closed. Fixed when
+    /// the screen opens, so nothing that happens in the background can close it or change it.
+    private(set) var activeSections: FirstRunSections?
 
     func presentation(
         for mode: IOSForegroundCaptureMode
@@ -265,6 +269,76 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
 
     mutating func deferForCurrentSession() {
         deferredForCurrentSession = true
+    }
+
+    /// Opens the screen on a cold launch while the clipboard mode is undecided. Clipboard access
+    /// is always shown; the capture methods and the sync choice only while set-up is unfinished,
+    /// and the sync choice only when sync is off and this build can sync at all.
+    mutating func beginAutomatically(
+        mode: IOSForegroundCaptureMode,
+        captureSetupCompleted: Bool,
+        syncEnabled: Bool,
+        syncAvailable: Bool
+    ) {
+        guard presentation(for: mode) == .prompt else { return }
+        var sections: FirstRunSections = .clipboard
+        if !captureSetupCompleted {
+            sections.insert(.methods)
+            if !syncEnabled && syncAvailable {
+                sections.insert(.sync)
+            }
+        }
+        activeSections = sections
+    }
+
+    /// Reopens the screen on the capture methods, plus clipboard access while still undecided.
+    /// Never includes the sync choice, so a review cannot change sync by accident.
+    mutating func beginReview(mode: IOSForegroundCaptureMode) {
+        activeSections = mode == .undecided ? [.clipboard, .methods] : .methods
+    }
+
+    mutating func end() {
+        activeSections = nil
+    }
+}
+
+/// Notices when automatic capture keeps finding nothing to read although the clipboard holds
+/// plain text, which is how a denied "Paste from Other Apps" setting looks to the app: iOS gives
+/// no way to ask. It counts visits that failed, not reads, and lives in memory only.
+@MainActor
+@Observable
+final class PasteAccessMonitor {
+    /// Failed visits in a row before the banner appears.
+    private static let failedVisitsBeforeBanner = 2
+
+    private var failedVisits = 0
+    private var currentVisitFailed = false
+
+    var isDenied: Bool { failedVisits >= Self.failedVisitsBeforeBanner }
+
+    /// Called once at launch and once per return from the background.
+    func beginVisit() {
+        currentVisitFailed = false
+    }
+
+    /// Records a read that came back empty. Only a clipboard that declares plain text counts, so
+    /// HTML-only or RTF-only content never raises the banner.
+    func recordEmptyRead(declaredTypes: [String]) {
+        guard !currentVisitFailed, Self.declaresPlainText(declaredTypes) else { return }
+        currentVisitFailed = true
+        failedVisits += 1
+    }
+
+    func recordSuccessfulRead() {
+        reset()
+    }
+
+    func reset() {
+        failedVisits = 0
+    }
+
+    private static func declaresPlainText(_ types: [String]) -> Bool {
+        types.contains { UTType($0)?.conforms(to: .plainText) == true }
     }
 }
 
@@ -323,7 +397,7 @@ final class IOSCloudSyncController {
         case failed(SyncFailure)
     }
 
-    private static let containerID = "iCloud.com.thepatientzero.yank"
+    static let containerID = "iCloud.com.thepatientzero.yank"
     /// How long a transient account status (`.temporarilyUnavailable`, `.couldNotDetermine`)
     /// waits before retrying once, instead of stalling until the next foreground/push.
     private static let transientRetryDelayNanoseconds: UInt64 = 10_000_000_000
@@ -454,6 +528,7 @@ final class IOSCloudSyncController {
         sync = nil
         container = nil
         unregisterForRemoteNotifications()
+        iCloudSignedOut = false
         store.markSyncUnavailable(reason: .disabled)
     }
 
@@ -861,8 +936,8 @@ struct YankApp: App {
     @State private var store: ClipStore
     @State private var settings: IOSSettings
     @State private var syncController: IOSCloudSyncController
-    @State private var foregroundCaptureDisclosureSession =
-        IOSForegroundCaptureDisclosureSession()
+    @State private var foregroundCaptureDisclosureSession: IOSForegroundCaptureDisclosureSession
+    @State private var pasteAccess: PasteAccessMonitor
     @State private var historyOpenRequest = 0
     /// SwiftUI reports a return from the background as `.background`, `.inactive`, `.active`,
     /// so the handler remembers the visit instead of comparing with the previous phase.
@@ -871,6 +946,8 @@ struct YankApp: App {
 
     init() {
         let runtime = IOSAppRuntime.shared
+        _foregroundCaptureDisclosureSession = State(initialValue: IOSForegroundCaptureDisclosureSession())
+        _pasteAccess = State(initialValue: PasteAccessMonitor())
         _store = State(initialValue: runtime.store)
         _settings = State(initialValue: runtime.settings)
         _syncController = State(initialValue: runtime.syncController)
@@ -888,34 +965,39 @@ struct YankApp: App {
                 iCloudSignedOut: syncController.iCloudSignedOut,
                 onRetrySync: { await syncController.start(force: true) },
                 onKeepLocalOnly: { syncController.keepLocalOnly(clipIDs: $0) },
+                onReviewCaptureMethods: {
+                    foregroundCaptureDisclosureSession.beginReview(mode: settings.foregroundCaptureMode)
+                },
+                pasteAccess: pasteAccess,
                 openRequest: historyOpenRequest
             )
-                .sheet(isPresented: Binding(
-                    get: {
-                        foregroundCaptureDisclosureSession.presentation(
-                            for: settings.foregroundCaptureMode
-                        ) == .prompt
-                    },
-                    set: { isPresented in
-                        if !isPresented {
-                            foregroundCaptureDisclosureSession.deferForCurrentSession()
-                        }
+                .sheet(item: Binding(
+                    get: { foregroundCaptureDisclosureSession.activeSections },
+                    set: { sections in
+                        if sections == nil { closeFirstRunScreen() }
                     }
-                )) {
-                    ForegroundCaptureDecisionView(
-                        onChoose: { mode in
-                            settings.setForegroundCaptureMode(mode)
-                        },
-                        onNotNow: {
-                            foregroundCaptureDisclosureSession.deferForCurrentSession()
-                        },
-                        choicesDisabled: settings.storageUnavailable
+                )) { sections in
+                    FirstRunSetupView(
+                        sections: sections,
+                        settings: settings,
+                        onFinish: { finishedSetup in
+                            if finishedSetup { settings.completeCaptureSetup() }
+                            closeFirstRunScreen()
+                        }
                     )
                 }
                 .tint(settings.theme.foreground)
                 .task {
+                    pasteAccess.beginVisit()
                     // The list shows a loading state until the saved history has been read.
                     await IOSAppRuntime.shared.hydrate()
+                    // Needs the history read: set-up counts as finished when clips already exist.
+                    foregroundCaptureDisclosureSession.beginAutomatically(
+                        mode: settings.foregroundCaptureMode,
+                        captureSetupCompleted: settings.captureSetupCompleted,
+                        syncEnabled: settings.syncEnabled,
+                        syncAvailable: CloudContainerProvisioning.isProvisioned(for: IOSCloudSyncController.containerID)
+                    )
                     await refreshForeground()
                     await refreshSpotlightIndex()
                 }
@@ -931,6 +1013,7 @@ struct YankApp: App {
                     if newPhase == .active {
                         let returnedFromBackground = wasInBackground
                         wasInBackground = false
+                        if returnedFromBackground { pasteAccess.beginVisit() }
                         // Folders an extension created while the app was away are not marked yet.
                         store.reconcileBackupExclusionInBackground()
                         Task {
@@ -957,6 +1040,7 @@ struct YankApp: App {
                     if newMode == .undecided {
                         foregroundCaptureDisclosureSession.deferForCurrentSession()
                     }
+                    pasteAccess.reset()
                     Task {
                         await IOSForegroundRefreshPipeline.refreshAfterModeChange(
                             from: oldMode,
@@ -972,6 +1056,11 @@ struct YankApp: App {
                     if spotlightEnabled { SpotlightIndexer.schedule(store.items) }
                 }
         }
+    }
+
+    private func closeFirstRunScreen() {
+        foregroundCaptureDisclosureSession.end()
+        foregroundCaptureDisclosureSession.deferForCurrentSession()
     }
 
     private func refreshForeground() async {
@@ -1010,7 +1099,15 @@ struct YankApp: App {
                     readData: { pasteboard.data(forPasteboardType: $0) }
                 )
             },
-            readText: { pasteboard.string },
+            readText: {
+                let text = pasteboard.string
+                if text == nil {
+                    pasteAccess.recordEmptyRead(declaredTypes: pasteboardTypes)
+                } else {
+                    pasteAccess.recordSuccessfulRead()
+                }
+                return text
+            },
             capture: { text, generation, hasRichContent in
                 await store.captureForegroundText(
                     text,

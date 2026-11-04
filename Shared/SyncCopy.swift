@@ -10,6 +10,9 @@ enum SyncCopy {
     /// described in exactly one place.
     static let protectedClips = "Pinned, bookmarked, and tagged clips are always kept."
 
+    /// First-run sentence for the sync switch on both apps. True whether the switch is on or off.
+    static let welcomeSyncDescription = "When on, your clips sync through your private iCloud database and merge with your other devices. Removing a clip, the auto-delete window and the history limit apply on every device you sync."
+
     /// The history limit itself syncs, so the scope of a change depends on whether sync is on.
     /// Saying "this device" while the choice propagates would be a lie the user only discovers
     /// after their other device is trimmed.
