@@ -152,6 +152,8 @@ public final class CloudKitSyncService {
     weak var encryptionStatusReporter: (any SyncEncryptionStatusReporting)?
     var lastRolloutEvaluation: Date?
     var rolloutReevaluationRequested = false
+    /// Whether the last rollout evaluation could read the devices zone; `false` until one has.
+    var deviceZoneReadSucceeded = false
     var activeRolloutEvaluation: (id: UUID, task: Task<Void, Never>)?
     var activeSweep: (id: UUID, task: Task<Void, Never>)?
     var loggedBlankClipIDs: Set<UUID> = []
@@ -363,8 +365,11 @@ public final class CloudKitSyncService {
             // Bring-up always reconciles the settings record, which is what recovers a record
             // an earlier build could not read and one this device never managed to publish.
             settingsReconciliationPending = true
-            try await prepareBlankRepairIfNeeded(generation: generation)
-            try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
+            // The backfill marker ends the blank repair for good, so it waits until the repair could
+            // tell whether the rollout is open.
+            if try await prepareBlankRepairIfNeeded(generation: generation) {
+                try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
+            }
             try await coalescedPull(generation: generation)
             try requireActive(generation)
             // Before observers and the first push, so nothing is built in the wrong write mode.

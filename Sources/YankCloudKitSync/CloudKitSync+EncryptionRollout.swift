@@ -222,17 +222,21 @@ extension CloudKitSyncService {
     /// first launch of an upgraded build, when the rollout is already open, the local change token is
     /// cleared once so the next pull re-reads every record and the heal rule repairs the blanks
     /// from the encrypted copy. Adoption is checked before that pull. Only the local token is
-    /// cleared; nothing on the server changes.
-    func prepareBlankRepairIfNeeded(generation: UInt64) async throws {
+    /// cleared; nothing on the server changes. Returns `false` when the devices zone could not be
+    /// read, so whether the rollout is open is unknown and the caller must leave the repair for
+    /// the next launch.
+    func prepareBlankRepairIfNeeded(generation: UInt64) async throws -> Bool {
         guard rolloutDeviceID != nil,
               !defaults.bool(forKey: encryptedCopyBackfillKey),
-              !rolloutState.blankRepairDone else { return }
+              !rolloutState.blankRepairDone else { return true }
         try await reconcileEncryptionRollout(generation: generation)
-        guard isEncryptedOnly else { return }
+        guard deviceZoneReadSucceeded else { return false }
+        guard isEncryptedOnly else { return true }
         syncLog.info("repairing blank clips from the encrypted copy")
         try persistToken(nil, generation: generation)
         changeToken = nil
         rolloutState.blankRepairDone = true
+        return true
     }
 
     // MARK: - Rollout evaluation
@@ -279,10 +283,12 @@ extension CloudKitSyncService {
             try await database.ensureZone(devicesZoneID)
             let devices = try await fetchDeviceRecords()
             guard canMutate(generation) else { return }
+            deviceZoneReadSucceeded = true
             let evidence = applyRolloutDecision(deviceID: deviceID, devices: devices)
             try await publishOwnDeviceRecord(deviceID: deviceID, devices: devices, olderOrigins: evidence)
         } catch {
             guard canMutate(generation) else { return }
+            deviceZoneReadSucceeded = false
             syncLog.error("could not update device records: \(error.localizedDescription, privacy: .public)")
         }
         guard canMutate(generation) else { return }
