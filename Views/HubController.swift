@@ -24,7 +24,7 @@ final class HubController {
     private var renderedGlyphState: IconState?
 
     /// Everything the menu-bar glyph shows. The image is rebuilt only when this changes.
-    private struct IconState: Equatable {
+    struct IconState: Equatable {
         let style: MenuBarIconStyle
         let paused: Bool
         let updateText: String?
@@ -234,7 +234,7 @@ final class HubController {
     /// update dot top-left, the sync dot top-right and the pause mark bottom-right. Dots carry a
     /// thin ring in the menu-bar ground colour, so they separate from the amber arrow and clear
     /// 3:1 against both a light and a dark menu bar. Drawn per appearance at render time.
-    private static func glyph(for state: IconState) -> NSImage {
+    static func glyph(for state: IconState) -> NSImage {
         if state.style == .plain, !state.paused, state.updateText == nil, !state.syncProblem {
             let image = NSImage(size: plainGlyph.size, flipped: false) { rect in
                 plainGlyph.draw(in: rect)

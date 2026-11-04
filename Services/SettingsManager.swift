@@ -58,6 +58,11 @@ enum MenuBarIconStyle: String, CaseIterable, Hashable, Identifiable, Sendable {
     case plain
 
     var id: String { rawValue }
+
+    /// The saved style, or the colour default when nothing valid is saved.
+    static func initialStyle(storedRawValue: String?) -> MenuBarIconStyle {
+        storedRawValue.flatMap(MenuBarIconStyle.init(rawValue:)) ?? .color
+    }
 }
 
 enum ShortcutOpenTargetDefaults {
@@ -226,8 +231,9 @@ final class SettingsManager {
         }
         self.minCaptureLength = defaults.integer(forKey: minCaptureLengthKey)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
-        self.menuBarIconStyle = defaults.string(forKey: menuBarIconStyleKey)
-            .flatMap(MenuBarIconStyle.init(rawValue:)) ?? .color
+        self.menuBarIconStyle = MenuBarIconStyle.initialStyle(
+            storedRawValue: defaults.string(forKey: menuBarIconStyleKey)
+        )
         self.capturePaused = defaults.bool(forKey: capturePausedKey)
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
         self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
