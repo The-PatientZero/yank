@@ -1218,7 +1218,8 @@ public final class CloudKitSyncService {
         guard let localWinner = ClipboardMerge.reconcile(sameIDItems, []).first else {
             return false
         }
-        return localWinner.isDeleted && localWinner.modifiedAt >= remoteItem.modifiedAt
+        guard let deletedAt = localWinner.deletedAt else { return false }
+        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: deletedAt, liveTimestamp: remoteItem.timestamp)
     }
 
     private nonisolated static func isExpiredChangeTokenError(_ error: any Error) -> Bool {
