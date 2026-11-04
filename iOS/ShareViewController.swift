@@ -1,4 +1,3 @@
-import ImageIO
 import OSLog
 import SwiftUI
 import UIKit
@@ -324,14 +323,14 @@ final class ShareViewController: UIViewController {
 
     private nonisolated static func downsampledPNGFromFile(at url: URL) async throws -> Data {
         let pngData = await Task.detached(priority: .userInitiated) {
-            Self.downsampledPNG(fromFileAt: url, maxPixel: ShareImageImportPolicy.maxDownsampledPixel)
+            PNGDownsampler.png(fromFileAt: url, maxPixel: ShareImageImportPolicy.maxDownsampledPixel)
         }.value
         return try Self.validatedPNGData(pngData)
     }
 
     private nonisolated static func downsampledPNGFromData(_ data: Data) async throws -> Data {
         let pngData = await Task.detached(priority: .userInitiated) {
-            Self.downsampledPNG(from: data, maxPixel: ShareImageImportPolicy.maxDownsampledPixel)
+            PNGDownsampler.png(from: data, maxPixel: ShareImageImportPolicy.maxDownsampledPixel)
         }.value
         return try Self.validatedPNGData(pngData)
     }
@@ -364,43 +363,6 @@ final class ShareViewController: UIViewController {
         }
         let scale = max(image.scale, 1)
         return CGSize(width: image.size.width * scale, height: image.size.height * scale)
-    }
-
-    private nonisolated static func downsampledPNG(fromFileAt url: URL, maxPixel: Int) -> Data? {
-        guard url.isFileURL,
-              let source = CGImageSourceCreateWithURL(
-                url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary
-              ) else {
-            return nil
-        }
-        return downsampledPNG(from: source, maxPixel: maxPixel)
-    }
-
-    private nonisolated static func downsampledPNG(from data: Data, maxPixel: Int) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData,
-                                                       [kCGImageSourceShouldCache: false] as CFDictionary) else {
-            return nil
-        }
-        return downsampledPNG(from: source, maxPixel: maxPixel)
-    }
-
-    private nonisolated static func downsampledPNG(from source: CGImageSource, maxPixel: Int) -> Data? {
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel
-        ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data, UTType.png.identifier as CFString, 1, nil
-        ) else { return nil }
-        CGImageDestinationAddImage(destination, cgImage, nil)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
     }
 
     fileprivate nonisolated static func validatedPNGData(_ data: Data?) throws -> Data {
