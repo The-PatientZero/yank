@@ -3001,6 +3001,8 @@ struct CloudKitSyncServiceTests {
             try CloudKitPushReceiptCodec.encode(receipts),
             forKey: pushReceiptsKey(containerID)
         )
+        // Receipts describe a device that already uploaded its encrypted copies.
+        defaults.set(true, forKey: "cloudkit.encryptedCopyBackfill.\(containerID)")
     }
 
     private func pushReceipts(

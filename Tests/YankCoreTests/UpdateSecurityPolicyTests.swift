@@ -59,9 +59,8 @@ import Testing
     }
 
     @Test func allowsTrustedGithubReleaseHostsOverHTTPS() throws {
-        try UpdateSecurityPolicy.validateReleaseAssetURL(#require(URL(string: "https://github.com/x/y/releases/a.zip")))
         try UpdateSecurityPolicy.validateReleaseAssetURL(
-            #require(URL(string: "https://objects.githubusercontent.com/a.zip"))
+            #require(URL(string: "https://github.com/The-PatientZero/yank/releases/download/v1.2.0/Yank-1.2.0-universal.zip"))
         )
     }
 

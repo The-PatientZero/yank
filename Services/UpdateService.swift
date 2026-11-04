@@ -261,13 +261,17 @@ final class UpdateService {
             }
 
             async let expectedChecksum = UpdateInstaller.fetchExpectedSHA256(from: checksumURL)
-            let (localURL, response) = try await URLSession.shared.download(from: downloadURL)
+            let (localURL, _) = try await BoundedResponse.download(
+                URLRequest(url: downloadURL),
+                what: "Update download",
+                maximumBytes: UpdateSecurityPolicy.maximumUpdateArchiveBytes,
+                validateResponse: UpdateSecurityPolicy.validateReleaseAssetResponse
+            )
             downloadedFileURL = localURL
             try Task.checkCancellation()
             guard activeDownloadCanComplete(sessionID: sessionID, version: candidate.version) else {
                 throw CancellationError()
             }
-            try UpdateSecurityPolicy.validateReleaseAssetResponse(response)
             let expected = try await expectedChecksum
             try Task.checkCancellation()
             let targetAppURL = Bundle.main.bundleURL

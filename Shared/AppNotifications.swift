@@ -4,6 +4,8 @@ extension Notification.Name {
     static let yankIgnoreNextChange = Notification.Name("yankIgnoreNextChange")
     static let yankHotkeyChanged = Notification.Name("yankHotkeyChanged")
     static let yankWindowDidOpen = Notification.Name("yankWindowDidOpen")
+    /// Posted when the history window is summoned, not when it merely regains key status.
+    static let yankHistoryWindowDidShow = Notification.Name("yankHistoryWindowDidShow")
     static let yankMenuBarVisibilityChanged = Notification.Name("yankMenuBarVisibilityChanged")
     static let yankThemeChanged = Notification.Name("yankThemeChanged")
     static let yankAppearanceChanged = Notification.Name("yankAppearanceChanged")
