@@ -781,19 +781,30 @@ public final class CloudKitSyncService {
         }
     }
 
+    /// The most clip records one change-feed page asks for. The server may return fewer.
+    private nonisolated static let pullPageSize = 100
+
+    /// Pulls the zone one page at a time. Each page is merged, made durable and acknowledged with
+    /// its change token before the next one is fetched, so a pull that stops part-way keeps what
+    /// it applied and the next pull resumes after it.
     private func fetchAndApplyZoneChanges(generation: UInt64) async throws -> Int {
         try requireActive(generation)
         guard let store else { return 0 }
+        // Holds the page being applied only: blobs of an applied page are referenced by durable
+        // history and are never cleaned up by a later page's failure.
         var accumulation = PullAccumulation()
         var quarantine = QuarantineState(entries: pullQuarantine)
         var token = changeToken
         let startedFromNothing = token == nil
         var moreComing = true
+        var isFirstPage = true
+        var reportsProgress = false
         var fetchedChanges = 0
         var changedHistory = 0
+        var clipsDelivered = 0
         do {
             // Re-attempt earlier skipped records first, so a recovered one lands in the same
-            // durable apply as this pull's page set.
+            // durable apply as the first page.
             try await recoverQuarantinedRecords(
                 into: store,
                 accumulation: &accumulation,
@@ -801,9 +812,25 @@ public final class CloudKitSyncService {
                 generation: generation
             )
             while moreComing {
-                let changes = try await database.fetchZoneChanges(zoneID, since: token)
+                let changes = try await database.fetchZoneChanges(
+                    zoneID,
+                    since: token,
+                    desiredKeys: nil,
+                    resultsLimit: Self.pullPageSize
+                )
                 try requireActive(generation)
                 fetchedChanges += changes.changedRecords.count + changes.deletedRecordNames.count
+                let pageClipCount = changes.changedRecords.filter {
+                    $0.recordType != SyncedSettingsCloudMapping.recordType
+                }.count
+                clipsDelivered += pageClipCount
+                if isFirstPage, changes.moreComing {
+                    reportsProgress = true
+                    try await adoptSettingsBeforeFirstPage(of: changes, generation: generation)
+                }
+                if reportsProgress {
+                    store.markSyncProgress(clipsReceived: clipsDelivered)
+                }
                 try quarantinePermanentServerFailures(
                     changes.failedRecords,
                     quarantine: &quarantine
@@ -826,79 +853,22 @@ public final class CloudKitSyncService {
                         accumulation.remote.append(tombstone(id))
                     }
                 }
+                syncLog.notice(
+                    "Sync pull page (clips: \(pageClipCount, privacy: .public), files fetched: \(Self.assetCount(in: changes.changedRecords), privacy: .public))"
+                )
+                changedHistory += try await applyPulledPage(
+                    accumulation,
+                    to: store,
+                    quarantine: &quarantine,
+                    token: changes.changeToken,
+                    isFirstPageOfPullFromNothing: startedFromNothing && isFirstPage,
+                    generation: generation
+                )
                 token = changes.changeToken
                 moreComing = changes.moreComing
+                isFirstPage = false
+                accumulation = PullAccumulation()
             }
-            try requireActive(generation)
-            // Before the snapshot and the apply, so the cap below is the adopted limit rather
-            // than this device's old one. Nothing suspends between here and the apply. Adoption is
-            // idempotent against the local stamp, so replaying this pull after a later failure
-            // re-decides the same way.
-            if let remoteSettings = accumulation.remoteSettings {
-                if applySettingsFromChangeFeed(remoteSettings) {
-                    syncLog.info(
-                        "adopted synced history limit \(remoteSettings.historyLimit.rawValue, privacy: .public) before applying \(accumulation.remote.count, privacy: .public) pulled clip(s)"
-                    )
-                }
-                try requireActive(generation)
-            }
-            let appliedLimit = effectiveHistoryLimit
-            let local = store.itemsForSync()
-            for bypassed in accumulation.bypassedMissingAssets {
-                guard Self.localTombstoneDominates(
-                    bypassed.item,
-                    in: local
-                ) else {
-                    throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
-                }
-            }
-            let reconciled = ClipboardMerge.reconcile(
-                Self.droppingHealedBlankItems(
-                    from: local,
-                    remote: accumulation.remote,
-                    healable: accumulation.healableItemIDs
-                ),
-                accumulation.remote
-            )
-            try requireActive(generation)
-            changedHistory = Self.changedItemCount(from: local, to: reconciled)
-            try await applyPulledStateDurably(reconciled, to: store)
-            try requireActive(generation)
-            deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
-            let receiptChanges = Self.pullReceiptChanges(
-                remote: accumulation.remote,
-                reconciled: reconciled,
-                repairItemIDs: accumulation.receiptInvalidationItemIDs,
-                omittedFields: accumulation.omittedFieldsByItem
-            )
-            if !receiptChanges.isEmpty {
-                // A push that started before this pull may still commit an older receipt
-                // snapshot. Let it finish, then make this the last durable receipt transition
-                // before acknowledging the remote change token.
-                try await awaitActivePushCompletion(generation: generation)
-                try requireActive(generation)
-                try applyPullReceiptChanges(receiptChanges, generation: generation)
-                try afterReceiptInvalidationBeforeTokenPersistence?()
-                try requireActive(generation)
-            }
-            guard !quarantine.didOverflow else {
-                throw CloudKitSyncError.pullQuarantineOverflow
-            }
-            try await eraseReadableCopies(from: accumulation, generation: generation)
-            // Durable before the token: a crash here replays the page instead of losing the
-            // record that was skipped.
-            if quarantine.didChange {
-                try persistPullQuarantine(quarantine.entries, generation: generation)
-            }
-            if let appliedLimit {
-                if startedFromNothing {
-                    defaults.set(appliedLimit, forKey: historyCoverageKey)
-                } else {
-                    lowerHistoryCoverage(to: appliedLimit)
-                }
-            }
-            try persistToken(token, generation: generation)
-            changeToken = token
             // A refetch from nothing re-delivers records this device already has.
             return startedFromNothing ? changedHistory : fetchedChanges
         } catch {
@@ -907,6 +877,134 @@ public final class CloudKitSyncService {
             }
             throw error
         }
+    }
+
+    /// Merges one page into the history, makes it durable and acknowledges its change token.
+    /// Returns how many clips of the page were new to this device or newer than its copy.
+    private func applyPulledPage(
+        _ accumulation: PullAccumulation,
+        to store: SyncableStore,
+        quarantine: inout QuarantineState,
+        token: CKServerChangeToken?,
+        isFirstPageOfPullFromNothing: Bool,
+        generation: UInt64
+    ) async throws -> Int {
+        try requireActive(generation)
+        // Before the snapshot and the apply, so the cap below is the adopted limit rather
+        // than this device's old one. Nothing suspends between here and the apply. Adoption is
+        // idempotent against the local stamp, so replaying this page after a later failure
+        // re-decides the same way.
+        if let remoteSettings = accumulation.remoteSettings {
+            if applySettingsFromChangeFeed(remoteSettings) {
+                syncLog.info(
+                    "adopted synced history limit \(remoteSettings.historyLimit.rawValue, privacy: .public) before applying \(accumulation.remote.count, privacy: .public) pulled clip(s)"
+                )
+            }
+            try requireActive(generation)
+        }
+        let appliedLimit = effectiveHistoryLimit
+        let local = store.itemsForSync()
+        for bypassed in accumulation.bypassedMissingAssets {
+            guard Self.localTombstoneDominates(
+                bypassed.item,
+                in: local
+            ) else {
+                throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
+            }
+        }
+        let reconciled = ClipboardMerge.reconcile(
+            Self.droppingHealedBlankItems(
+                from: local,
+                remote: accumulation.remote,
+                healable: accumulation.healableItemIDs
+            ),
+            accumulation.remote
+        )
+        try requireActive(generation)
+        let changedHistory = Self.changedItemCount(from: local, to: reconciled)
+        try await applyPulledStateDurably(reconciled, to: store)
+        try requireActive(generation)
+        deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
+        let receiptChanges = Self.pullReceiptChanges(
+            remote: accumulation.remote,
+            reconciled: reconciled,
+            repairItemIDs: accumulation.receiptInvalidationItemIDs,
+            omittedFields: accumulation.omittedFieldsByItem
+        )
+        if !receiptChanges.isEmpty {
+            // A push that started before this pull may still commit an older receipt
+            // snapshot. Let it finish, then make this the last durable receipt transition
+            // before acknowledging the remote change token.
+            try await awaitActivePushCompletion(generation: generation)
+            try requireActive(generation)
+            try applyPullReceiptChanges(receiptChanges, generation: generation)
+            try afterReceiptInvalidationBeforeTokenPersistence?()
+            try requireActive(generation)
+        }
+        guard !quarantine.didOverflow else {
+            throw CloudKitSyncError.pullQuarantineOverflow
+        }
+        try await eraseReadableCopies(from: accumulation, generation: generation)
+        // Durable before the token: a crash here replays the page instead of losing the
+        // record that was skipped.
+        if quarantine.didChange {
+            try persistPullQuarantine(quarantine.entries, generation: generation)
+            quarantine.didChange = false
+        }
+        if let appliedLimit {
+            if isFirstPageOfPullFromNothing {
+                defaults.set(appliedLimit, forKey: historyCoverageKey)
+            } else {
+                lowerHistoryCoverage(to: appliedLimit)
+            }
+        }
+        try persistToken(token, generation: generation)
+        changeToken = token
+        return changedHistory
+    }
+
+    /// Adopts the synced history limit before the first page of a pull that has more pages is
+    /// applied, so no page is trimmed under this device's old or default limit even when the
+    /// settings record sits on a later page. A page that carries the record needs nothing here.
+    private func adoptSettingsBeforeFirstPage(
+        of changes: CloudKitZoneChanges,
+        generation: UInt64
+    ) async throws {
+        guard !changes.changedRecords.contains(where: {
+            $0.recordType == SyncedSettingsCloudMapping.recordType
+        }) else { return }
+        guard let record = try await fetchSettingsRecordStrictly(generation: generation),
+              let settings = SyncedSettingsCloudMapping.settings(from: record) else { return }
+        if applySettingsFromChangeFeed(settings) {
+            syncLog.info(
+                "adopted synced history limit \(settings.historyLimit.rawValue, privacy: .public) before applying the first page"
+            )
+        }
+    }
+
+    /// Like `fetchSettingsRecord`, but an absent answer that is not "the record does not exist"
+    /// is a failure: the live fetch drops transient per-record errors, and adopting nothing
+    /// there would trim the first page under the wrong limit.
+    private func fetchSettingsRecordStrictly(generation: UInt64) async throws -> CKRecord? {
+        let fetched = try await database.fetchRecords(
+            for: [SyncedSettingsCloudMapping.recordName],
+            in: zoneID
+        )
+        try requireActive(generation)
+        if let record = fetched.records.first(where: {
+            $0.recordType == SyncedSettingsCloudMapping.recordType
+        }) {
+            return record
+        }
+        guard fetched.permanentlyMissingRecordNames.contains(SyncedSettingsCloudMapping.recordName) else {
+            throw CloudKitSyncError.partialRecordFailures(1)
+        }
+        return nil
+    }
+
+    /// How many of the records arrived with their file attached.
+    private nonisolated static func assetCount(in records: [CKRecord]) -> Int {
+        records.filter { $0[ClipboardCloudMapping.Key.blob] is CKAsset }.count
     }
 
     /// How many canonical items are new to `local` or newer than its copy.
@@ -918,14 +1016,14 @@ public final class CloudKitSyncService {
         return reconciled.filter { stamps[$0.id] != $0.modifiedAt }.count
     }
 
-    /// Everything one pull collects before it becomes a single durable apply.
+    /// Everything one page of a pull collects before it becomes a durable apply.
     struct PullAccumulation {
         var remote: [ClipboardItem] = []
         var downloadedBlobs: Set<SyncBlobReference> = []
         var bypassedMissingAssets: [(item: ClipboardItem, blob: SyncBlobReference)] = []
         var receiptInvalidationItemIDs: Set<UUID> = []
-        /// The settings record seen in this pull, if any. Last one wins within a pull — the
-        /// record is a singleton, so a later page can only be a newer copy of the same thing.
+        /// The settings record seen in this page, if any. Last one wins — the record is a
+        /// singleton, so a later copy can only be a newer copy of the same thing.
         var remoteSettings: SyncedSettings?
         /// Items whose record holds readable content from a current encrypted copy, which can
         /// replace a blank local copy of the same clip.
@@ -938,7 +1036,7 @@ public final class CloudKitSyncService {
         var olderDeviceOrigins: [String] = []
     }
 
-    /// In-flight quarantine list for one pull. Only persisted once the pull's records are durable.
+    /// In-flight quarantine list for one pull. Persisted with each page, once its records are durable.
     private struct QuarantineState {
         var entries: [String: CloudKitPullQuarantineEntry]
         var didChange = false
