@@ -37,6 +37,9 @@ public protocol SyncableStore: AnyObject {
     /// that holds age expiry back until then, so a stale local window cannot delete clips the
     /// user chose to keep on another device, resumes it here.
     func markSyncedSettingsRead()
+    /// iCloud holds the deletes with these IDs. A store ages out its deletes past the tombstone
+    /// horizon only among them: an older one iCloud has not taken yet must stay until it is pushed.
+    func discardAgedTombstones(among acknowledged: Set<UUID>)
 }
 
 /// Reports the clips waiting out their undo window. They are still in the sync snapshot as live
@@ -61,6 +64,9 @@ public extension SyncableStore {
 
     /// Default for stores that do not hold age expiry back for the synced settings.
     func markSyncedSettingsRead() {}
+
+    /// Default for stores that keep their deletes for good.
+    func discardAgedTombstones(among acknowledged: Set<UUID>) {}
 }
 
 /// Notifications posted by the clip stores.

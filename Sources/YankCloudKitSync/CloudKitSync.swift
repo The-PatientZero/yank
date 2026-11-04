@@ -1579,6 +1579,7 @@ public final class CloudKitSyncService {
         var clipError: (any Error)?
         do {
             try await pushLocalClips(store: store, generation: generation)
+            discardAgedAcknowledgedTombstones(from: store, generation: generation)
         } catch {
             clipError = error
         }
@@ -1682,6 +1683,16 @@ public final class CloudKitSyncService {
         await logRecordShapes(for: recordsToSave.map(\.record.recordID.recordName))
         #endif
         try throwIfUnconfirmed(prepared)
+    }
+
+    /// Lets the store age out the deletes past the tombstone horizon that iCloud now holds. A delete
+    /// counts as held when its receipt carries its own date; one left unsent never does.
+    private func discardAgedAcknowledgedTombstones(from store: SyncableStore, generation: UInt64) {
+        guard canMutate(generation), let receipts = pushReceipts else { return }
+        let acknowledged = Set(
+            store.itemsForSync().filter { $0.isDeleted && receipts[$0.id] == $0.modifiedAt }.map(\.id)
+        )
+        store.discardAgedTombstones(among: acknowledged)
     }
 
     /// Fails the push for clips that were left out because their server copy could not be read,

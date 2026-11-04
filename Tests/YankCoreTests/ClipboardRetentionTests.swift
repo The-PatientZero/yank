@@ -229,7 +229,7 @@ import Testing
         ])
     }
 
-    @Test func enforcePrunesOldTombstones() {
+    @Test func enforceKeepsOldTombstonesUntilAcknowledged() {
         let stale = now.addingTimeInterval(-121 * 86_400)
         let fresh = now.addingTimeInterval(-1 * 86_400)
 
@@ -241,9 +241,8 @@ import Testing
             now: now
         )
 
-        #expect(result.tombstones == [clipID(81): fresh])
-        #expect(result.prunedTombstoneCount == 1)
-        #expect(result.didChange)
+        #expect(result.tombstones == [clipID(80): stale, clipID(81): fresh])
+        #expect(!result.didChange)
     }
 
     @Test func enforceZeroLimitAndZeroRetentionAreDisabled() {

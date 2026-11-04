@@ -789,6 +789,14 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         enforceRetentionAndLimit()
     }
 
+    func discardAgedTombstones(among acknowledged: Set<UUID>) {
+        guard !isHistoryLoadPending else { return }
+        let kept = ClipboardRetention.prunedTombstones(tombstones, acknowledged: acknowledged, now: Date())
+        guard kept.count != tombstones.count else { return }
+        tombstones = kept
+        persist(notify: false)
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         // No sync is running, so no synced setting is coming to wait for.
         markSyncedSettingsRead()

@@ -15,10 +15,9 @@ enum ClipboardRetention {
         var expiredItems: [ClipboardItem]
         var cappedItems: [ClipboardItem]
         var blobReferencesToDelete: [ClipboardBlobReference]
-        var prunedTombstoneCount: Int
 
         var didChange: Bool {
-            !expiredItems.isEmpty || !cappedItems.isEmpty || prunedTombstoneCount > 0
+            !expiredItems.isEmpty || !cappedItems.isEmpty
         }
     }
 
@@ -105,10 +104,9 @@ enum ClipboardRetention {
     ) -> EnforcementResult {
         let originalItems = items
         var nextItems = items
-        // Only deletes recorded before this pass age out here. A delete created below can be dated
-        // past the horizon (a clip last used long ago) and must still be kept to be pushed.
-        var nextTombstones = prunedTombstones(tombstones, now: now)
-        let prunedCount = tombstones.count - nextTombstones.count
+        // Deletes are never aged out here: one dated past the horizon (a clip last used long ago)
+        // must be kept until iCloud has taken it. See `prunedTombstones(_:acknowledged:now:)`.
+        var nextTombstones = tombstones
         var expired: [ClipboardItem] = []
 
         if retentionDays > 0 {
@@ -138,8 +136,7 @@ enum ClipboardRetention {
             tombstones: nextTombstones,
             expiredItems: expired,
             cappedItems: capped,
-            blobReferencesToDelete: ClipboardBlobCleanup.referencesRemoved(from: originalItems, keeping: nextItems),
-            prunedTombstoneCount: prunedCount
+            blobReferencesToDelete: ClipboardBlobCleanup.referencesRemoved(from: originalItems, keeping: nextItems)
         )
     }
 
@@ -150,7 +147,7 @@ enum ClipboardRetention {
     /// while an unchanged copy elsewhere is still deleted. The date is never moved up to the
     /// retention window's edge: a pin, bookmark or tag made elsewhere before the edge must still
     /// outrank it. For a very old clip it may already be past the tombstone horizon: it is still
-    /// kept and pushed, so the server copy is deleted too, and ages out on a later pass.
+    /// kept and pushed, so the server copy is deleted too, and ages out once iCloud has taken it.
     static func expiryTombstoneDate(for item: ClipboardItem) -> Date {
         var clocks = [item.timestamp, item.modifiedAt]
         if let annotation = item.annotationClocks {
@@ -175,5 +172,16 @@ enum ClipboardRetention {
         // is exactly `horizonDays` old (date == cutoff, age == horizon) ages out, matching the
         // `now - date >= horizon` rule above.
         return tombstones.filter { $0.value > cutoff }
+    }
+
+    /// Ages out only the deletes past the horizon that iCloud has acknowledged. One not yet pushed
+    /// is kept however old it is, because dropping it would leave the clip on the server for good.
+    static func prunedTombstones(
+        _ tombstones: [UUID: Date],
+        acknowledged: Set<UUID>,
+        now: Date
+    ) -> [UUID: Date] {
+        let young = prunedTombstones(tombstones, now: now)
+        return tombstones.filter { young[$0.key] != nil || !acknowledged.contains($0.key) }
     }
 }
