@@ -233,15 +233,7 @@ enum HistorySnapshotTransaction {
         }
 
         let writeOptions = Data.WritingOptions(rawValue: envelope.writeOptionsRawValue)
-        let supportedOptions: Data.WritingOptions = [
-            .atomic,
-            .completeFileProtection,
-            .completeFileProtectionUnlessOpen,
-            .completeFileProtectionUntilFirstUserAuthentication,
-            .noFileProtection
-        ]
-        guard writeOptions.contains(.atomic),
-              writeOptions.isSubset(of: supportedOptions),
+        guard writeOptionsAreSupported(rawValue: envelope.writeOptionsRawValue),
               permissionsArePrivate(envelope.filePermissions),
               protectionIsSupported(envelope.fileProtectionRawValue),
               (try? JSONDecoder().decode([ElementWithID].self, from: envelope.historyData)) != nil,
@@ -256,6 +248,25 @@ enum HistorySnapshotTransaction {
             filePermissions: envelope.filePermissions,
             fileProtection: envelope.fileProtectionRawValue.map(FileProtectionType.init(rawValue:))
         )
+    }
+
+    /// The file-protection classes share one bit field, so `Data.WritingOptions`' set algebra
+    /// cannot tell them apart (a union of all four collapses to a single class). Compare raw
+    /// values: `.atomic` must be set, nothing outside it and the protection field may be set,
+    /// and the protection field must be absent or one of the four known classes.
+    private static func writeOptionsAreSupported(rawValue: UInt) -> Bool {
+        let atomic = Data.WritingOptions.atomic.rawValue
+        let protectionField = Data.WritingOptions.fileProtectionMask.rawValue
+        let knownProtections: Set<UInt> = [
+            0,
+            Data.WritingOptions.completeFileProtection.rawValue,
+            Data.WritingOptions.completeFileProtectionUnlessOpen.rawValue,
+            Data.WritingOptions.completeFileProtectionUntilFirstUserAuthentication.rawValue,
+            Data.WritingOptions.noFileProtection.rawValue
+        ]
+        return rawValue & atomic != 0
+            && rawValue & ~(atomic | protectionField) == 0
+            && knownProtections.contains(rawValue & protectionField)
     }
 
     private static func permissionsArePrivate(_ permissions: Int?) -> Bool {
