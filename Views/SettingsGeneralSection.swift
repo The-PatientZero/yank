@@ -49,6 +49,24 @@ extension SettingsView {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            if manager.showMenuBarIcon {
+                Divider().overlay(Color.yankHairline)
+                field("Menu bar icon style", manager.menuBarIconStyle.blurb) {
+                    Picker("Menu bar icon style", selection: Binding(
+                        get: { manager.menuBarIconStyle },
+                        set: { manager.setMenuBarIconStyle($0) })) {
+                        ForEach(MenuBarIconStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 280, alignment: .leading)
+                    .accessibilityLabel("Menu bar icon style")
+                    .accessibilityValue(manager.menuBarIconStyle.label)
+                    .accessibilityHint(manager.menuBarIconStyle.blurb)
+                }
+            }
             Divider().overlay(Color.yankHairline)
             field("Shortcut opens", manager.shortcutOpenTarget.blurb) {
                 Picker("Shortcut opens", selection: Binding(
@@ -291,6 +309,22 @@ extension SettingsView {
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(AppTheme.active.foreground)
             }
+        }
+    }
+}
+
+private extension MenuBarIconStyle {
+    var label: String {
+        switch self {
+        case .color: "Color"
+        case .plain: "Plain"
+        }
+    }
+
+    var blurb: String {
+        switch self {
+        case .color: "The Yank logo in its own colors."
+        case .plain: "One color that matches the other icons in the menu bar."
         }
     }
 }

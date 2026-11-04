@@ -8,6 +8,10 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Added
+
+- A Menu bar icon style setting on the Mac, under Settings > General. Plain draws the icon in one color that matches the other menu bar icons. Color, the default, keeps the logo's colors. The update, sync and pause marks keep their colors in both styles.
+
 ## [1.3.0] - 2026-11-04
 
 ### Added
