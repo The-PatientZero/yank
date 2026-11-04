@@ -78,7 +78,8 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
    section. A failure here costs no approval.
 1. After a reviewer approves the run in the `release` environment, builds, signs, and notarizes the universal DMG via `scripts/build_dmg.sh`, plus the
    stapled-app ZIP + `.sha256` sidecars the in-app updater consumes.
-2. Publishes the GitHub release with all four assets and the matching `CHANGELOG.md` section.
+2. Signs build provenance for the DMG and ZIP, then publishes the GitHub release with all four
+   assets and the matching `CHANGELOG.md` section. Releases are immutable once published.
 3. Opens a PR to refresh `releases.json` — the updater's feed — and attempts
    auto-merge for that PR only.
 4. Bumps the Homebrew cask in `The-PatientZero/homebrew-tap`.
