@@ -370,8 +370,12 @@ extension CloudKitSyncService {
             evidence[item.deviceOrigin] = max(evidence[item.deviceOrigin] ?? .distantPast, item.modifiedAt)
         }
         for other in states.values where other.deviceID != deviceID {
-            for origin in other.content.olderOrigins where !known.contains(origin) && evidence[origin] == nil {
-                evidence[origin] = other.content.lastSeen(of: origin).map { min($0, now) } ?? now
+            for origin in other.content.olderOrigins where !known.contains(origin) {
+                if let seen = other.content.lastSeen(of: origin) {
+                    evidence[origin] = max(evidence[origin] ?? .distantPast, min(seen, now))
+                } else if evidence[origin] == nil {
+                    evidence[origin] = now
+                }
             }
         }
         let window = EncryptionRolloutTiming.activityWindow
