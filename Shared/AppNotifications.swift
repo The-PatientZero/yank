@@ -6,6 +6,8 @@ extension Notification.Name {
     static let yankWindowDidOpen = Notification.Name("yankWindowDidOpen")
     /// Posted when the history window is summoned, not when it merely regains key status.
     static let yankHistoryWindowDidShow = Notification.Name("yankHistoryWindowDidShow")
+    /// Posted when the history window is asked to show a clip while it is already open and key.
+    static let yankHistoryFocusRequested = Notification.Name("yankHistoryFocusRequested")
     static let yankMenuBarVisibilityChanged = Notification.Name("yankMenuBarVisibilityChanged")
     static let yankThemeChanged = Notification.Name("yankThemeChanged")
     static let yankAppearanceChanged = Notification.Name("yankAppearanceChanged")

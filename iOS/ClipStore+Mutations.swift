@@ -84,13 +84,7 @@ extension ClipStore {
     /// `items` changes — a cache hit is a tuple compare instead of a fresh filter + sort.
     /// App-only: `ClipQuery` isn't linked into the lean keyboard/share extensions.
     func filteredItems(search: String, activeTag: String?) -> [ClipboardItem] {
-        if let cached = filterCache.result(query: search, tag: activeTag) {
-            return cached
-        }
-        let visible = PendingDeletePolicy.visibleItems(items, pending: pendingDeletion)
-        let result = ClipQuery.filter(visible, search: search, activeTag: activeTag)
-        filterCache.store(result, query: search, tag: activeTag)
-        return result
+        filterCache.filtered(items, pending: pendingDeletion, search: search, activeTag: activeTag)
     }
 
     // MARK: - Batch edits (multi-select)
@@ -136,18 +130,15 @@ extension ClipStore {
         charCount: Int,
         byteOffset: Int = 0
     ) -> TextChunkPage? {
-        if let textURL, item.textFilename != nil {
-            return TextChunkReader.page(
-                for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset
-            ) { error in
-                clipStoreLog.error("Failed to read iOS text chunk: \(error.localizedDescription)")
-            }
+        TextChunkReader.page(
+            for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset
+        ) { error in
+            clipStoreLog.error("Failed to read iOS text chunk: \(error.localizedDescription)")
         }
-        return TextChunkReader.page(for: item, textURL: nil, charCount: charCount)
     }
 
     func itemSize(for item: ClipboardItem) -> Int? {
-        if let original = item.originalSizeBytes { return original }
+        if let inline = item.inlineSizeBytes { return inline }
         switch item.type {
         case .text:
             guard item.textFilename != nil, let url = blobURL(for: item) else {

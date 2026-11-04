@@ -1,5 +1,6 @@
 import SwiftUI
 import CloudKit
+import CoreSpotlight
 import UIKit
 import UniformTypeIdentifiers
 
@@ -940,6 +941,8 @@ struct YankApp: App {
     @State private var foregroundCaptureDisclosureSession: IOSForegroundCaptureDisclosureSession
     @State private var pasteAccess: PasteAccessMonitor
     @State private var historyOpenRequest = 0
+    /// The clip a tapped Spotlight result asked for; the history list opens it once readable.
+    @State private var requestedClipID: UUID?
     /// SwiftUI reports a return from the background as `.background`, `.inactive`, `.active`,
     /// so the handler remembers the visit instead of comparing with the previous phase.
     @State private var wasInBackground = false
@@ -970,8 +973,15 @@ struct YankApp: App {
                     foregroundCaptureDisclosureSession.beginReview(mode: settings.foregroundCaptureMode)
                 },
                 pasteAccess: pasteAccess,
-                openRequest: historyOpenRequest
+                openRequest: historyOpenRequest,
+                requestedClipID: $requestedClipID
             )
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard let clipID = SpotlightActivity.clipID(from: activity) else { return }
+                    // The first-run screen sits above the list; the clip opens behind it otherwise.
+                    if foregroundCaptureDisclosureSession.activeSections != nil { closeFirstRunScreen() }
+                    requestedClipID = clipID
+                }
                 .sheet(item: Binding(
                     get: { foregroundCaptureDisclosureSession.activeSections },
                     set: { sections in

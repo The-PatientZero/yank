@@ -293,11 +293,10 @@ final class ClipboardStore {
         // matching capture while retaining its stable identity and annotations; older
         // pre-existing duplicates remain untouched for forward-compatible history handling.
         // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
-        let pendingIDs = pendingDeletionIDs
         guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
             for: item,
             in: items,
-            excluding: pendingIDs
+            pending: pendingDeletion
         ) else {
             return false
         }

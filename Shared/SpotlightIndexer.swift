@@ -9,6 +9,18 @@ struct SpotlightDocument: Equatable, Sendable {
     let contentDescription: String
 }
 
+/// Reads the clip a tapped Spotlight result points at. Result identifiers are the clip's UUID
+/// string (`SpotlightIndexStorage` indexes each text clip under `item.id.uuidString`), so the
+/// format has one owner next to where it is written. Synchronous: read the activity inside the
+/// system's callback and pass on only the id.
+enum SpotlightActivity {
+    static func clipID(from activity: NSUserActivity) -> UUID? {
+        guard activity.activityType == CSSearchableItemActionType,
+              let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return nil }
+        return UUID(uuidString: identifier)
+    }
+}
+
 /// Abstracts the Core Spotlight index so `SpotlightIndexStorage` can be tested without `CSSearchableIndex`.
 protocol SpotlightIndexClient: Sendable {
     func index(_ documents: [SpotlightDocument]) async throws

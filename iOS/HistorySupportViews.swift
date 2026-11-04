@@ -23,6 +23,26 @@ extension View {
     }
 }
 
+/// The visible Copy button on a row or tile. It is a sibling of the row's open button, never part
+/// of its label, so a tap on it copies without opening details and VoiceOver reads it as its own
+/// element. The same copy path as the swipe and menu Copy runs behind `action`.
+struct ClipCopyButton: View {
+    let excerpt: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "doc.on.doc")
+                .font(.yank(.subheadline))
+                .foregroundStyle(.secondary)
+                .frame(width: ControlTarget.touch, height: ControlTarget.touch)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy \(excerpt)")
+    }
+}
+
 /// A button shown next to a capture method, for the methods iOS lets Yank link to.
 struct CaptureSetupAction {
     let title: String

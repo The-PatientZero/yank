@@ -35,6 +35,7 @@ extension HistoryContentView {
             }
             .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
                 guard pendingOpenSteps.remove(.scrollStream) != nil else { return }
+                adoptOpenFocus()
                 scrollToOpeningPosition(using: proxy)
             }
             .onChange(of: viewMode) { _, _ in
@@ -44,6 +45,10 @@ extension HistoryContentView {
     }
 
     func scrollToOpeningPosition(using proxy: ScrollViewProxy) {
+        if let id = openFocusID, filteredItems.contains(where: { $0.id == id }) {
+            proxy.scrollTo(id, anchor: .center)
+            return
+        }
         guard let id = HistoryOpeningPosition.scrollTargetID(in: filteredItems) else { return }
         proxy.scrollTo(id, anchor: .top)
     }
@@ -222,10 +227,10 @@ extension HistoryContentView {
                 onCopyToClipboard(item)
             }
             // Hotkey-only otherwise; mirrored here for VoiceOver (see above).
-            .accessibilityAction(named: item.isPinned ? "Unpin" : "Pin") {
+            .accessibilityAction(named: ClipActionCopy.pin(isPinned: item.isPinned)) {
                 store.togglePin(for: item)
             }
-            .accessibilityAction(named: item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
+            .accessibilityAction(named: ClipActionCopy.bookmark(isBookmarked: item.isBookmarked)) {
                 store.toggleBookmark(for: item)
             }
             .accessibilityAction(named: "Add Tag") {
@@ -308,6 +313,7 @@ extension HistoryContentView {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
                     guard pendingOpenSteps.remove(.scrollSplitRail) != nil else { return }
+                    adoptOpenFocus()
                     scrollToOpeningPosition(using: proxy)
                 }
             }

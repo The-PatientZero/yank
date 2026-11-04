@@ -102,15 +102,15 @@ enum IOSMotion {
     }
 
     static func quick(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.14)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.quick)
     }
 
     static func state(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.22)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.state)
     }
 
     static func present(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : expoOut(duration: 0.26)
+        reduceMotion ? nil : expoOut(duration: MotionDuration.present)
     }
 
     @MainActor
