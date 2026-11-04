@@ -35,6 +35,7 @@ extension HistoryContentView {
             }
             .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
                 guard pendingOpenSteps.remove(.scrollStream) != nil else { return }
+                adoptOpenFocus()
                 scrollToOpeningPosition(using: proxy)
             }
             .onChange(of: viewMode) { _, _ in
@@ -44,6 +45,10 @@ extension HistoryContentView {
     }
 
     func scrollToOpeningPosition(using proxy: ScrollViewProxy) {
+        if let id = openFocusID, filteredItems.contains(where: { $0.id == id }) {
+            proxy.scrollTo(id, anchor: .center)
+            return
+        }
         guard let id = HistoryOpeningPosition.scrollTargetID(in: filteredItems) else { return }
         proxy.scrollTo(id, anchor: .top)
     }
@@ -308,6 +313,7 @@ extension HistoryContentView {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
                     guard pendingOpenSteps.remove(.scrollSplitRail) != nil else { return }
+                    adoptOpenFocus()
                     scrollToOpeningPosition(using: proxy)
                 }
             }

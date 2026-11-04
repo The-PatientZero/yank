@@ -7,6 +7,9 @@ import Darwin
 @Observable
 final class AppStatus {
     var hotkeyRegistrationFailed = false
+    /// The clip the next history window open should select and scroll to. Set by the controller
+    /// right before it shows the window, and cleared by the history view once it has used it.
+    var historyFocusClipID: UUID?
 }
 
 struct CloudKitBackfillCommandOutcome: Equatable {
@@ -69,6 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clipboardController: ClipboardController?
     private var hub: HubController?
     private var welcomeWindowController: WelcomeWindowController?
+    /// A Spotlight result tapped before the controller existed (cold start); opened right after it starts.
+    private var pendingSpotlightClipID: UUID?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if startCloudKitBackfillCommandIfRequested() {
@@ -108,6 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             clipboardController = clipboard
             clipboard.start()
+            if let clipID = pendingSpotlightClipID {
+                pendingSpotlightClipID = nil
+                clipboard.showHistoryWindow(focusing: clipID)
+            }
         }
 
         Task { @MainActor in
@@ -142,6 +151,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
         clipboardController?.handleRemoteChange()
+    }
+
+    /// A tap on a Spotlight result opens the history window on that clip.
+    func application(
+        _ application: NSApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        guard let clipID = SpotlightActivity.clipID(from: userActivity) else { return false }
+        if let clipboardController {
+            clipboardController.showHistoryWindow(focusing: clipID)
+        } else {
+            pendingSpotlightClipID = clipID
+        }
+        return true
     }
 
     func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {

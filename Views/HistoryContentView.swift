@@ -46,6 +46,13 @@ struct HistoryContentView: View {
     /// for the "shown" notification.
     @State var pendingOpenSteps: Set<OpenStep>
 
+    /// The clip this open should select and scroll to (a tapped Spotlight result), adopted from
+    /// `AppStatus` by the first open step that needs it and dropped once every step has run, so a
+    /// later view-mode change or plain open never jumps back to it.
+    @State var openFocusID: UUID?
+    /// While a focus request resets the search, the clip the search-reset selection must keep.
+    @State private var pendingFocusID: UUID?
+
     /// Each receiver of the key event consumes only its own step, so handler order never matters.
     enum OpenStep: Hashable {
         case selectDefault
@@ -131,7 +138,49 @@ struct HistoryContentView: View {
     }
 
     private var defaultSelectedItem: ClipboardItem? {
+        if let pendingFocusID, let focused = filteredItems.first(where: { $0.id == pendingFocusID }) {
+            return focused
+        }
         return filteredItems.first(where: { !$0.isPinned }) ?? filteredItems.first
+    }
+
+    /// Takes the requested clip from `AppStatus` once and keeps it for the open steps. Safe to call
+    /// from every step: the first caller adopts it, the rest see the same value.
+    func adoptOpenFocus() {
+        guard openFocusID == nil, let requested = appStatus?.historyFocusClipID else { return }
+        appStatus?.historyFocusClipID = nil
+        openFocusID = requested
+    }
+
+    /// The clip to select at the end of an open: the requested one when it is in the list,
+    /// otherwise the newest-clip rule.
+    private func openSelectionTarget() -> UUID? {
+        adoptOpenFocus()
+        if let openFocusID, filteredItems.contains(where: { $0.id == openFocusID }) { return openFocusID }
+        return HistoryOpeningPosition.selectionID(in: filteredItems)
+    }
+
+    /// A clip is requested while the window is already open and key: no open step follows, so
+    /// reset the search and filter, then select and scroll to it directly.
+    private func focusRequestedClip() {
+        guard let clipID = appStatus?.historyFocusClipID else { return }
+        appStatus?.historyFocusClipID = nil
+        // A changed search text runs the search-reset selection, which must land on this clip too.
+        pendingFocusID = searchText.isEmpty ? nil : clipID
+        searchDebounceTask?.cancel()
+        searchText = ""
+        searchTextDebounced = ""
+        activeTagFilter = nil
+        Task { @MainActor in
+            // Wait one turn so the cleared search has been applied to the list.
+            await Task.yield()
+            guard filteredItems.contains(where: { $0.id == clipID }) else {
+                pendingFocusID = nil
+                return
+            }
+            scrollTrigger = true
+            updateSelection { $0.selectDefault(in: filteredItems, preferredID: clipID) }
+        }
     }
 
     /// All selected items in filtered list order
@@ -286,6 +335,7 @@ struct HistoryContentView: View {
             if ClipQuery.appliesWithoutDebounce(newValue) {
                 searchTextDebounced = newValue
                 updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
+                pendingFocusID = nil
             } else {
                 searchDebounceTask = Task { @MainActor in
                     try? await Task.sleep(for: ClipQuery.searchDebounce)
@@ -311,7 +361,15 @@ struct HistoryContentView: View {
             searchText = ""
             searchTextDebounced = ""
             activeTagFilter = nil
+            openFocusID = nil
+            pendingFocusID = nil
             pendingOpenSteps = Self.openSteps(for: viewMode)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryFocusRequested)) { _ in
+            focusRequestedClip()
+        }
+        .onChange(of: pendingOpenSteps.isEmpty) { _, allRun in
+            if allRun { openFocusID = nil }
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
             axPermission?.refresh()
@@ -323,7 +381,7 @@ struct HistoryContentView: View {
             pendingTagInput = nil
             detail.cancelTagInput()
             if pendingOpenSteps.remove(.selectDefault) != nil {
-                let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
+                let targetID = openSelectionTarget()
                 scrollTrigger = false
                 updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
             }

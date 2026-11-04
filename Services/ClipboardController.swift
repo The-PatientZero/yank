@@ -624,7 +624,10 @@ final class ClipboardController {
         quickPickerWindowController?.showWindow(nil)
     }
 
-    private func showHistoryWindow() {
+    /// The one way to show the history window. `clipID` is the clip to select and scroll to; every
+    /// open without a target clears any earlier one, so an old request can never come back.
+    func showHistoryWindow(focusing clipID: UUID? = nil) {
+        dependencies.appStatus.historyFocusClipID = clipID
         cancelDelayedQuickPickerOpen()
         quickPickerWindowController?.close()
         historyWindowController?.showWindow(nil)

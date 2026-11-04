@@ -30,6 +30,9 @@ struct HistoryView: View {
     var pasteAccess: PasteAccessMonitor? = nil
     /// Bumped by the app each time it returns from the background; resets search, filter and scroll.
     var openRequest = 0
+    /// A clip a Spotlight result asked for. Kept until the history is readable, then cleared
+    /// whether or not the clip exists.
+    @Binding var requestedClipID: UUID?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
@@ -40,6 +43,9 @@ struct HistoryView: View {
     @State private var showSettings = false
 
     @State private var openItem: ClipboardItem?
+    /// The clip a Spotlight tap opened. The list scrolls to it (not to the newest clip) until the
+    /// user opens something else, so the return-from-background scroll cannot move it away.
+    @State private var spotlightScrollID: UUID?
 
     @State private var isSelecting = false
     @State private var selection: Set<UUID> = []
@@ -57,6 +63,12 @@ struct HistoryView: View {
 
     private var filtered: [ClipboardItem] {
         store.filteredItems(search: appliedQuery, activeTag: activeTag)
+    }
+
+    /// History is readable once it has been read and storage is not waiting on the first unlock
+    /// or unavailable; before that the list is empty and a requested clip cannot be found.
+    private var isHistoryReadable: Bool {
+        store.hasLoaded && !store.isAwaitingFirstUnlock && !store.storageUnavailable
     }
 
     private var visibleItems: [ClipboardItem] {
@@ -168,6 +180,12 @@ struct HistoryView: View {
             query = ""
             activeTag = nil
         }
+        .onChange(of: requestedClipID) { openRequestedClip() }
+        .onChange(of: isHistoryReadable) { openRequestedClip() }
+        .onChange(of: openItem?.id) { _, newID in
+            if newID != spotlightScrollID { spotlightScrollID = nil }
+        }
+        .onAppear { openRequestedClip() }
         .toolbar { toolbarContent }
         .animation(IOSMotion.state(reduceMotion), value: isSelecting)
         .animation(IOSMotion.state(reduceMotion), value: activeTag)
@@ -287,9 +305,18 @@ struct HistoryView: View {
                     .onChange(of: openRequest) { _, _ in
                         // Wait one turn so the cleared search has been applied to the list.
                         Task { @MainActor in
+                            if let spotlightScrollID {
+                                proxy.scrollTo(spotlightScrollID, anchor: .center)
+                                return
+                            }
                             guard let newestID = filtered.first?.id else { return }
                             proxy.scrollTo(newestID, anchor: .top)
                         }
+                    }
+                    .onChange(of: spotlightScrollID) { _, id in
+                        guard let id else { return }
+                        // Wait one turn so the cleared search has been applied to the list.
+                        Task { @MainActor in proxy.scrollTo(id, anchor: .center) }
                     }
                 }
             }
@@ -637,6 +664,25 @@ struct HistoryView: View {
     }
 
     // MARK: - Selection
+
+    /// Opens the clip a Spotlight result asked for, once the history can be read. The request is
+    /// cleared whether or not the clip is still there (deleted, or waiting out its undo window),
+    /// so a stale result leaves the app at the list instead of an empty detail page.
+    private func openRequestedClip() {
+        guard let clipID = requestedClipID, isHistoryReadable else { return }
+        requestedClipID = nil
+        guard let item = visibleItems.first(where: { $0.id == clipID }) else { return }
+        searchDebounceTask?.cancel()
+        query = ""
+        appliedQuery = ""
+        activeTag = nil
+        isSelecting = false
+        selection = []
+        showSettings = false
+        showShare = false
+        spotlightScrollID = item.id
+        withAnimation(IOSMotion.present(reduceMotion)) { openItem = item }
+    }
 
     private func open(_ item: ClipboardItem) {
         IOSMotion.selectionFeedback()
