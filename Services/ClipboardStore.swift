@@ -338,7 +338,8 @@ final class ClipboardStore {
             aiEnrichedAt: item.aiEnrichedAt,
             modifiedAt: item.modifiedAt,
             deletedAt: item.deletedAt,
-            deviceOrigin: item.deviceOrigin
+            deviceOrigin: item.deviceOrigin,
+            annotationClocks: item.annotationClocks
         )
     }
 
