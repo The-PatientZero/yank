@@ -366,7 +366,8 @@ struct HistoryView: View {
             mode: settings.viewMode,
             density: settings.density,
             isHighlighted: isOpen(item),
-            isSelected: selection.contains(item.id)
+            isSelected: selection.contains(item.id),
+            reservesCopySlot: !isSelecting
         )
         if isSelecting {
             Button { toggle(item.id) } label: {
@@ -384,20 +385,24 @@ struct HistoryView: View {
                 action: "Toggle selection"
             )
         } else {
-            Button { open(item) } label: {
-                tile.overlay(alignment: .topTrailing) {
-                    if copiedItemID == item.id {
-                        copiedFlash
-                            .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+            ZStack(alignment: .bottomTrailing) {
+                Button { open(item) } label: {
+                    tile.overlay(alignment: .topTrailing) {
+                        if copiedItemID == item.id {
+                            copiedFlash
+                                .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                .clipAccessibility(
+                    label: item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt),
+                    isSelected: isOpen(item),
+                    action: "Open details"
+                )
+                ClipCopyButton(excerpt: item.excerpt) { copyClipWithFlash(item) }
+                    .padding(ClipTileView.copyButtonInsets(mode: settings.viewMode))
             }
-            .buttonStyle(.plain)
-            .clipAccessibility(
-                label: item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt),
-                isSelected: isOpen(item),
-                action: "Open details"
-            )
             .contextMenu { itemMenu(item) } preview: { ClipPeekView(item: item, store: store) }
         }
     }
@@ -436,23 +441,27 @@ struct HistoryView: View {
                 action: "Toggle selection"
             )
         } else {
-            Button { open(item) } label: {
-                ClipRowView(item: item, store: store, density: settings.density,
-                            isHighlighted: isOpen(item), onTagTap: applyTag)
-                    .overlay(alignment: .topTrailing) {
-                        if copiedItemID == item.id {
-                            copiedFlash
-                                .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
-                                .padding(Space.xs)
+            ZStack(alignment: .bottomTrailing) {
+                Button { open(item) } label: {
+                    ClipRowView(item: item, store: store, density: settings.density,
+                                isHighlighted: isOpen(item), onTagTap: applyTag, reservesCopySlot: true)
+                        .overlay(alignment: .topTrailing) {
+                            if copiedItemID == item.id {
+                                copiedFlash
+                                    .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+                                    .padding(Space.xs)
+                            }
                         }
-                    }
-            }
+                }
                 .buttonStyle(.plain)
                 .clipAccessibility(
                     label: item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt),
                     isSelected: isOpen(item),
                     action: "Open details"
                 )
+                ClipCopyButton(excerpt: item.excerpt) { copyClipWithFlash(item) }
+                    .padding(ClipRowView.copyButtonInsets(density: settings.density))
+            }
                 .listRowBackground(Color.clear)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button { togglePin(item) } label: {
