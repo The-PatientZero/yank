@@ -232,8 +232,8 @@ extension CloudKitSyncService {
     }
 
     /// Asks iCloud for the file names of the given clips, a batch at a time, and returns the
-    /// ones whose stored file is the file the clip names now. A failed probe only means the file
-    /// is attached again, as it was before this check existed.
+    /// ones whose stored file is the file the clip names. A failed probe only means the file is
+    /// attached again.
     private func blobsHeldByServer(
         among candidates: [ClipboardItem],
         generation: UInt64

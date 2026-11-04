@@ -1,6 +1,5 @@
 import SwiftUI
 
-// Sync card section — the iCloud opt-in toggle plus the live status rows.
 extension SettingsView {
     var syncDescription: String {
         guard let store, case .localOnly(.notProvisioned) = store.syncStatus else {

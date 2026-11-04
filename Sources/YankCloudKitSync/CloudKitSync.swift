@@ -706,9 +706,9 @@ public final class CloudKitSyncService {
 
     /// The lowest history limit this device has applied since its change token last started
     /// from nothing; the clips above it were trimmed here and are still in iCloud. A device from
-    /// a build that predates the marker is assumed to have been trimmed to the default limit,
-    /// which repairs devices that were already affected. `nil` while there is no token to
-    /// describe, because the next pull starts from nothing and records the limit itself.
+    /// a build that predates the marker is assumed to have been trimmed to the default limit.
+    /// `nil` while there is no token to describe, because the next pull starts from nothing and
+    /// records the limit itself.
     private func historyCoverage() -> Int? {
         if let stored = defaults.object(forKey: historyCoverageKey) as? Int { return stored }
         return changeToken == nil ? nil : HistoryLimit.essential.rawValue
@@ -1080,9 +1080,9 @@ public final class CloudKitSyncService {
 
     /// Decides which records of a page that came without files can be used as delivered. A clip
     /// is known present only when this device holds the same file, the local clip names it and a
-    /// push receipt says iCloud accepted the clip; anything less asks for the full record, which
-    /// is what a pull has always done. A live clip with no readable content at all is fetched in
-    /// full too, in case the page left out the encrypted copy.
+    /// push receipt says iCloud accepted the clip; anything less asks for the full record. A live
+    /// clip with no readable content at all is fetched in full too, in case the page left out the
+    /// encrypted copy.
     private func planMetadataPage(_ records: [CKRecord], store: SyncableStore) -> MetadataPagePlan {
         var plan = MetadataPagePlan()
         let localByID = Dictionary(

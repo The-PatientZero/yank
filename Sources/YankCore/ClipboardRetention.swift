@@ -147,14 +147,12 @@ enum ClipboardRetention {
         )
     }
 
-    /// When the delete for an expired clip is dated. Not `now`: a device that was off or asleep
-    /// expires clips from an old history, and a delete dated `now` would beat a copy another device
-    /// used again meanwhile. Dated just past the newest time this device recorded for the clip
-    /// (capture, edit, pin, bookmark, tags), a later use elsewhere outranks it and the clip stays,
-    /// while an unchanged copy elsewhere is still deleted. The date is never moved up to the
-    /// retention window's edge: a pin, bookmark or tag made elsewhere before the edge must still
-    /// outrank it. For a very old clip it may already be past the tombstone horizon: it is still
-    /// kept and pushed, so the server copy is deleted too, and ages out once iCloud has taken it.
+    /// When the delete for an expired clip is dated. Not `now`: a device that was off expires clips
+    /// from an old history, and a delete dated `now` would beat a copy another device used again
+    /// meanwhile. It is dated just past the newest time this device recorded for the clip
+    /// (capture, edit, pin, bookmark, tags), so a later use or protection elsewhere outranks it. For
+    /// a very old clip it may already be past the tombstone horizon; it is still kept and pushed,
+    /// and ages out once iCloud has taken it.
     static func expiryTombstoneDate(for item: ClipboardItem) -> Date {
         var clocks = [item.timestamp, item.modifiedAt]
         if let annotation = item.annotationClocks {

@@ -24,7 +24,7 @@ final class IOSAppRuntime {
         self.store = store
         self.settings = settings
         self.syncController = IOSCloudSyncController(store: store, settings: settings)
-        // A bonus: the foreground path calls `recoverProtectedStorage()` too and is the one to rely on.
+        // Best effort; the foreground path calls `recoverProtectedStorage()` too and is the one to rely on.
         protectedDataObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.protectedDataDidBecomeAvailableNotification,
             object: nil,
