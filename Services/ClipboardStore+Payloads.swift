@@ -35,15 +35,6 @@ extension ClipboardStore {
         return written
     }
 
-    func saveImage(_ data: Data) -> String? {
-        blobStore.saveImage(data)
-    }
-
-    /// Persists a full pasteboard archive (binary plist) and returns its filename.
-    func saveRichArchive(_ archive: PasteboardArchive) -> String? {
-        blobStore.saveRichArchive(archive)
-    }
-
     func richArchiveAsync(for item: ClipboardItem) async -> PasteboardArchive? {
         guard let url = blobStore.richArchiveURL(for: item) else { return nil }
         do {
@@ -52,11 +43,6 @@ extension ClipboardStore {
             Log.store.error("Failed to load rich archive: \(error.localizedDescription)")
             return nil
         }
-    }
-
-    /// Saves large text off the main actor so a multi-MB write never stalls the menu-bar capture UI.
-    func saveTextAsync(_ text: String) async -> String? {
-        await blobStore.saveTextAsync(text)
     }
 
     /// Load full text content from file (lazy loading for large text)

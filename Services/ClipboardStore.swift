@@ -217,22 +217,13 @@ final class ClipboardStore {
     /// Returns whether the capture was saved (or merged into an existing clip). `false` means
     /// nothing durable changed, so the caller must not treat the content as applied.
     @discardableResult
-    func add(
-        _ item: ClipboardItem,
-        richArchive: PasteboardArchive? = nil,
-        observedAt: Date? = nil
-    ) -> Bool {
+    func add(_ item: ClipboardItem, observedAt: Date? = nil) -> Bool {
         guard !isHistoryLoadPending else { return reportCaptureResult(saved: false) }
-        var stamped = stampOrigin(on: item)
+        let stamped = stampOrigin(on: item)
         guard !refreshDuplicateIfPresent(stamped, observedAt: observedAt) else {
             return reportCaptureResult(saved: !historyWritesDisabled)
         }
 
-        // Persist the full pasteboard archive only now that we know the item is being
-        // inserted (not deduped) — so a rejected copy never orphans a rich file.
-        if let archive = richArchive, let filename = saveRichArchive(archive) {
-            stamped.richFilename = filename
-        }
         insert(stamped, observedAt: observedAt)
         return reportCaptureResult(saved: !historyWritesDisabled)
     }
