@@ -56,7 +56,7 @@ import Testing
         #expect(projected.textContent == "visible text")
         #expect(projected.searchIndex == nil)
         #expect(projected.ocrText == nil)
-        #expect(projected.tags.isEmpty)
+        #expect(projected.tags == [String(metadata.prefix(40))])
         #expect(projected.aiTags.isEmpty)
     }
 
