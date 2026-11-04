@@ -701,8 +701,11 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     /// Applies the configured age-retention then history limit (call on launch and after a
     /// settings change). Expired unprotected clips are tombstoned so deletion propagates via
-    /// sync; the limit only trims local storage — capped clips stay in the cloud.
-    func enforceRetentionAndLimit() {
+    /// sync; the limit only trims local storage — capped clips stay in the cloud. `limitOnly`
+    /// skips the age expiry, for a caller that runs while a pull is still merging: a clip expired
+    /// from the stale local history is tombstoned as of now and would beat a copy another device
+    /// used again meanwhile.
+    func enforceRetentionAndLimit(limitOnly: Bool = false) {
         guard !isHistoryLoadPending else {
             retentionPassOwed = true
             return
@@ -711,7 +714,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             items: items,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionDays: limitOnly ? 0 : retentionDays,
             now: Date()
         )
         guard result.didChange else { return }
