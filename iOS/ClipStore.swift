@@ -321,7 +321,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private func captureText(
         _ text: String,
         sourceApp: String?,
-        pasteboardGeneration: Int?,
+        pasteboardGeneration: Int,
         hasRichContent: Bool
     ) async -> IOSForegroundCaptureOutcome {
         await hydrate()
@@ -330,8 +330,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             return .terminalPolicyRejection
         }
 
-        if let pasteboardGeneration,
-           let pending = pendingForegroundTextCapture,
+        if let pending = pendingForegroundTextCapture,
            pending.pasteboardGeneration == pasteboardGeneration,
            let current = items.first(where: { $0.id == pending.item.id }),
            isSameForegroundCaptureVersion(current, pending.item) {
@@ -371,7 +370,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                 pasteboardGeneration: pasteboardGeneration,
                 deferredBlobDeletions: []
             )
-            let receipt = persist(notify: pasteboardGeneration == nil)
+            let receipt = persist(notify: false)
             return await finishForegroundCapture(
                 itemID: refreshedID,
                 pasteboardGeneration: pasteboardGeneration,
@@ -379,15 +378,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             )
         }
         items.insert(item, at: 0)
-        let deferredBlobDeletions = applyHistoryLimit(
-            deferBlobDeletion: pasteboardGeneration != nil
-        )
+        let deferredBlobDeletions = applyHistoryLimit(deferBlobDeletion: true)
         prepareForegroundCapture(
             itemID: item.id,
             pasteboardGeneration: pasteboardGeneration,
             deferredBlobDeletions: deferredBlobDeletions
         )
-        let receipt = persist(notify: pasteboardGeneration == nil)
+        let receipt = persist(notify: false)
         return await finishForegroundCapture(
             itemID: item.id,
             pasteboardGeneration: pasteboardGeneration,
@@ -397,10 +394,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func prepareForegroundCapture(
         itemID: UUID,
-        pasteboardGeneration: Int?,
+        pasteboardGeneration: Int,
         deferredBlobDeletions: [ClipboardBlobReference]
     ) {
-        guard let pasteboardGeneration else { return }
         let carriedDeletions = pendingForegroundTextCapture?.deferredBlobDeletions ?? []
         let item = items.first { $0.id == itemID }
         guard let item else { return }
@@ -437,10 +433,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func finishForegroundCapture(
         itemID: UUID,
-        pasteboardGeneration: Int?,
+        pasteboardGeneration: Int,
         receipt: HistorySnapshotWriteReceipt?
     ) async -> IOSForegroundCaptureOutcome {
-        guard let pasteboardGeneration else { return .durable }
         guard let receipt else { return .retryableFailure }
         switch await receipt.value() {
         case .success:
