@@ -11,6 +11,7 @@ private enum HistorySnapshotWriterError: LocalizedError {
     }
 }
 
+// Every access to mutable state holds `lock`.
 private final class HistorySnapshotWriteCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var completedID: UInt64 = 0
@@ -35,6 +36,7 @@ private final class HistorySnapshotWriteCompletion: @unchecked Sendable {
 /// debounced when a newer one supersedes it, both receipts resolve from the coalesced
 /// write; once dispatched, a receipt remains tied to that specific write result.
 final class HistorySnapshotWriteReceipt: @unchecked Sendable {
+    // Every access to mutable state holds `lock`.
     private let lock = NSLock()
     private var result: Result<Void, any Error>?
     private var continuations: [CheckedContinuation<Result<Void, any Error>, Never>] = []
