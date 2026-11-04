@@ -110,6 +110,9 @@ public final class CloudKitSyncService {
     private var pushRetry: Task<Void, Never>?
     private var pushRetryAttempt = 0
     private var activePush: (id: UUID, task: Task<Void, Error>)?
+    /// True while a pull waits for its snapshot to reach the disk; pushes wait for it to clear.
+    private var durablePullApplyInFlight = false
+    private var durablePullApplyWaiters: [CheckedContinuation<Void, Never>] = []
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
     /// The clips the last push that got past preparing could not upload.
@@ -755,7 +758,7 @@ public final class CloudKitSyncService {
                 accumulation.remote
             )
             try requireActive(generation)
-            try store.applyReconciledDurably(reconciled)
+            try await applyPulledStateDurably(reconciled, to: store)
             try requireActive(generation)
             deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
             let receiptChanges = Self.pullReceiptChanges(
@@ -1147,6 +1150,26 @@ public final class CloudKitSyncService {
         }
     }
 
+    /// Applies the pulled state and waits for the disk write without blocking the main actor. The
+    /// apply itself runs before the first suspension, so nothing can interleave between taking
+    /// the local snapshot and applying it. A push that starts during the wait would read state
+    /// that is not durable yet and could record a receipt for it, so pushes wait for this.
+    private func applyPulledStateDurably(_ reconciled: [ClipboardItem], to store: SyncableStore) async throws {
+        durablePullApplyInFlight = true
+        defer {
+            durablePullApplyInFlight = false
+            let waiters = durablePullApplyWaiters
+            durablePullApplyWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+        try await store.applyReconciledAwaitingDurability(reconciled)
+    }
+
+    private func awaitDurablePullApply() async {
+        guard durablePullApplyInFlight else { return }
+        await withCheckedContinuation { durablePullApplyWaiters.append($0) }
+    }
+
     private func awaitActivePushCompletion(generation: UInt64) async throws {
         try requireActive(generation)
         while let activePush {
@@ -1195,6 +1218,8 @@ public final class CloudKitSyncService {
         generation: UInt64,
         replanAfterKeyReset: Bool = true
     ) async throws {
+        try requireActive(generation)
+        await awaitDurablePullApply()
         try requireActive(generation)
         let local = store.itemsForSync()
         let isReceiptMigration = pushReceipts == nil

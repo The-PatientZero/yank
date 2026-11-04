@@ -112,17 +112,20 @@ extension ClipboardStore {
     }
 
     /// Load a chunk of text content, reading only what's necessary
-    func textChunk(for item: ClipboardItem, charCount: Int) -> TextChunkPage? {
-        Self.textChunk(for: item, textURL: blobURL(for: item), charCount: charCount)
+    func textChunk(for item: ClipboardItem, charCount: Int, byteOffset: Int = 0) -> TextChunkPage? {
+        Self.textChunk(for: item, textURL: blobURL(for: item), charCount: charCount, byteOffset: byteOffset)
     }
 
     nonisolated static func textChunk(
         for item: ClipboardItem,
         textURL: URL?,
-        charCount: Int
+        charCount: Int,
+        byteOffset: Int = 0
     ) -> TextChunkPage? {
         if let url = textURL, item.textFilename != nil {
-            return TextChunkReader.page(for: item, textURL: url, charCount: charCount) { error in
+            return TextChunkReader.page(
+                for: item, textURL: url, charCount: charCount, byteOffset: byteOffset
+            ) { error in
                 Log.store.error("Failed to read text chunk: \(error.localizedDescription)")
             }
         }

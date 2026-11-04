@@ -10,7 +10,22 @@ final class ThumbnailCache: @unchecked Sendable {
 
     private let cache = NSCache<NSString, CGImage>()
 
-    private init() { cache.countLimit = 200 }
+    /// Secondary bound; the byte limit below is the one that keeps memory in check, because
+    /// entries range from 240 px tiles to 1,600 px previews.
+    private static let entryCountLimit = 200
+
+    /// Decoded-bitmap budget. NSCache treats it as a hint, which is enough here. Smaller on iOS,
+    /// where the app is terminated for memory use.
+    #if os(macOS)
+    private static let totalCostLimitBytes = 64 * 1024 * 1024
+    #else
+    private static let totalCostLimitBytes = 24 * 1024 * 1024
+    #endif
+
+    private init() {
+        cache.countLimit = Self.entryCountLimit
+        cache.totalCostLimit = Self.totalCostLimitBytes
+    }
 
     /// Returns the cached thumbnail on a hit; otherwise decodes a downsampled copy
     /// (callers already hop to a background task) and stores it. `maxPixel` is the
@@ -19,7 +34,7 @@ final class ThumbnailCache: @unchecked Sendable {
         let key = "\(id.uuidString)#\(maxPixel)" as NSString
         if let hit = cache.object(forKey: key) { return hit }
         guard let image = Self.downsample(url: url, maxPixel: maxPixel) else { return nil }
-        cache.setObject(image, forKey: key)
+        cache.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
         return image
     }
 

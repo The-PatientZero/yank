@@ -21,36 +21,35 @@ struct TextChunkerTests {
         #expect(TextChunker.bytesToRead(charCount: 3, totalBytes: 11) == 11)
     }
 
-    @Test("page from data takes exactly charCount and reports more remaining")
+    @Test("page from data takes exactly charCount and reports the bytes used")
     func pageFromDataTruncatesWithoutEOF() {
         let data = Data("abcdefghij".utf8)
-        let page = TextChunker.page(from: data, charCount: 4)
-        #expect(page.text == "abcd")
-        #expect(page.reachedEOF == false)
+        let page = TextChunker.page(from: data, charCount: 4, windowReachesEOF: false)
+        #expect(page?.text == "abcd")
+        #expect(page?.consumedBytes == 4)
     }
 
-    @Test("page from data shorter than charCount reaches EOF")
+    @Test("page from data shorter than charCount at the end of the file returns what is left")
     func pageFromDataShortDecodeReachesEOF() {
         let data = Data("abc".utf8)
-        let page = TextChunker.page(from: data, charCount: 8)
-        #expect(page.text == "abc")
-        #expect(page.reachedEOF == true)
+        let page = TextChunker.page(from: data, charCount: 8, windowReachesEOF: true)
+        #expect(page?.text == "abc")
+        #expect(page?.consumedBytes == 3)
     }
 
-    @Test("page from data at the exact charCount boundary is not EOF")
-    func pageFromDataExactBoundaryNotEOF() {
+    @Test("page from data that ends exactly at charCount needs more bytes unless it is the end")
+    func pageFromDataExactBoundaryNeedsMoreBytes() {
         let data = Data("abcd".utf8)
-        let page = TextChunker.page(from: data, charCount: 4)
-        #expect(page.text == "abcd")
-        #expect(page.reachedEOF == false)
+        #expect(TextChunker.page(from: data, charCount: 4, windowReachesEOF: false) == nil)
+        #expect(TextChunker.page(from: data, charCount: 4, windowReachesEOF: true)?.text == "abcd")
     }
 
     @Test("page from data counts multi-byte scalars as single characters")
     func pageFromDataCountsScalarsNotBytes() {
         let data = Data("héllo".utf8)
-        let page = TextChunker.page(from: data, charCount: 3)
-        #expect(page.text == "hél")
-        #expect(page.reachedEOF == false)
+        let page = TextChunker.page(from: data, charCount: 3, windowReachesEOF: false)
+        #expect(page?.text == "hél")
+        #expect(page?.consumedBytes == 4)
     }
 
     @Test("page from string truncates and reports more remaining")

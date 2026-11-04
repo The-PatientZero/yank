@@ -31,6 +31,9 @@ struct HistoryView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
+    /// The query the list is filtered by: `query` once typing has paused.
+    @State private var appliedQuery = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var activeTag: String?
     @State private var showSettings = false
 
@@ -51,7 +54,7 @@ struct HistoryView: View {
     @ScaledMetric(relativeTo: .title2) var wordmarkSize: CGFloat = TypeScale.stat
 
     private var filtered: [ClipboardItem] {
-        store.filteredItems(search: query, activeTag: activeTag)
+        store.filteredItems(search: appliedQuery, activeTag: activeTag)
     }
 
     private var visibleItems: [ClipboardItem] {
@@ -107,7 +110,11 @@ struct HistoryView: View {
 
     private var browse: some View {
         Group {
-            if store.items.isEmpty {
+            if !store.hasLoaded {
+                // Neutral until the saved history has been read, so "No clips", the onboarding
+                // screen or a sync problem never flashes over a history that is about to appear.
+                loadingState
+            } else if store.items.isEmpty {
                 switch emptyPresentation {
                 case .iCloudSignedOut:
                     iCloudSignedOutState
@@ -151,6 +158,7 @@ struct HistoryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .modifier(HistorySearchModifier(query: $query, isEnabled: !store.items.isEmpty))
         .onSubmit(of: .search) { applyTagSuggestion() }
+        .onChange(of: query) { _, newValue in scheduleSearch(for: newValue) }
         .onChange(of: openRequest) { _, _ in
             query = ""
             activeTag = nil
@@ -510,6 +518,23 @@ struct HistoryView: View {
 
     private var tagChipTransition: AnyTransition {
         reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity)
+    }
+
+    // MARK: - Search
+
+    /// Filters at once for an empty or `#` query, otherwise after typing pauses; a newer keystroke
+    /// cancels the pending filter.
+    private func scheduleSearch(for text: String) {
+        searchDebounceTask?.cancel()
+        if ClipQuery.appliesWithoutDebounce(text) {
+            appliedQuery = text
+            return
+        }
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: ClipQuery.searchDebounce)
+            guard !Task.isCancelled else { return }
+            appliedQuery = text
+        }
     }
 
     // MARK: - Tag autocomplete

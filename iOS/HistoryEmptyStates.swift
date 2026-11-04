@@ -117,6 +117,12 @@ struct ForegroundCaptureDecisionView: View {
 }
 
 extension HistoryView {
+    var loadingState: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Loading clips")
+    }
+
     var syncingState: some View {
         EmptyStateView(glyphOpacity: 0.85) {
             YankWordmark(size: wordmarkSize)

@@ -334,6 +334,34 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
+
+    /// Whether every stored property matches. `==` compares only `id`, so it cannot tell an
+    /// edited clip from an unchanged one; anything deciding whether a write can be skipped
+    /// must use this. A new stored property must be added here.
+    func hasSamePersistedFields(as other: ClipboardItem) -> Bool {
+        id == other.id
+            && type == other.type
+            && timestamp == other.timestamp
+            && sourceApp == other.sourceApp
+            && textContent == other.textContent
+            && textFilename == other.textFilename
+            && imageFilename == other.imageFilename
+            && richFilename == other.richFilename
+            && hasRichContent == other.hasRichContent
+            && isPinned == other.isPinned
+            && isBookmarked == other.isBookmarked
+            && tags == other.tags
+            && ocrText == other.ocrText
+            && aiTags == other.aiTags
+            && aiTitle == other.aiTitle
+            && aiEnrichedAt == other.aiEnrichedAt
+            && isTruncated == other.isTruncated
+            && originalSizeBytes == other.originalSizeBytes
+            && searchIndex == other.searchIndex
+            && modifiedAt == other.modifiedAt
+            && deletedAt == other.deletedAt
+            && deviceOrigin == other.deviceOrigin
+    }
 }
 
 /// Primary kind of content stored in a clipboard item.

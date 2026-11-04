@@ -51,33 +51,47 @@ enum HistorySnapshotTransaction {
         let fileProtection: FileProtectionType?
     }
 
+    /// A freshly encoded snapshot: the envelope to stage, plus the exact history and tombstone
+    /// bytes inside it, so the writer that just produced them can replace the canonical files
+    /// without reading the envelope back and parsing it again.
+    struct EncodedSnapshot: Sendable {
+        let envelopeData: Data
+        let historyData: Data
+        let tombstonesData: Data
+    }
+
     static let currentVersion = 1
 
     static func transactionURL(for historyURL: URL) -> URL {
         historyURL.appendingPathExtension("transaction")
     }
 
-    static func makeEnvelopeData(
+    static func encodeSnapshot(
         items: [ClipboardItem],
         preservedElements: [HeldHistoryElement] = [],
         tombstones: [UUID: Date],
         writeOptions: Data.WritingOptions,
         filePermissions: Int?,
         fileProtection: FileProtectionType?
-    ) throws -> Data {
+    ) throws -> EncodedSnapshot {
         guard let tombstonesData = TombstoneCodec.encode(tombstones) else {
             throw HistorySnapshotTransactionError.tombstoneEncodingFailed
         }
+        let historyData = try encodeHistory(items: items, preservedElements: preservedElements)
         let envelope = Envelope(
             version: currentVersion,
             transactionID: UUID(),
-            historyData: try encodeHistory(items: items, preservedElements: preservedElements),
+            historyData: historyData,
             tombstonesData: tombstonesData,
             writeOptionsRawValue: writeOptions.union(.atomic).rawValue,
             filePermissions: filePermissions,
             fileProtectionRawValue: fileProtection?.rawValue
         )
-        return try JSONEncoder().encode(envelope)
+        return EncodedSnapshot(
+            envelopeData: try JSONEncoder().encode(envelope),
+            historyData: historyData,
+            tombstonesData: tombstonesData
+        )
     }
 
     /// Encodes the history list. Preserved elements are spliced in as their original bytes, each
@@ -154,23 +168,48 @@ enum HistorySnapshotTransaction {
             permissions: validated.filePermissions,
             protection: validated.fileProtection
         )
-        try writeCanonical(
-            validated.historyData,
-            to: historyURL,
+        try replace(
+            historyData: validated.historyData,
+            tombstonesData: validated.tombstonesData,
+            historyURL: historyURL,
+            tombstonesURL: tombstonesURL,
             writeOptions: validated.writeOptions,
             filePermissions: validated.filePermissions,
-            fileProtection: validated.fileProtection
+            fileProtection: validated.fileProtection,
+            afterCanonicalWrite: afterCanonicalWrite
+        )
+    }
+
+    /// Writes both canonical files from bytes the caller already holds and removes the staged
+    /// envelope. Recovery calls this after validating an envelope it read from disk; the writer
+    /// calls it with the bytes it encoded a moment ago, which need no second validation.
+    static func replace(
+        historyData: Data,
+        tombstonesData: Data,
+        historyURL: URL,
+        tombstonesURL: URL,
+        writeOptions: Data.WritingOptions,
+        filePermissions: Int?,
+        fileProtection: FileProtectionType?,
+        afterCanonicalWrite: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)? = nil
+    ) throws {
+        try writeCanonical(
+            historyData,
+            to: historyURL,
+            writeOptions: writeOptions,
+            filePermissions: filePermissions,
+            fileProtection: fileProtection
         )
         try afterCanonicalWrite?(.historyReplaced)
         try writeCanonical(
-            validated.tombstonesData,
+            tombstonesData,
             to: tombstonesURL,
-            writeOptions: validated.writeOptions,
-            filePermissions: validated.filePermissions,
-            fileProtection: validated.fileProtection
+            writeOptions: writeOptions,
+            filePermissions: filePermissions,
+            fileProtection: fileProtection
         )
         try afterCanonicalWrite?(.tombstonesReplaced)
-        try FileManager.default.removeItem(at: transactionURL)
+        try FileManager.default.removeItem(at: transactionURL(for: historyURL))
     }
 
     static func writeCanonical(

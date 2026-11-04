@@ -70,7 +70,15 @@ extension ClipboardStore {
         items + SyncReconcile.tombstoneItems(tombstones)
     }
 
-    func applyReconciled(_ canonical: [ClipboardItem]) {
+    private struct ReconcileOutcome {
+        let changed: Bool
+        let expiredVisibleCount: Int
+    }
+
+    /// Applies the canonical state in memory and reports whether anything a snapshot stores
+    /// changed. Nothing is assigned when nothing changed, so an echo of this device's own pushes
+    /// neither redraws the history nor writes the disk.
+    private func applyReconciledInMemory(_ canonical: [ClipboardItem]) -> ReconcileOutcome {
         let result = SyncReconcile.apply(
             canonical: canonical,
             replacing: items,
@@ -78,6 +86,8 @@ extension ClipboardStore {
             retentionDays: captureSettings.retentionDays,
             now: Date()
         )
+        let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)
+        guard changed else { return ReconcileOutcome(changed: false, expiredVisibleCount: 0) }
         if result.cappedVisibleCount > 0 {
             Log.store.info(
                 "Reconcile cap dropped \(result.cappedVisibleCount) clip(s); local limit is \(self.maxItems)."
@@ -86,20 +96,49 @@ extension ClipboardStore {
         if result.expiredVisibleCount > 0 {
             Log.store.info("Reconcile retention expired \(result.expiredVisibleCount) synced clip(s).")
         }
-        pendingReconciledBlobDeletions.formUnion(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.visibleItems
         tombstones = result.tombstones
-        persist(notify: result.expiredVisibleCount > 0)
+        return ReconcileOutcome(changed: true, expiredVisibleCount: result.expiredVisibleCount)
+    }
+
+    func applyReconciled(_ canonical: [ClipboardItem]) {
+        guard !isHistoryLoadPending else { return }
+        let outcome = applyReconciledInMemory(canonical)
+        if outcome.changed { persist(notify: outcome.expiredVisibleCount > 0) }
     }
 
     func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
-        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
-        applyReconciled(canonical)
+        guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
+        let outcome = applyReconciledInMemory(canonical)
+        persist(notify: outcome.expiredVisibleCount > 0)
         try historyWriter.flush().get()
+        releaseDeferredBlobDeletions(blobDeletionsAwaitingSnapshot)
+    }
+
+    func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
+        guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
+        let outcome = applyReconciledInMemory(canonical)
+        let batch = blobDeletionsAwaitingSnapshot
+        try await historyWriter.awaitDurableSnapshot(
+            stateChanged: outcome.changed,
+            latestReceipt: latestHistoryWriteReceipt,
+            schedule: {
+                guard let receipt = persist(notify: outcome.expiredVisibleCount > 0) else {
+                    throw PersistenceError.writesDisabled
+                }
+                return receipt
+            }
+        )
+        releaseDeferredBlobDeletions(batch)
+    }
+
+    /// Deletes the batch's blob files that no current clip references, once the snapshot that
+    /// stopped referencing them is durable, and forgets exactly that batch.
+    func releaseDeferredBlobDeletions(_ batch: Set<ClipboardBlobReference>) {
         let referencedBlobs = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
-        let orphanedBlobs = pendingReconciledBlobDeletions.subtracting(referencedBlobs)
-        blobStore.deleteBlobReferences(Array(orphanedBlobs))
-        pendingReconciledBlobDeletions.removeAll()
+        blobStore.deleteBlobReferences(Array(batch.subtracting(referencedBlobs)))
+        blobDeletionsAwaitingSnapshot.subtract(batch)
     }
 
     func blobURL(for reference: SyncBlobReference) -> URL? {

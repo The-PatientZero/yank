@@ -380,16 +380,21 @@ final class IOSCloudSyncController {
         self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 
+    // Sync waits for the saved history: a pull applied over an unloaded store would lose the
+    // remote clips, and the pull-position restart reads a marker the load may still be writing.
     func refreshForeground() async {
+        await store.hydrate()
         _ = await run(.foreground(refreshExisting: true))
     }
 
     func start(force: Bool = false) async {
+        await store.hydrate()
         _ = await run(.start(force: force))
     }
 
     func handleRemoteChange() async -> Bool {
-        await run(.remote)
+        await store.hydrate()
+        return await run(.remote)
     }
 
     /// Stops waiting for these clips; they stay on this iPhone until edited. Only reachable
@@ -700,11 +705,8 @@ struct YankApp: App {
 
     init() {
         let appGroup = AppGroupContext.live()
-        let store = ClipStore(context: appGroup)
+        let store = ClipStore(context: appGroup, deferHistoryLoad: true)
         let settings = IOSSettings(defaults: appGroup?.defaults)
-        if !store.items.isEmpty {
-            settings.completeCaptureSetup()
-        }
         _store = State(initialValue: store)
         _settings = State(initialValue: settings)
         _syncController = State(
@@ -754,9 +756,16 @@ struct YankApp: App {
                     appDelegate.remoteChangeHandler = { [weak syncController] in
                         await syncController?.handleRemoteChange() ?? false
                     }
+                    // The list shows a loading state until the saved history has been read.
+                    await store.hydrate()
+                    // An install whose capture setup was never marked complete only because the
+                    // list used to be non-empty at launch.
+                    if !store.items.isEmpty {
+                        settings.completeCaptureSetup()
+                    }
                     store.enforceRetentionAndLimit()
                     await refreshForeground()
-                    refreshSpotlightIndex()
+                    await refreshSpotlightIndex()
                 }
                 .onChange(of: scenePhase) { oldPhase, newPhase in
                     if oldPhase == .active && newPhase != .active {
@@ -774,7 +783,7 @@ struct YankApp: App {
                         store.reconcileBackupExclusionInBackground()
                         Task {
                             await refreshForeground()
-                            refreshSpotlightIndex()
+                            await refreshSpotlightIndex()
                             if returnedFromBackground {
                                 historyOpenRequest &+= 1
                             }
@@ -855,7 +864,10 @@ struct YankApp: App {
         )
     }
 
-    private func refreshSpotlightIndex() {
+    /// Waits for the saved history: reconciling against an unloaded store would clear the whole
+    /// Yank Spotlight domain.
+    private func refreshSpotlightIndex() async {
+        await store.hydrate()
         if spotlightEnabled {
             SpotlightIndexer.index(store.items)
         } else {

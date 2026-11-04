@@ -57,10 +57,15 @@ final class ClipboardStore {
 
     @ObservationIgnored var tombstones: [UUID: Date] = [:]
     @ObservationIgnored var historyWritesDisabled = false
-    /// Reconcile may discover blobs that are no longer referenced before the replacement
-    /// snapshot is durable. Keep those files until a successful flush, including across a
-    /// failed sync retry, so the last durable snapshot never points at deleted content.
-    @ObservationIgnored var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
+    /// Blobs that no clip references any more, kept until the snapshot that stopped referencing
+    /// them is durable (a sync reconcile, a delete, a clear, retention or the history cap). A
+    /// failed write leaves them here for the next successful save, so the last durable snapshot
+    /// never points at deleted content.
+    @ObservationIgnored var blobDeletionsAwaitingSnapshot: Set<ClipboardBlobReference> = []
+
+    /// The newest scheduled snapshot write. A sync pull that changed nothing still waits for it,
+    /// and retries it if it failed, so it never reports success over a state that is not on disk.
+    @ObservationIgnored var latestHistoryWriteReceipt: HistorySnapshotWriteReceipt?
 
     /// Bumped whenever the watcher's consecutive-repeat suppression must start over: a delete is
     /// enqueued, history is cleared, or a capture was not saved. The watcher compares it with the
@@ -132,13 +137,55 @@ final class ClipboardStore {
         blobStore.storageDirectory.appendingPathComponent("tombstones.json")
     }
 
-    init(settings: CaptureSettings, storageDirectory: URL? = nil) {
+    /// True from `init(deferHistoryLoad: true)` until `hydrate()` has applied the saved history.
+    /// While it is set nothing may write the history file or apply synced state: an empty
+    /// in-memory list must never replace the unloaded file.
+    @ObservationIgnored private(set) var isHistoryLoadPending = false
+
+    @ObservationIgnored private var hydrateTask: Task<Void, Never>?
+
+    /// With `deferHistoryLoad` the saved history is not read here: call `hydrate()` and wait for
+    /// it before anything captures, syncs or shows the history. The app does this so the load
+    /// does not block launch; the default keeps the synchronous load for every other caller.
+    init(settings: CaptureSettings, storageDirectory: URL? = nil, deferHistoryLoad: Bool = false) {
         self.captureSettings = settings
         self.blobStore = ClipBlobStore(storageDirectoryOverride: storageDirectory)
         if !blobStore.ensureDirectoriesExist() {
             storageUnavailable = true
         }
-        loadSnapshot()
+        if deferHistoryLoad {
+            isHistoryLoadPending = true
+            return
+        }
+        applyLoadResult(HistorySnapshotLoader.load(historyURL: historyFileURL, tombstonesURL: tombstonesFileURL))
+        finishLaunchLoad()
+    }
+
+    /// Reads the saved history off the main thread, then applies it and does the launch work
+    /// that follows a load. Concurrent and repeated callers share one load.
+    func hydrate() async {
+        if let hydrateTask {
+            await hydrateTask.value
+            return
+        }
+        guard isHistoryLoadPending else { return }
+        let historyURL = historyFileURL
+        let tombstonesURL = tombstonesFileURL
+        let task = Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                HistorySnapshotLoader.load(historyURL: historyURL, tombstonesURL: tombstonesURL)
+            }.value
+            // Cleared first, so everything below that persists is not swallowed by the guard.
+            self.isHistoryLoadPending = false
+            self.applyLoadResult(result)
+            self.finishLaunchLoad()
+        }
+        hydrateTask = task
+        await task.value
+    }
+
+    /// Apply age retention and the cap, sweep orphaned blobs, and mark the history ready.
+    private func finishLaunchLoad() {
         pruneExpired()
         sweepOrphanedBlobsAtLaunch()
         hasLoaded = true
@@ -172,6 +219,7 @@ final class ClipboardStore {
         richArchive: PasteboardArchive? = nil,
         observedAt: Date? = nil
     ) -> Bool {
+        guard !isHistoryLoadPending else { return reportCaptureResult(saved: false) }
         var stamped = stampOrigin(on: item)
         guard !refreshDuplicateIfPresent(stamped, observedAt: observedAt) else {
             return reportCaptureResult(saved: !historyWritesDisabled)
@@ -197,6 +245,7 @@ final class ClipboardStore {
         richArchive: PasteboardArchive?,
         observedAt: Date? = nil
     ) async -> Bool {
+        await hydrate()
         var stamped = stampOrigin(on: item)
         if primaryBlob == nil, refreshDuplicateIfPresent(stamped, observedAt: observedAt) {
             return reportCaptureResult(saved: !historyWritesDisabled)
@@ -317,9 +366,11 @@ final class ClipboardStore {
 
     // MARK: - Private
 
-    private func loadSnapshot() {
-        switch HistorySnapshotLoader.load(historyURL: historyFileURL, tombstonesURL: tombstonesFileURL) {
+    private func applyLoadResult(_ result: Result<HistorySnapshotLoader.Snapshot, HistorySnapshotLoader.LoadError>) {
+        switch result {
         case .success(let snapshot):
+            // Nothing may change the history before it is loaded, so this replaces an empty state.
+            assert(items.isEmpty && tombstones.isEmpty, "History changed before it finished loading.")
             items = snapshot.items
             tombstones = snapshot.tombstones
             heldElements = snapshot.heldElements
@@ -339,7 +390,7 @@ final class ClipboardStore {
         guard maxItems > 0, items.count > maxItems else { return false }
         let result = ClipboardRetention.cap(items, limit: maxItems)
         guard result.items != items else { return false }
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
         return true
     }
@@ -354,7 +405,7 @@ final class ClipboardStore {
             now: now
         )
         guard result.didChange else { return false }
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
         tombstones = result.tombstones
         return true
@@ -388,15 +439,38 @@ final class ClipboardStore {
         if kept != heldElements { heldElements = kept }
     }
 
-    func persist(notify: Bool = true) {
-        guard !historyWritesDisabled else {
-            Log.store.error("Skipped history save because the on-disk snapshot failed to load.")
-            return
+    /// Returns the receipt of the scheduled write, or nil when writes are disabled.
+    @discardableResult
+    func persist(notify: Bool = true) -> HistorySnapshotWriteReceipt? {
+        guard !historyWritesDisabled, !isHistoryLoadPending else {
+            Log.store.error("Skipped history save because the on-disk snapshot has not loaded.")
+            return nil
         }
         releaseHeldElements()
-        historyWriter.scheduleSave(items: items, preservedElements: heldElements, tombstones: tombstones)
+        let receipt = historyWriter.scheduleSave(
+            items: items,
+            preservedElements: heldElements,
+            tombstones: tombstones
+        )
+        latestHistoryWriteReceipt = receipt
+        releaseBlobsOnceDurable(after: receipt)
         if notify {
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
+        }
+        return receipt
+    }
+
+    /// Deletes the blobs waiting on a snapshot once this write is on disk. The batch is the set
+    /// as it is now, released only on this write's own receipt, so an earlier write finishing can
+    /// never delete files that a later, not yet durable snapshot still lists. A failed write
+    /// leaves the batch in the set for the next successful save.
+    private func releaseBlobsOnceDurable(after receipt: HistorySnapshotWriteReceipt) {
+        let batch = blobDeletionsAwaitingSnapshot
+        guard !batch.isEmpty else { return }
+        Task { [weak self] in
+            guard case .success = await receipt.value() else { return }
+            guard let self, !self.historyWritesDisabled else { return }
+            self.releaseDeferredBlobDeletions(batch)
         }
     }
 

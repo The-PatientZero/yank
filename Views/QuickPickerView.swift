@@ -15,13 +15,16 @@ struct QuickPickerView: View {
     let onSmartSearch: QuickPickerSmartSearchState.Search
 
     @State private var searchText = ""
+    /// The query the list is filtered by: `searchText` once typing has paused.
+    @State private var debouncedQuery = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var selection = ClipSelectionState()
     @State private var smartSearchState = QuickPickerSmartSearchState()
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var items: [ClipboardItem] {
-        smartSearchState.results ?? store.filteredItems(search: searchText, activeTag: nil)
+        smartSearchState.results ?? store.filteredItems(search: debouncedQuery, activeTag: nil)
     }
 
     private var selectedItem: ClipboardItem? {
@@ -50,9 +53,9 @@ struct QuickPickerView: View {
         .onChange(of: presentationState.searchFocusRequest) { _, request in
             requestSearchFocus(for: request)
         }
-        .onChange(of: searchText) { _, _ in
+        .onChange(of: searchText) { _, newValue in
             smartSearchState.queryDidChange()
-            reconcileSelection(preferFirst: true)
+            scheduleSearch(for: newValue)
         }
         .onChange(of: store.changeToken) { _, _ in reconcileSelection(preferFirst: false) }
         .onChange(of: smartSearchState.resultRevision) { _, _ in
@@ -169,6 +172,8 @@ struct QuickPickerView: View {
     /// Starts every open from the same place: empty search, newest unpinned clip selected and in view.
     private func resetForOpen(scrollingWith proxy: ScrollViewProxy) {
         searchText = ""
+        searchDebounceTask?.cancel()
+        debouncedQuery = ""
         smartSearchState.queryDidChange()
         selection.selectDefault(in: items)
         guard let id = HistoryOpeningPosition.selectionID(in: items) else { return }
@@ -180,10 +185,10 @@ struct QuickPickerView: View {
 
     private var emptyState: some View {
         VStack(spacing: Space.sm) {
-            Image(systemName: searchText.isEmpty ? "tray" : "magnifyingglass")
+            Image(systemName: debouncedQuery.isEmpty ? "tray" : "magnifyingglass")
                 .font(.system(size: IconSize.emptyState, weight: .medium))
                 .foregroundColor(.yankTextTertiary)
-            Text(searchText.isEmpty ? "No clips" : "No matches")
+            Text(debouncedQuery.isEmpty ? "No clips" : "No matches")
                 .font(.system(size: TypeScale.body, weight: .semibold))
                 .foregroundColor(.primary)
         }
@@ -259,6 +264,33 @@ struct QuickPickerView: View {
         }
     }
 
+    /// Filters at once for an empty or `#` query, otherwise after typing pauses; a newer keystroke
+    /// cancels the pending filter.
+    private func scheduleSearch(for text: String) {
+        searchDebounceTask?.cancel()
+        if ClipQuery.appliesWithoutDebounce(text) {
+            debouncedQuery = text
+            reconcileSelection(preferFirst: true)
+            return
+        }
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: ClipQuery.searchDebounce)
+            guard !Task.isCancelled else { return }
+            debouncedQuery = text
+            reconcileSelection(preferFirst: true)
+        }
+    }
+
+    /// Return, the arrow keys, copy and paste act on the list for the text typed so far, never on
+    /// the previous result list: any pending filter is applied before the selection is read.
+    private func applyPendingSearch() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        guard debouncedQuery != searchText else { return }
+        debouncedQuery = searchText
+        reconcileSelection(preferFirst: true)
+    }
+
     private func reconcileSelection(preferFirst: Bool) {
         if preferFirst {
             selection.selectDefault(in: items)
@@ -273,25 +305,30 @@ struct QuickPickerView: View {
 
 private extension QuickPickerView {
     private func moveSelection(by delta: Int) {
+        applyPendingSearch()
         selection.move(by: delta, in: items)
     }
 
     private func pasteSelected() {
+        applyPendingSearch()
         guard let selectedItem else { return }
         onPaste(selectedItem)
     }
 
     private func copySelected() {
+        applyPendingSearch()
         guard let selectedItem else { return }
         onCopy(selectedItem)
     }
 
     private func pasteSelectedAsText() {
+        applyPendingSearch()
         guard let selectedItem else { return }
         onPasteAsText(selectedItem)
     }
 
     private func pasteItem(atQuickIndex index: Int) {
+        applyPendingSearch()
         let itemIndex = index - 1
         guard items.indices.contains(itemIndex) else { return }
         onPaste(items[itemIndex])
