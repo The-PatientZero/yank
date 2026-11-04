@@ -6,22 +6,92 @@ private enum KeyboardMotion {
     static let pressDuration: TimeInterval = 0.14
 }
 
+/// A clip kind that gets its own filter chip.
+private enum KindFilter: CaseIterable {
+    case link, code, email, phone, swatch, note
+
+    init?(_ kind: ClipKind) {
+        switch kind {
+        case .link:   self = .link
+        case .code:   self = .code
+        case .email:  self = .email
+        case .phone:  self = .phone
+        case .color:  self = .swatch
+        case .note:   self = .note
+        case .image:  return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .link:   return "Links"
+        case .code:   return "Code"
+        case .email:  return "Email"
+        case .phone:  return "Phone"
+        case .swatch: return "Swatches"
+        case .note:   return "Notes"
+        }
+    }
+}
+
+/// What the chip row can narrow the list to. Identity is the case, never the chip title.
+private enum KeyboardFilter: Hashable {
+    case all
+    case pinned
+    case bookmarked
+    case kind(KindFilter)
+
+    var title: String {
+        switch self {
+        case .all:               return "All"
+        case .pinned:            return "Pinned"
+        case .bookmarked:        return "Bookmarked"
+        case let .kind(filter):  return filter.title
+        }
+    }
+}
+
+/// A clip the keyboard can list, with its kind worked out once per render.
+private struct ListedClip {
+    let item: ClipboardItem
+    let kindFilter: KindFilter?
+
+    func matches(_ filter: KeyboardFilter) -> Bool {
+        switch filter {
+        case .all:               return true
+        case .pinned:            return item.isPinned
+        case .bookmarked:        return item.isBookmarked
+        case let .kind(filter):  return kindFilter == filter
+        }
+    }
+}
+
 final class KeyboardViewController: UIInputViewController {
     private static let log = Logger(subsystem: "com.thepatientzero.yank", category: "keyboard")
     private let appGroup = AppGroupContainer.live()
     private var items: [ClipboardItem] = []
+    private var listedClips: [ListedClip] = []
+    /// Kept in memory only: it survives a switch to another keyboard while the process lives.
+    private var selectedFilter: KeyboardFilter = .all
+    private var chipButtons: [(filter: KeyboardFilter, button: FilterChipButton)] = []
 
     private let maxVisibleClips = 10
-    private let maxSearchResults = 25
 
-    private static var minKeyboardHeight: CGFloat { UIFontMetrics.default.scaledValue(for: 180) }
+    private static let baseKeyboardHeight: CGFloat = 180
+    /// Largest factor the keyboard height may grow to at large text sizes, so it never outgrows
+    /// an iPhone held in landscape.
+    private static let maxKeyboardHeightScale: CGFloat = 1.5
+    /// Room the switch-keyboard footer takes while it shows: one touch target plus its padding.
+    private static let switchKeyFooterHeight = ControlTarget.touch + 2 * Space.sm
 
     private let scrollView = UIScrollView()
     private let stack = UIStackView()
+    private let footerStack = UIStackView()
+    private let switchKeyContainer = UIView()
+    private var heightConstraint: NSLayoutConstraint?
     private var statusHost: UIHostingController<KeyboardStatusView>?
-    private var searchField: UITextField?
-    private var searchQuery = ""
     private let resultsStack = UIStackView()
+    private lazy var switchButton: SwitchKeyButton = makeSwitchButton()
 
     private enum Metrics {
         static let rowCornerRadius = Radius.md
@@ -34,6 +104,9 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         view.backgroundColor = UIColor(Color.yankSurface)
         configureLayout()
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (controller: KeyboardViewController, _) in
+            controller.updateKeyboardHeight()
+        }
         render()
     }
 
@@ -43,12 +116,20 @@ final class KeyboardViewController: UIInputViewController {
         render()
     }
 
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        // The system can change its answer when the keyboard is docked, undocked or resized.
+        syncSwitchKey()
+    }
+
     // MARK: - Layout scaffold
 
     private func configureLayout() {
-        let heightConstraint = view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.minKeyboardHeight)
+        let heightConstraint = view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.baseKeyboardHeight)
         heightConstraint.priority = .defaultHigh
         heightConstraint.isActive = true
+        self.heightConstraint = heightConstraint
+        updateKeyboardHeight()
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.alwaysBounceVertical = false
@@ -74,11 +155,28 @@ final class KeyboardViewController: UIInputViewController {
         resultsStack.spacing = Space.sm
         resultsStack.translatesAutoresizingMaskIntoConstraints = false
 
+        // The footer is always in the hierarchy; hiding its only child collapses it to no height.
+        footerStack.axis = .vertical
+        footerStack.translatesAutoresizingMaskIntoConstraints = false
+        switchKeyContainer.translatesAutoresizingMaskIntoConstraints = false
+        switchKeyContainer.isHidden = true
+        switchButton.translatesAutoresizingMaskIntoConstraints = false
+        switchKeyContainer.addSubview(switchButton)
+        footerStack.addArrangedSubview(switchKeyContainer)
+        view.addSubview(footerStack)
+
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: footerStack.topAnchor),
+            footerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            footerStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            footerStack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            switchButton.leadingAnchor.constraint(equalTo: switchKeyContainer.leadingAnchor, constant: Space.md),
+            switchButton.trailingAnchor.constraint(equalTo: switchKeyContainer.trailingAnchor, constant: -Space.md),
+            switchButton.topAnchor.constraint(equalTo: switchKeyContainer.topAnchor, constant: Space.sm),
+            switchButton.bottomAnchor.constraint(equalTo: switchKeyContainer.bottomAnchor, constant: -Space.sm),
             stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
             stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
@@ -87,55 +185,91 @@ final class KeyboardViewController: UIInputViewController {
         ])
     }
 
+    /// Scales the minimum height with the text size, up to a cap, and makes room for the footer
+    /// while the switch-keyboard button shows.
+    private func updateKeyboardHeight() {
+        let base = Self.baseKeyboardHeight
+        let scaled = min(
+            UIFontMetrics.default.scaledValue(for: base, compatibleWith: traitCollection),
+            base * Self.maxKeyboardHeightScale
+        )
+        let footer = switchKeyContainer.isHidden ? 0 : Self.switchKeyFooterHeight
+        heightConstraint?.constant = scaled + footer
+    }
+
+    /// Shows the switch-keyboard button exactly when the system asks the keyboard to draw one.
+    private func syncSwitchKey() {
+        let needed = needsInputModeSwitchKey
+        guard switchKeyContainer.isHidden == needed else { return }
+        switchKeyContainer.isHidden = !needed
+        updateKeyboardHeight()
+    }
+
     // MARK: - State machine
 
     private func render() {
+        defer { syncSwitchKey() }
         teardownStatusCard()
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        searchField = nil
+        resultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        chipButtons = []
+        listedClips = []
 
         guard reloadHistory() else {
             presentStatusCard(.storageError)
             return
         }
 
-        let hasInsertableClips = !KeyboardClipSearch.listableItems(from: items).isEmpty
-        if !hasInsertableClips {
+        listedClips = KeyboardClipSearch.listableItems(from: items).map {
+            ListedClip(item: $0, kindFilter: KindFilter($0.kind))
+        }
+        if listedClips.isEmpty {
             presentStatusCard(.empty)
             return
         }
 
-        stack.addArrangedSubview(buildSearchField())
+        let filters = availableFilters()
+        if !filters.contains(selectedFilter) { selectedFilter = .all }
+        stack.addArrangedSubview(buildChipRow(filters))
         stack.addArrangedSubview(resultsStack)
-        updateSearchResults()
-
-        if needsInputModeSwitchKey {
-            stack.addArrangedSubview(switchButton())
-        }
+        showSelectedList()
     }
 
-    private func updateSearchResults() {
-        resultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let filtered = KeyboardClipSearch.results(
-            from: items,
-            query: searchQuery,
-            emptyLimit: maxVisibleClips,
-            searchLimit: maxSearchResults
-        )
+    /// All, then Pinned and Bookmarked, then one chip per kind present. A chip with no clips is left out.
+    private func availableFilters() -> [KeyboardFilter] {
+        var filters: [KeyboardFilter] = [.all]
+        if listedClips.contains(where: { $0.item.isPinned }) { filters.append(.pinned) }
+        if listedClips.contains(where: { $0.item.isBookmarked }) { filters.append(.bookmarked) }
+        let presentKinds = Set(listedClips.compactMap(\.kindFilter))
+        filters += KindFilter.allCases.filter(presentKinds.contains).map(KeyboardFilter.kind)
+        return filters
+    }
 
-        if filtered.isEmpty {
-            let noResultsLabel = UILabel()
-            noResultsLabel.text = "No matching clips"
-            noResultsLabel.font = .preferredFont(forTextStyle: .footnote)
-            noResultsLabel.textColor = UIColor(Color.yankTextTertiary)
-            noResultsLabel.textAlignment = .center
-            noResultsLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: ControlTarget.touch).isActive = true
-            resultsStack.addArrangedSubview(noResultsLabel)
-        } else {
-            for item in filtered {
-                resultsStack.addArrangedSubview(clipRow(for: item))
-            }
+    /// All keeps the newest few clips; any other chip lists every matching clip that was loaded.
+    private func clipsForSelectedFilter() -> [ClipboardItem] {
+        let matching = listedClips.lazy.filter { $0.matches(self.selectedFilter) }.map(\.item)
+        return selectedFilter == .all ? Array(matching.prefix(maxVisibleClips)) : Array(matching)
+    }
+
+    @discardableResult
+    private func showSelectedList() -> Int {
+        resultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let clips = clipsForSelectedFilter()
+        for item in clips {
+            resultsStack.addArrangedSubview(clipRow(for: item))
         }
+        return clips.count
+    }
+
+    private func select(_ filter: KeyboardFilter) {
+        guard filter != selectedFilter else { return }
+        selectedFilter = filter
+        for chip in chipButtons {
+            chip.button.isSelected = chip.filter == filter
+        }
+        let count = showSelectedList()
+        // Chips give visual and spoken feedback only: haptics do not fire without Full Access.
+        UIAccessibility.post(notification: .announcement, argument: count == 1 ? "1 clip" : "\(count) clips")
     }
 
     /// The keyboard is intentionally a read-only App Group consumer. It reads the host's bounded
@@ -173,9 +307,6 @@ final class KeyboardViewController: UIInputViewController {
         stack.addArrangedSubview(host.view)
         host.didMove(toParent: self)
         statusHost = host
-        if needsInputModeSwitchKey {
-            stack.addArrangedSubview(switchButton())
-        }
     }
 
     private func teardownStatusCard() {
@@ -186,63 +317,37 @@ final class KeyboardViewController: UIInputViewController {
         statusHost = nil
     }
 
-    // MARK: - Search field
+    // MARK: - Filter chips
 
-    private func buildSearchField() -> UIView {
-        let field = UITextField()
-        field.placeholder = "Search clips…"
-        field.text = searchQuery
-        field.font = .preferredFont(forTextStyle: .callout)
-        field.clearButtonMode = .whileEditing
-        field.returnKeyType = .search
-        field.autocorrectionType = .no
-        field.autocapitalizationType = .none
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.heightAnchor.constraint(greaterThanOrEqualToConstant: ControlTarget.touch).isActive = true
+    private func buildChipRow(_ filters: [KeyboardFilter]) -> UIView {
+        let chips = UIStackView()
+        chips.axis = .horizontal
+        chips.alignment = .fill
+        chips.spacing = Space.sm
+        chips.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = UIView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.backgroundColor = UIColor(Color.yankRaised)
-        container.layer.cornerRadius = Radius.md
-        container.layer.borderColor = UIColor(Color.yankHairline).cgColor
-        container.layer.borderWidth = Hairline.width
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak container] (_: KeyboardViewController, _) in
-            container?.layer.borderColor = UIColor(Color.yankHairline).cgColor
+        for filter in filters {
+            let chip = FilterChipButton(title: filter.title)
+            chip.isSelected = filter == selectedFilter
+            chip.addAction(UIAction { [weak self] _ in self?.select(filter) }, for: .touchUpInside)
+            installPressFeedback(on: chip)
+            chips.addArrangedSubview(chip)
+            chipButtons.append((filter, chip))
         }
 
-        let searchIcon = UIImageView(image: UIImage(systemName: "magnifyingglass"))
-        searchIcon.tintColor = .secondaryLabel
-        searchIcon.contentMode = .scaleAspectFit
-        searchIcon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(textStyle: .callout)
-        searchIcon.isAccessibilityElement = false
-        searchIcon.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(searchIcon)
-        container.addSubview(field)
+        let row = UIScrollView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.showsHorizontalScrollIndicator = false
+        row.alwaysBounceHorizontal = false
+        row.addSubview(chips)
         NSLayoutConstraint.activate([
-            searchIcon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Space.md),
-            searchIcon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            searchIcon.widthAnchor.constraint(equalToConstant: 16),
-            searchIcon.heightAnchor.constraint(equalToConstant: 16),
-            field.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: Space.sm),
-            field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Space.md),
-            field.topAnchor.constraint(equalTo: container.topAnchor, constant: Space.sm),
-            field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Space.sm)
+            chips.leadingAnchor.constraint(equalTo: row.contentLayoutGuide.leadingAnchor),
+            chips.trailingAnchor.constraint(equalTo: row.contentLayoutGuide.trailingAnchor),
+            chips.topAnchor.constraint(equalTo: row.contentLayoutGuide.topAnchor),
+            chips.bottomAnchor.constraint(equalTo: row.contentLayoutGuide.bottomAnchor),
+            row.frameLayoutGuide.heightAnchor.constraint(equalTo: row.contentLayoutGuide.heightAnchor)
         ])
-        container.heightAnchor.constraint(greaterThanOrEqualToConstant: ControlTarget.touch).isActive = true
-
-        field.addAction(UIAction { [weak self, weak field] _ in
-            guard let self else { return }
-            let nextQuery = field?.text ?? ""
-            guard nextQuery != self.searchQuery else { return }
-            self.searchQuery = nextQuery
-            self.updateSearchResults()
-        }, for: .editingChanged)
-
-        field.accessibilityLabel = "Search clips"
-
-        searchField = field
-        return container
+        return row
     }
 
     // MARK: - Clip row
@@ -265,8 +370,10 @@ final class KeyboardViewController: UIInputViewController {
         return row
     }
 
-    private func switchButton() -> UIButton {
-        let button = UIButton(type: .system)
+    // MARK: - Switch keyboard
+
+    private func makeSwitchButton() -> SwitchKeyButton {
+        let button = SwitchKeyButton(type: .system)
         var configuration = UIButton.Configuration.plain()
         configuration.title = "Switch Keyboard"
         configuration.image = UIImage(systemName: "globe")
@@ -288,9 +395,10 @@ final class KeyboardViewController: UIInputViewController {
         button.configuration = configuration
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: ControlTarget.touch).isActive = true
         button.accessibilityLabel = "Switch keyboard"
-        button.addAction(UIAction { [weak self] _ in
-            self?.advanceToNextInputMode()
-        }, for: .touchUpInside)
+        // The system selector switches on a tap and shows the keyboard list on a long press.
+        button.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
+        // VoiceOver activates without a touch event, which the system selector cannot act on.
+        button.onAccessibilityActivate = { [weak self] in self?.advanceToNextInputMode() }
         installPressFeedback(on: button)
         return button
     }
@@ -325,6 +433,63 @@ final class KeyboardViewController: UIInputViewController {
     }
 }
 
+/// The switch-keyboard button. Touches go to the system's input-mode-list handler; VoiceOver
+/// activation, which carries no touch event, advances to the next keyboard directly.
+private final class SwitchKeyButton: UIButton {
+    var onAccessibilityActivate: (() -> Void)?
+
+    override func accessibilityActivate() -> Bool {
+        guard let onAccessibilityActivate else { return super.accessibilityActivate() }
+        onAccessibilityActivate()
+        return true
+    }
+}
+
+/// One filter chip. Its selected state is drawn and spoken ("selected").
+private final class FilterChipButton: UIButton {
+    init(title: String) {
+        super.init(frame: .zero)
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = title
+        configuration.contentInsets = NSDirectionalEdgeInsets(
+            top: Space.sm,
+            leading: Space.lg,
+            bottom: Space.sm,
+            trailing: Space.lg
+        )
+        configuration.background.cornerRadius = Radius.md
+        configuration.background.strokeWidth = Hairline.width
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .preferredFont(forTextStyle: .footnote)
+            return outgoing
+        }
+        self.configuration = configuration
+        configurationUpdateHandler = { button in
+            var updated = button.configuration
+            updated?.baseForegroundColor = button.isSelected ? .label : .secondaryLabel
+            updated?.background.backgroundColor = UIColor(button.isSelected ? Color.yankMultiSelect : Color.yankRaised)
+            updated?.background.strokeColor = UIColor(button.isSelected ? Color.yankMultiSelectBorder : Color.yankHairline)
+            button.configuration = updated
+        }
+        heightAnchor.constraint(greaterThanOrEqualToConstant: ControlTarget.touch).isActive = true
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var accessibilityTraits: UIAccessibilityTraits {
+        get {
+            var traits = super.accessibilityTraits.union(.button)
+            if isSelected { traits.insert(.selected) }
+            return traits
+        }
+        set { super.accessibilityTraits = newValue }
+    }
+}
+
 private final class ClipRowControl: UIControl {
     private let restingColor: UIColor
     private let glyphView = UIImageView()
@@ -332,6 +497,11 @@ private final class ClipRowControl: UIControl {
     private let ageLabel = UILabel()
     /// Second line on preview-only rows; created only for them to keep normal rows light.
     private var previewOnlyHintLabel: UILabel?
+    /// Holds the excerpt, the preview-only hint when there is one, and the age at accessibility sizes.
+    private let textColumn = UIStackView()
+    private let content = UIStackView()
+    /// Whether the age sits under the excerpt (accessibility text sizes) instead of beside it.
+    private var isAgeStacked: Bool?
 
     static let previewOnlyAnnouncement = "Too large to insert. Open Yank to copy it."
 
@@ -367,7 +537,10 @@ private final class ClipRowControl: UIControl {
         ageLabel.setContentHuggingPriority(.required, for: .horizontal)
         ageLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let textColumn: UIView
+        textColumn.axis = .vertical
+        textColumn.alignment = .fill
+        textColumn.spacing = Space.xs
+        textColumn.addArrangedSubview(excerptLabel)
         if item.holdsOnlyPreview {
             excerptLabel.textColor = .secondaryLabel
             let hint = UILabel()
@@ -378,16 +551,11 @@ private final class ClipRowControl: UIControl {
             hint.numberOfLines = 1
             hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             previewOnlyHintLabel = hint
-            let column = UIStackView(arrangedSubviews: [excerptLabel, hint])
-            column.axis = .vertical
-            column.alignment = .fill
-            column.spacing = Space.xs
-            textColumn = column
-        } else {
-            textColumn = excerptLabel
+            textColumn.addArrangedSubview(hint)
         }
 
-        let content = UIStackView(arrangedSubviews: [glyphView, textColumn, ageLabel])
+        content.addArrangedSubview(glyphView)
+        content.addArrangedSubview(textColumn)
         content.axis = .horizontal
         content.alignment = .center
         content.spacing = Space.md
@@ -402,8 +570,7 @@ private final class ClipRowControl: UIControl {
         ])
 
         isAccessibilityElement = true
-        accessibilityLabel = item.excerpt
-        accessibilityValue = item.relativeAge
+        accessibilityLabel = item.accessibilityDescription(kindLabel: kind.label, excerpt: item.excerpt)
         if item.holdsOnlyPreview {
             // The control stays enabled so a tap reaches the handler, which explains why nothing
             // was inserted; VoiceOver reads the row as dimmed.
@@ -414,13 +581,38 @@ private final class ClipRowControl: UIControl {
             accessibilityHint = "Inserts this clip"
         }
 
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (control: ClipRowControl, _) in
+        applyAgePlacement()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]) {
+            (control: ClipRowControl, _) in
             control.layer.borderColor = UIColor(Color.yankHairline).cgColor
+            control.applyAgePlacement()
         }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// A trait handler runs only on a later change, so the first placement happens in `init` with the
+    /// default size and again here once the row knows its real text size.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { applyAgePlacement() }
+    }
+
+    /// Puts the age beside the excerpt, or under it at accessibility text sizes where the two
+    /// would squeeze each other.
+    private func applyAgePlacement() {
+        let stacked = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        guard stacked != isAgeStacked else { return }
+        isAgeStacked = stacked
+        if stacked {
+            textColumn.insertArrangedSubview(ageLabel, at: 1)
+            ageLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        } else {
+            content.addArrangedSubview(ageLabel)
+            ageLabel.setContentHuggingPriority(.required, for: .horizontal)
+        }
+    }
 
     private func rowTitle(for item: ClipboardItem, kind: ClipKind) -> String {
         if case let .link(url) = kind { return url.host ?? url.absoluteString }
