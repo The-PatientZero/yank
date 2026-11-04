@@ -601,13 +601,6 @@ struct HistoryView: View {
 
     // MARK: - Single-item actions
 
-    private func copyClip(_ item: ClipboardItem) {
-        Task { @MainActor in
-            guard await store.copyToPasteboard(item) else { return }
-            successPulse += 1
-        }
-    }
-
     private func copyClipWithFlash(_ item: ClipboardItem) {
         Task { @MainActor in
             guard await store.copyToPasteboard(item) else { return }

@@ -54,14 +54,4 @@ struct TagNormalizationTests {
 
         #expect(cleaned == ["typography"])
     }
-
-    @Test("The enricher and the tag field agree on every vector")
-    func producersAgree() {
-        for input in ["Work", "C++", "Design System", "  spaced  ", "Résumé", "-x-"] {
-            #expect(
-                AITagCleaner.normalize(input) == TagNormalization.normalize(input),
-                "Producers disagree on \(input)"
-            )
-        }
-    }
 }

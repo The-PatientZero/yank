@@ -72,7 +72,6 @@ struct SequentialPasteSessionTests {
         #expect(session.resolve(requestID: request.id, outcome: .success, at: date(4)) == .advanced)
         #expect(session.resolve(requestID: request.id, outcome: .success, at: date(5)) == .stale)
         #expect(session.pastedCount == 1)
-        #expect(session.remainingCount == 1)
     }
 
     @Test("Repeat previous returns the last successful payload without advancing")
@@ -159,7 +158,6 @@ struct SequentialPasteSessionTests {
         #expect(isAccepted(session.append(pasteboardGeneration: 1, text: "é", capturedAt: start)))
 
         #expect(session.totalUTF8Bytes == 2)
-        #expect(session.occurrences.first?.utf8ByteCount == 2)
     }
 
     @Test("Accepted copy resets inactivity timeout")

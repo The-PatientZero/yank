@@ -300,17 +300,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         return true
     }
 
-    /// Capture text from the foreground clipboard, share extension, or App Intent; large text is
-    /// file-backed and oversized text truncated per the size policy in `TextCapturePlan`.
-    func capture(text: String, sourceApp: String? = nil) async {
-        _ = await captureText(
-            text,
-            sourceApp: sourceApp,
-            pasteboardGeneration: nil,
-            hasRichContent: false
-        )
-    }
-
     /// Capture a foreground pasteboard generation and return only after its canonical
     /// history snapshot is durable. A failed receipt remains retryable under the same
     /// generation without creating another file-backed item or blob.
@@ -332,7 +321,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private func captureText(
         _ text: String,
         sourceApp: String?,
-        pasteboardGeneration: Int?,
+        pasteboardGeneration: Int,
         hasRichContent: Bool
     ) async -> IOSForegroundCaptureOutcome {
         await hydrate()
@@ -341,8 +330,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             return .terminalPolicyRejection
         }
 
-        if let pasteboardGeneration,
-           let pending = pendingForegroundTextCapture,
+        if let pending = pendingForegroundTextCapture,
            pending.pasteboardGeneration == pasteboardGeneration,
            let current = items.first(where: { $0.id == pending.item.id }),
            isSameForegroundCaptureVersion(current, pending.item) {
@@ -382,7 +370,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
                 pasteboardGeneration: pasteboardGeneration,
                 deferredBlobDeletions: []
             )
-            let receipt = persist(notify: pasteboardGeneration == nil)
+            let receipt = persist(notify: false)
             return await finishForegroundCapture(
                 itemID: refreshedID,
                 pasteboardGeneration: pasteboardGeneration,
@@ -390,15 +378,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             )
         }
         items.insert(item, at: 0)
-        let deferredBlobDeletions = applyHistoryLimit(
-            deferBlobDeletion: pasteboardGeneration != nil
-        )
+        let deferredBlobDeletions = applyHistoryLimit(deferBlobDeletion: true)
         prepareForegroundCapture(
             itemID: item.id,
             pasteboardGeneration: pasteboardGeneration,
             deferredBlobDeletions: deferredBlobDeletions
         )
-        let receipt = persist(notify: pasteboardGeneration == nil)
+        let receipt = persist(notify: false)
         return await finishForegroundCapture(
             itemID: item.id,
             pasteboardGeneration: pasteboardGeneration,
@@ -408,10 +394,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func prepareForegroundCapture(
         itemID: UUID,
-        pasteboardGeneration: Int?,
+        pasteboardGeneration: Int,
         deferredBlobDeletions: [ClipboardBlobReference]
     ) {
-        guard let pasteboardGeneration else { return }
         let carriedDeletions = pendingForegroundTextCapture?.deferredBlobDeletions ?? []
         let item = items.first { $0.id == itemID }
         guard let item else { return }
@@ -448,10 +433,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func finishForegroundCapture(
         itemID: UUID,
-        pasteboardGeneration: Int?,
+        pasteboardGeneration: Int,
         receipt: HistorySnapshotWriteReceipt?
     ) async -> IOSForegroundCaptureOutcome {
-        guard let pasteboardGeneration else { return .durable }
         guard let receipt else { return .retryableFailure }
         switch await receipt.value() {
         case .success:
@@ -472,19 +456,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func saveTextBlob(_ text: String, filename: String? = nil) async -> String? {
         await blobStore.saveText(text, filename: filename)
-    }
-
-    @discardableResult
-    func captureImage(pngData: Data, sourceApp: String? = nil) async -> Bool {
-        await hydrate()
-        guard !historyWritesDisabled else { return false }
-        guard let filename = await saveImageBlob(pngData) else { return false }
-        var item = ClipboardItem.image(filename: filename, sourceApp: sourceApp)
-        item.deviceOrigin = DeviceIdentity.current
-        items.insert(item, at: 0)
-        applyHistoryLimit()
-        persist()
-        return true
     }
 
     private func saveImageBlob(_ data: Data, filename: String? = nil) async -> String? {
@@ -684,7 +655,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func softDelete(_ toDelete: [ClipboardItem]) {
         commitPendingDelete()
-        pendingDeletion = PendingDeletion(items: toDelete, enqueuedAt: Date())
+        pendingDeletion = PendingDeletion(items: toDelete)
     }
 
     func undoPendingDelete() {

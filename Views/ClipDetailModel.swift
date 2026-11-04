@@ -133,7 +133,7 @@ final class ClipDetailModel {
     }
 
     func commitTag(to item: ClipboardItem) {
-        let normalized = TagChip.normalize(tagInputText)
+        let normalized = TagNormalization.normalize(tagInputText)
         if !normalized.isEmpty { store.addTag(normalized, to: item) }
         cancelTagInput()
     }

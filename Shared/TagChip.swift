@@ -31,12 +31,6 @@ struct TagChip: View {
         return .yankDynamic(light: pair.light, dark: pair.dark)
     }
 
-    /// Must match `TagNormalization`'s rule, or the enricher can't tell an AI-suggested
-    /// tag is a duplicate of a typed one.
-    static func normalize(_ input: String) -> String {
-        TagNormalization.normalize(input)
-    }
-
     var body: some View {
         if let onRemove = onRemove {
             Button(action: onRemove) {

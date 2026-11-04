@@ -4,7 +4,6 @@ enum SyncCopy {
     static let sectionDescription = "Your clips can follow you across devices through your own iCloud — free, no separate Yank account needed."
     static let optInDescription = "Off by default. When on, clips sync through your private iCloud database."
     static let localOnlySectionDescription = "This build keeps clips on this device. iCloud sync is available in the official signed app."
-    static let iCloudRequirement = "iCloud account required. Sign in to iCloud in Settings to enable sync."
 
     /// The sentence every retention, limit and clear message ends with, so the protected set is
     /// described in exactly one place.

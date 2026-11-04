@@ -16,12 +16,6 @@ private enum ClipboardStoreFileSecurity {
         try applyPrivateFileAttributes(to: url)
     }
 
-    static func writeText(_ text: String, to url: URL) async throws {
-        try await Task.detached(priority: .utility) {
-            try write(Data(text.utf8), to: url)
-        }.value
-    }
-
     static func applyPrivateFileAttributes(to url: URL) throws {
         try PrivateFileAttributes.apply(to: url, permissions: filePermissions, protection: fileProtection)
     }
@@ -325,48 +319,6 @@ final class ClipBlobStore {
     }
 
     // MARK: - Blob writes
-
-    func saveImage(_ data: Data) -> String? {
-        let filename = UUID().uuidString + ".png"
-        let url = imagesDirectory.appendingPathComponent(filename)
-
-        do {
-            try ClipboardStoreFileSecurity.write(data, to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save image: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    func saveRichArchive(_ archive: PasteboardArchive) -> String? {
-        let filename = UUID().uuidString + ".plist"
-        let url = richDirectory.appendingPathComponent(filename)
-        do {
-            let encoder = PropertyListEncoder()
-            encoder.outputFormat = .binary
-            try ClipboardStoreFileSecurity.write(encoder.encode(archive), to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save rich archive: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// Save large text off the main actor and return the filename. Used by clipboard
-    /// capture, where a multi-MB write should never stall the menu-bar UI.
-    func saveTextAsync(_ text: String) async -> String? {
-        let filename = UUID().uuidString + ".txt"
-        let url = textsDirectory.appendingPathComponent(filename)
-
-        do {
-            try await ClipboardStoreFileSecurity.writeText(text, to: url)
-            return filename
-        } catch {
-            Log.store.error("Failed to save text file: \(error.localizedDescription)")
-            return nil
-        }
-    }
 
     func persistCaptureBlobs(
         primary: ClipboardCapturePrimaryBlob?,

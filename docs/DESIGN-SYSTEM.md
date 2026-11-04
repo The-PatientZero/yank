@@ -234,7 +234,7 @@ Compact icon-only button with two guarantees the loose `Button { Image }` patter
 
 ### `TagChip` — [`Shared/TagChip.swift`](../Shared/TagChip.swift)
 A tag pill: a 6×6 hue dot for identity, a same-hue wash (fill `0.14`, border `0.28`), and `.primary` text so legibility never depends on the (light) tag colour. Padding `sm`×`xxs`, `Capsule` shape. Optionally tappable (filter) or removable (`xmark`). Hue = `YankInk.tagPalette[YankInk.tagPaletteIndex(for: tag)]`.
-**`TagChip.normalize`**: lowercase → collapse whitespace to `-` → trim leading/trailing `-` → cap at 32 chars.
+**`TagNormalization.normalize`** ([`Sources/YankCore/TagNormalization.swift`](../Sources/YankCore/TagNormalization.swift)) is the single tag rule: lowercase, whitespace to `-`, keep only letters, digits and `-`, trim `-`, cap at `TagNormalization.maximumLength`.
 
 ### `ClipStatusBadge` / `RichContentBadge` — [`Shared/ClipStatusBadge.swift`](../Shared/ClipStatusBadge.swift)
 - **Status**: `pin.fill` (uses `.tint`) takes precedence over `bookmark.fill` (uses `yankBookmark` gold); nothing renders if neither.
@@ -247,7 +247,7 @@ A 30×30 `Radius.sm` rounded square filled `yankSubtleFill`, with a centred SF S
 Wordmark described under Typography. `YankBrandMark` is the boxed logo: `Radius.md` rounded square, `yankSurface` fill, `yankHairline` border, the `BrandGlyph` asset inset by `size × 0.22`, with a soft `black @ 0.06` shadow.
 
 ### `YankPanelTokens` — [`Views/DesignSystem.swift`](../Views/DesignSystem.swift)
-AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×214`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, buttons `124/108/82 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (eyebrow `micro` semibold, title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
+AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×214`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, button `124 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
 
 ---
 
