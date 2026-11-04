@@ -11,6 +11,9 @@ public enum CloudContainerProvisioning {
     private static let serviceEntitlementKey = "com.apple.developer.icloud-services"
     private static let cloudKitService = "CloudKit"
 
+    /// Whether this process can use the iCloud container `containerIdentifier`: on macOS, whether its entitlements list
+    /// that container and the CloudKit service (false if either is absent); on a physical iOS device, always true without
+    /// inspecting anything; in the iOS Simulator, always false.
     public static func isProvisioned(for containerIdentifier: String) -> Bool {
         #if os(macOS)
         guard let containerEntitlement = entitlementValue(for: containerEntitlementKey),
@@ -33,6 +36,7 @@ public enum CloudContainerProvisioning {
         #endif
     }
 
+    /// Whether the given entitlement values list `containerIdentifier` as a container and CloudKit as a service; false if either does not.
     public static func isProvisioned(
         for containerIdentifier: String,
         containerEntitlement: Any,
@@ -54,6 +58,7 @@ public enum CloudContainerProvisioning {
         #endif
     }
 
+    /// Whether `entitlementValue` (a string or an array of strings) names `containerIdentifier`; false for any other value type.
     public static func contains(_ containerIdentifier: String, in entitlementValue: Any) -> Bool {
         if let containers = entitlementValue as? [String] {
             return containers.contains(containerIdentifier)
