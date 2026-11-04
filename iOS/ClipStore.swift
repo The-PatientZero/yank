@@ -169,6 +169,14 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private var prefs: UserDefaults? { appGroupContext?.defaults }
     private var historyLimit: Int { prefs?.integer(forKey: SettingsKeys.historyLimit) ?? 0 }
     private var retentionDays: Int { prefs?.integer(forKey: SettingsKeys.retentionDays) ?? 0 }
+    private var isSyncEnabled: Bool {
+        prefs?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
+    }
+
+    /// Whether sync has read the synced settings in this process. Until it has, age retention
+    /// waits when sync is on: this device's own window can be stale, and a clip expired under it
+    /// is deleted on every device, including clips the user chose to keep from another device.
+    private var hasReadSyncedSettings = false
 
     /// With `deferHistoryLoad` the saved history is not read here: call `hydrate()` and wait for
     /// it before anything captures, syncs or shows the history. The app does this so the load
@@ -711,7 +719,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             items: items,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionDays: isSyncEnabled && !hasReadSyncedSettings ? 0 : retentionDays,
             now: Date()
         )
         guard result.didChange else { return }
@@ -775,7 +783,15 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         waitingClips = clips
     }
 
+    func markSyncedSettingsRead() {
+        guard !hasReadSyncedSettings else { return }
+        hasReadSyncedSettings = true
+        enforceRetentionAndLimit()
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
+        // No sync is running, so no synced setting is coming to wait for.
+        markSyncedSettingsRead()
         syncStatus = .localOnly(reason: reason)
         syncFailureKind = nil
         syncClipsReceived = nil

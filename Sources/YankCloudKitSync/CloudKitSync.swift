@@ -1818,7 +1818,11 @@ public final class CloudKitSyncService {
     /// a genuine mid-flight race rather than the guaranteed cost of every publish.
     private func reconcileSettings(generation: UInt64) async throws {
         try requireActive(generation)
-        guard settingsStore?.syncedSettings != nil else { return }
+        guard settingsStore?.syncedSettings != nil else {
+            // Nothing synced to read, so nothing for the store to wait on.
+            store?.markSyncedSettingsRead()
+            return
+        }
 
         for _ in 0..<Self.maximumSettingsSaveAttempts {
             try requireActive(generation)
@@ -1832,10 +1836,12 @@ public final class CloudKitSyncService {
             ) {
             case .idle:
                 settingsReconciliationPending = false
+                store?.markSyncedSettingsRead()
                 return
             case .adopt(let remote):
                 settingsStore?.applySyncedSettings(remote)
                 settingsReconciliationPending = false
+                store?.markSyncedSettingsRead()
                 return
             case .publish:
                 let record: CKRecord
@@ -1848,6 +1854,7 @@ public final class CloudKitSyncService {
                 if try await database.saveRecordIfUnchanged(record) == .saved {
                     try requireActive(generation)
                     settingsReconciliationPending = false
+                    store?.markSyncedSettingsRead()
                     return
                 }
                 // Someone wrote between the fetch and the save. Re-read and re-decide; if they

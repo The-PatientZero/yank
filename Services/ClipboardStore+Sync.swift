@@ -48,7 +48,13 @@ extension ClipboardStore {
         NotificationCenter.default.post(name: .yankSyncStatusChanged, object: nil)
     }
 
+    func markSyncedSettingsRead() {
+        isRetentionHeldForSettings = false
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
+        // No sync is running, so no synced setting is coming to wait for.
+        isRetentionHeldForSettings = false
         encryptionStatus = nil
         waitingClips = []
         setSyncState(.localOnly(reason: reason), failureKind: nil)

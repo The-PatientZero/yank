@@ -33,6 +33,10 @@ public protocol SyncableStore: AnyObject {
     /// has delivered so far. The count includes edits to clips the store already holds, so it can
     /// exceed the number of clips shown. The next success, failure or stop clears it.
     func markSyncProgress(clipsReceived: Int)
+    /// The transport has read the synced settings record and adopted it if it was newer. A store
+    /// that holds age expiry back until then, so a stale local window cannot delete clips the
+    /// user chose to keep on another device, resumes it here.
+    func markSyncedSettingsRead()
 }
 
 /// Reports the clips waiting out their undo window. They are still in the sync snapshot as live
@@ -54,6 +58,9 @@ public extension SyncableStore {
 
     /// Default for stores that do not show progress.
     func markSyncProgress(clipsReceived: Int) {}
+
+    /// Default for stores that do not hold age expiry back for the synced settings.
+    func markSyncedSettingsRead() {}
 }
 
 /// Notifications posted by the clip stores.

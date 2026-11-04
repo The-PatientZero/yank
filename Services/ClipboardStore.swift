@@ -114,6 +114,16 @@ final class ClipboardStore {
     /// Explicit triggers (settings change, retention notification, launch) bypass the gate.
     @ObservationIgnored private var lastExpirySweep: Date = .distantPast
 
+    /// While true, age retention waits until sync has read the synced settings once in this
+    /// process. This device's own retention window can be stale: a clip expired under it is
+    /// deleted on every device, including clips the user chose to keep from another device.
+    /// Set before the history loads; clearing it runs the pass that was held back.
+    @ObservationIgnored var isRetentionHeldForSettings = false {
+        didSet {
+            if oldValue, !isRetentionHeldForSettings { pruneExpired() }
+        }
+    }
+
     /// Minimum spacing between capture-path expiry sweeps. Retention is a day-granularity
     /// policy, so a one-minute floor is imperceptible while collapsing a burst of captures
     /// from N linear passes down to one.
@@ -395,7 +405,7 @@ final class ClipboardStore {
             items: items,
             tombstones: tombstones,
             historyLimit: maxItems,
-            retentionDays: captureSettings.retentionDays,
+            retentionDays: isRetentionHeldForSettings ? 0 : captureSettings.retentionDays,
             now: now
         )
         guard result.didChange else { return false }
