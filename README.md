@@ -67,6 +67,9 @@ Grab the notarized DMG from
 brew install --cask The-PatientZero/tap/yank
 ```
 
+To check that a download was built from this repository, run
+`gh attestation verify Yank.dmg --repo The-PatientZero/yank`.
+
 The iPhone and iPad app is available on the
 [App Store](https://apps.apple.com/app/id6791990020). On iOS, you choose whether Yank may
 check the latest eligible plain-text clipboard value while the app is in the foreground.
