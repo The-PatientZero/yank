@@ -746,14 +746,19 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         persist()
     }
 
-    /// Why sync cannot pull: the account is missing, restricted or unavailable, or the build has no
-    /// iCloud container. The local history is then all there is, so age retention may run on it.
+    /// Why sync cannot pull for good: sync is off, no account is signed in or the account is
+    /// restricted, or the build has no iCloud container. The local history is then all there is, so
+    /// age retention may run on it. A temporarily unavailable account is not in this list: it comes
+    /// back, and a pull then brings in what other devices used again meanwhile. The status a store
+    /// starts with is not a verdict either, unless the build really has no container.
     private var syncCannotPull: Bool {
         switch syncStatus {
+        case .localOnly(.notProvisioned):
+            !CloudContainerProvisioning.isProvisioned(for: IOSCloudSyncController.containerID)
         case .localOnly:
             true
         case .failed:
-            syncFailureKind.map { [.signedOut, .accountRestricted, .accountUnavailable].contains($0) } ?? false
+            syncFailureKind.map { [.signedOut, .accountRestricted].contains($0) } ?? false
         case .healthy, .syncing:
             false
         }
