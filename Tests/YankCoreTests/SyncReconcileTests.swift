@@ -94,9 +94,9 @@ import Testing
         )
 
         #expect(result.visibleItems == [fresh])
-        // Dated at the start of the 30-day window, not at `now`, so a later use elsewhere outranks it.
+        // Dated just past the clip's own newest clock, not at `now`, so a later use elsewhere outranks it.
         #expect(result.tombstones == [
-            oldImage.id: t0.addingTimeInterval(10 * 86_400 - ClipboardMerge.mergeBumpInterval)
+            oldImage.id: t0.addingTimeInterval(ClipboardMerge.mergeBumpInterval)
         ])
         #expect(result.expiredVisibleCount == 1)
         #expect(result.cappedVisibleCount == 0)
