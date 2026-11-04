@@ -218,8 +218,9 @@ final class HubController {
         return image
     }()
 
-    /// Single-colour mark: only its alpha is used. It is tinted at render time instead of being
-    /// a template image, so the status dots drawn over it keep their own colours.
+    /// Single-colour mark: only its alpha is used. With no status marks the icon is this mark as a
+    /// template image, so macOS tints and dims it like other menu bar icons. With marks it is
+    /// tinted at render time instead, so the dots drawn over it keep their own colours.
     private static let plainGlyph: NSImage = {
         let image = NSImage(named: "BrandGlyphPlain") ?? NSImage()
         image.size = NSSize(width: 18, height: 18)
@@ -234,6 +235,15 @@ final class HubController {
     /// thin ring in the menu-bar ground colour, so they separate from the amber arrow and clear
     /// 3:1 against both a light and a dark menu bar. Drawn per appearance at render time.
     private static func glyph(for state: IconState) -> NSImage {
+        if state.style == .plain, !state.paused, state.updateText == nil, !state.syncProblem {
+            let image = NSImage(size: plainGlyph.size, flipped: false) { rect in
+                plainGlyph.draw(in: rect)
+                return true
+            }
+            image.isTemplate = true
+            image.accessibilityDescription = state.accessibilityDescription
+            return image
+        }
         let image = NSImage(size: brandGlyph.size, flipped: false) { rect in
             let opacity = state.paused ? PauseMark.glyphOpacity : 1
             switch state.style {
@@ -276,11 +286,13 @@ final class HubController {
         return image
     }
 
-    /// Draws the plain mark in the menu bar's text colour for the current appearance.
+    /// Draws the plain mark in the menu bar's text colour for the current appearance. The mark
+    /// is drawn first, so `.sourceIn` keeps only its shape and takes the colour, alpha included,
+    /// from `labelColor`.
     private static func drawPlainGlyph(in rect: NSRect, opacity: CGFloat) {
         plainGlyph.draw(in: rect, from: .zero, operation: .sourceOver, fraction: opacity)
         NSColor.labelColor.setFill()
-        rect.fill(using: .sourceAtop)
+        rect.fill(using: .sourceIn)
     }
 
     private static func drawDot(in dotRect: NSRect, ringWidth: CGFloat, color: NSColor) {
