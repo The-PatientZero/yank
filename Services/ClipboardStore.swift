@@ -137,13 +137,55 @@ final class ClipboardStore {
         blobStore.storageDirectory.appendingPathComponent("tombstones.json")
     }
 
-    init(settings: CaptureSettings, storageDirectory: URL? = nil) {
+    /// True from `init(deferHistoryLoad: true)` until `hydrate()` has applied the saved history.
+    /// While it is set nothing may write the history file or apply synced state: an empty
+    /// in-memory list must never replace the unloaded file.
+    @ObservationIgnored private(set) var isHistoryLoadPending = false
+
+    @ObservationIgnored private var hydrateTask: Task<Void, Never>?
+
+    /// With `deferHistoryLoad` the saved history is not read here: call `hydrate()` and wait for
+    /// it before anything captures, syncs or shows the history. The app does this so the load
+    /// does not block launch; the default keeps the synchronous load for every other caller.
+    init(settings: CaptureSettings, storageDirectory: URL? = nil, deferHistoryLoad: Bool = false) {
         self.captureSettings = settings
         self.blobStore = ClipBlobStore(storageDirectoryOverride: storageDirectory)
         if !blobStore.ensureDirectoriesExist() {
             storageUnavailable = true
         }
-        loadSnapshot()
+        if deferHistoryLoad {
+            isHistoryLoadPending = true
+            return
+        }
+        applyLoadResult(HistorySnapshotLoader.load(historyURL: historyFileURL, tombstonesURL: tombstonesFileURL))
+        finishLaunchLoad()
+    }
+
+    /// Reads the saved history off the main thread, then applies it and does the launch work
+    /// that follows a load. Concurrent and repeated callers share one load.
+    func hydrate() async {
+        if let hydrateTask {
+            await hydrateTask.value
+            return
+        }
+        guard isHistoryLoadPending else { return }
+        let historyURL = historyFileURL
+        let tombstonesURL = tombstonesFileURL
+        let task = Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                HistorySnapshotLoader.load(historyURL: historyURL, tombstonesURL: tombstonesURL)
+            }.value
+            // Cleared first, so everything below that persists is not swallowed by the guard.
+            self.isHistoryLoadPending = false
+            self.applyLoadResult(result)
+            self.finishLaunchLoad()
+        }
+        hydrateTask = task
+        await task.value
+    }
+
+    /// Apply age retention and the cap, sweep orphaned blobs, and mark the history ready.
+    private func finishLaunchLoad() {
         pruneExpired()
         sweepOrphanedBlobsAtLaunch()
         hasLoaded = true
@@ -177,6 +219,7 @@ final class ClipboardStore {
         richArchive: PasteboardArchive? = nil,
         observedAt: Date? = nil
     ) -> Bool {
+        guard !isHistoryLoadPending else { return reportCaptureResult(saved: false) }
         var stamped = stampOrigin(on: item)
         guard !refreshDuplicateIfPresent(stamped, observedAt: observedAt) else {
             return reportCaptureResult(saved: !historyWritesDisabled)
@@ -202,6 +245,7 @@ final class ClipboardStore {
         richArchive: PasteboardArchive?,
         observedAt: Date? = nil
     ) async -> Bool {
+        await hydrate()
         var stamped = stampOrigin(on: item)
         if primaryBlob == nil, refreshDuplicateIfPresent(stamped, observedAt: observedAt) {
             return reportCaptureResult(saved: !historyWritesDisabled)
@@ -322,9 +366,11 @@ final class ClipboardStore {
 
     // MARK: - Private
 
-    private func loadSnapshot() {
-        switch HistorySnapshotLoader.load(historyURL: historyFileURL, tombstonesURL: tombstonesFileURL) {
+    private func applyLoadResult(_ result: Result<HistorySnapshotLoader.Snapshot, HistorySnapshotLoader.LoadError>) {
+        switch result {
         case .success(let snapshot):
+            // Nothing may change the history before it is loaded, so this replaces an empty state.
+            assert(items.isEmpty && tombstones.isEmpty, "History changed before it finished loading.")
             items = snapshot.items
             tombstones = snapshot.tombstones
             heldElements = snapshot.heldElements
@@ -396,8 +442,8 @@ final class ClipboardStore {
     /// Returns the receipt of the scheduled write, or nil when writes are disabled.
     @discardableResult
     func persist(notify: Bool = true) -> HistorySnapshotWriteReceipt? {
-        guard !historyWritesDisabled else {
-            Log.store.error("Skipped history save because the on-disk snapshot failed to load.")
+        guard !historyWritesDisabled, !isHistoryLoadPending else {
+            Log.store.error("Skipped history save because the on-disk snapshot has not loaded.")
             return nil
         }
         releaseHeldElements()

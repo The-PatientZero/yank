@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settings = SettingsManager.shared
     let axPermission = AccessibilityPermission()
     let appStatus = AppStatus()
-    let clipboardStore = ClipboardStore(settings: SettingsManager.shared.captureSettings)
+    let clipboardStore = ClipboardStore(settings: SettingsManager.shared.captureSettings, deferHistoryLoad: true)
 
     private var clipboardController: ClipboardController?
     private var hub: HubController?
@@ -85,18 +85,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ), settings: settings)
         self.hub = hub
 
-        let clipboard = ClipboardController(
-            dependencies: ClipboardDependencies(
-                store: clipboardStore,
-                settings: settings,
-                axPermission: axPermission,
-                appStatus: appStatus,
-                hub: hub,
-                hotkeys: HotkeyRegistry()
+        // The saved history loads off the main thread. The controller (watcher, hotkeys, windows
+        // and sync) is built only afterwards, so nothing can capture, sync or show history over
+        // an unloaded store, and a push that arrives during the load is covered by the pull that
+        // starting the controller begins.
+        Task { @MainActor in
+            await clipboardStore.hydrate()
+            let clipboard = ClipboardController(
+                dependencies: ClipboardDependencies(
+                    store: clipboardStore,
+                    settings: settings,
+                    axPermission: axPermission,
+                    appStatus: appStatus,
+                    hub: hub,
+                    hotkeys: HotkeyRegistry()
+                )
             )
-        )
-        clipboardController = clipboard
-        clipboard.start()
+            clipboardController = clipboard
+            clipboard.start()
+        }
 
         UpdateService.shared.checkIfJustUpdated()
         Task { @MainActor in
@@ -157,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.prohibited)
         Task { @MainActor in
+            await clipboardStore.hydrate()
             guard settings.syncEnabled else {
                 finishBackfillCommand(.prerequisiteFailure("sync-disabled"))
             }

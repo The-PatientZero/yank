@@ -103,12 +103,13 @@ extension ClipboardStore {
     }
 
     func applyReconciled(_ canonical: [ClipboardItem]) {
+        guard !isHistoryLoadPending else { return }
         let outcome = applyReconciledInMemory(canonical)
         if outcome.changed { persist(notify: outcome.expiredVisibleCount > 0) }
     }
 
     func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
-        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
+        guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
         let outcome = applyReconciledInMemory(canonical)
         persist(notify: outcome.expiredVisibleCount > 0)
         try historyWriter.flush().get()
@@ -116,7 +117,7 @@ extension ClipboardStore {
     }
 
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
-        guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
+        guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
         let outcome = applyReconciledInMemory(canonical)
         let batch = blobDeletionsAwaitingSnapshot
         try await historyWriter.awaitDurableSnapshot(
