@@ -66,6 +66,8 @@ extension ClipboardStore {
         encryptionStatus = nil
         waitingClips = []
         setSyncState(.localOnly(reason: reason), failureKind: nil)
+        // Nothing will push the deletes now, so the ones past the horizon can go.
+        pruneExpired()
     }
 
     /// Puts back a state captured before a manual sync that ended without reporting anything.

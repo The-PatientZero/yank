@@ -65,7 +65,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// loading from a genuinely empty one and never flash "No clips" or the onboarding screen.
     private(set) var hasLoaded = false
 
-    private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+    private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned) {
+        didSet { isSyncOff = ClipboardRetention.isSyncOff(syncStatus) }
+    }
+
+    /// Whether sync has reported that it is off. False until it does, however the status starts,
+    /// so a launch with sync on never ages out a delete that has not been pushed yet.
+    @ObservationIgnored private var isSyncOff = false
 
     /// Clip records iCloud has delivered so far in a pull that spans several pages; nil otherwise.
     private(set) var syncClipsReceived: Int?
@@ -720,7 +726,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             tombstones: tombstones,
             historyLimit: historyLimit,
             retentionDays: isSyncEnabled && !hasReadSyncedSettings ? 0 : retentionDays,
-            now: Date()
+            now: Date(),
+            agesOutUnpushedTombstones: isSyncOff
         )
         guard result.didChange else { return }
         blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
@@ -809,6 +816,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         }
         waitingClips = []
         encryptionStatus = nil
+        // Nothing will push the deletes now, so the ones past the horizon can go.
+        enforceRetentionAndLimit()
     }
 
     func markEncryptionStatus(_ status: SyncEncryptionStatus?) {

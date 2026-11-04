@@ -44,7 +44,13 @@ final class ClipboardStore {
     /// quit. Surfaced for the UI to warn the user; never silently swallowed.
     private(set) var storageUnavailable = false
 
-    var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+    var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned) {
+        didSet { isSyncOff = ClipboardRetention.isSyncOff(syncStatus) }
+    }
+
+    /// Whether sync has reported that it is off. False until it does, however the status starts,
+    /// so a launch with sync on never ages out a delete that has not been pushed yet.
+    @ObservationIgnored private(set) var isSyncOff = false
 
     /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
     var syncFailureKind: SyncFailureKind?
@@ -406,7 +412,8 @@ final class ClipboardStore {
             tombstones: tombstones,
             historyLimit: maxItems,
             retentionDays: isRetentionHeldForSettings ? 0 : captureSettings.retentionDays,
-            now: now
+            now: now,
+            agesOutUnpushedTombstones: isSyncOff
         )
         guard result.didChange else { return false }
         blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)

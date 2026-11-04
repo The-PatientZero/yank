@@ -15,9 +15,10 @@ enum ClipboardRetention {
         var expiredItems: [ClipboardItem]
         var cappedItems: [ClipboardItem]
         var blobReferencesToDelete: [ClipboardBlobReference]
+        var prunedTombstoneCount: Int
 
         var didChange: Bool {
-            !expiredItems.isEmpty || !cappedItems.isEmpty
+            !expiredItems.isEmpty || !cappedItems.isEmpty || prunedTombstoneCount > 0
         }
     }
 
@@ -100,13 +101,18 @@ enum ClipboardRetention {
         tombstones: [UUID: Date],
         historyLimit: Int,
         retentionDays: Int,
-        now: Date
+        now: Date,
+        agesOutUnpushedTombstones: Bool = false
     ) -> EnforcementResult {
         let originalItems = items
         var nextItems = items
-        // Deletes are never aged out here: one dated past the horizon (a clip last used long ago)
-        // must be kept until iCloud has taken it. See `prunedTombstones(_:acknowledged:now:)`.
-        var nextTombstones = tombstones
+        // With sync on, deletes are not aged out here: one dated past the horizon (a clip last
+        // used long ago) must be kept until iCloud has taken it, see
+        // `prunedTombstones(_:acknowledged:now:)`. With sync off nothing can push them, so they
+        // age out here. Only deletes recorded before this pass do, so one created below and dated
+        // past the horizon survives until the next pass.
+        var nextTombstones = agesOutUnpushedTombstones ? prunedTombstones(tombstones, now: now) : tombstones
+        let prunedCount = tombstones.count - nextTombstones.count
         var expired: [ClipboardItem] = []
 
         if retentionDays > 0 {
@@ -136,7 +142,8 @@ enum ClipboardRetention {
             tombstones: nextTombstones,
             expiredItems: expired,
             cappedItems: capped,
-            blobReferencesToDelete: ClipboardBlobCleanup.referencesRemoved(from: originalItems, keeping: nextItems)
+            blobReferencesToDelete: ClipboardBlobCleanup.referencesRemoved(from: originalItems, keeping: nextItems),
+            prunedTombstoneCount: prunedCount
         )
     }
 
@@ -183,5 +190,15 @@ enum ClipboardRetention {
     ) -> [UUID: Date] {
         let young = prunedTombstones(tombstones, now: now)
         return tombstones.filter { young[$0.key] != nil || !acknowledged.contains($0.key) }
+    }
+
+    /// Whether sync is switched off or unavailable on this build, so nothing will push a delete
+    /// and `enforce` may age them out itself. A signed-out account is not included: it can come
+    /// back, and the deletes made meanwhile must still reach iCloud.
+    static func isSyncOff(_ status: SyncStatus) -> Bool {
+        switch status {
+        case .localOnly(reason: .disabled), .localOnly(reason: .notProvisioned): true
+        case .localOnly(reason: .notAuthenticated), .syncing, .healthy, .failed: false
+        }
     }
 }
