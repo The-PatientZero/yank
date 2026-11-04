@@ -35,7 +35,7 @@ enum IOSForegroundCaptureMode: String, CaseIterable, Identifiable, Sendable {
         case .undecided:
             "Yank does not check the clipboard and may ask again after a cold relaunch."
         case .automatic:
-            "Saves eligible clipboard text when Yank becomes active. iOS may ask for paste permission."
+            "Saves eligible clipboard text or images when Yank becomes active. iOS may ask for paste permission."
         case .explicitOnly:
             "Saves only through Share or Save Clipboard. The keyboard remains read-only."
         }

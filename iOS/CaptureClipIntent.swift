@@ -5,7 +5,7 @@ import UIKit
 struct CaptureClipIntent: AppIntent {
     static let title: LocalizedStringResource = "Save Clipboard to Yank"
     static let description = IntentDescription(
-        "Saves the current clipboard text, or the text you pass in, to your Yank history."
+        "Saves the clipboard's text or image, or the text or image you pass in, to your Yank history."
     )
     static let openAppWhenRun = false
 
@@ -19,8 +19,15 @@ struct CaptureClipIntent: AppIntent {
     @Parameter(title: "Text")
     var text: String?
 
+    /// An image to save instead of reading the clipboard, for example from Get Clipboard or a
+    /// photo. Used when no text is passed.
+    @Parameter(title: "Image", supportedTypeIdentifiers: ["public.image"])
+    var image: IntentFile?
+
     static var parameterSummary: some ParameterSummary {
-        Summary("Save \(\.$text) to Yank")
+        Summary("Save \(\.$text) to Yank") {
+            \.$image
+        }
     }
 
     enum CaptureError: Error, LocalizedError {
@@ -28,17 +35,23 @@ struct CaptureClipIntent: AppIntent {
         case storageUnavailable
         case captureQueueFull
         case textTooLarge
+        case imageUnreadable
+        case imageTooLarge
 
         var errorDescription: String? {
             switch self {
             case .noTextReceived:
-                return "No text was received. Pass text to this action with the Text input."
+                return "Nothing to save was received. Pass text or an image to this action."
             case .storageUnavailable:
                 return "Yank's storage is unavailable. Open Yank to check its status before retrying."
             case .captureQueueFull:
                 return "Yank has pending captures. Open the app, then try again."
             case .textTooLarge:
                 return "The clipboard text is too large to save."
+            case .imageUnreadable:
+                return "The image couldn't be read. Pass it to this action with the Image input."
+            case .imageTooLarge:
+                return "The image is too large to save, or isn't an image Yank can read."
             }
         }
     }
@@ -64,20 +77,57 @@ struct CaptureClipIntent: AppIntent {
     struct QueuedCapture: Sendable {
         let entry: ShareCaptureInbox.Entry
         let inbox: ShareCaptureInbox
+        /// The clipboard generation the clip was read from, when it came from the clipboard.
+        var clipboardChangeCount: Int?
     }
 
+    /// Passed text first, then a passed image, then the clipboard. The clipboard is saved as an
+    /// image only when it holds one and no plain text, the rule automatic capture follows. When
+    /// both inputs are passed and the clipboard holds an image, the image wins: Get Clipboard wired
+    /// to both inputs turns a copied photo into its file name for the Text input.
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let passedText = text
-        let queued = try await Self.captureClipboard(
-            resolveAppGroup: { AppGroupContainer.live() },
-            readText: {
-                if let passedText, !passedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return passedText
+        let passedText = text.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        let passedImage = image
+        let pasteboard = UIPasteboard.general
+        // Read before the clipboard is, so a later copy is never mistaken for the one saved.
+        let clipboardChangeCount = pasteboard.changeCount
+        let clipboardPrefersImage = PasteboardAcknowledgement.prefersImage(in: pasteboard.types)
+        let readsClipboard = passedText == nil && passedImage == nil
+        let savesImage = passedImage != nil && (passedText == nil || clipboardPrefersImage)
+            || readsClipboard && clipboardPrefersImage
+        var queued: QueuedCapture
+        if savesImage {
+            queued = try await Self.captureImage(
+                resolveAppGroup: { AppGroupContainer.live() },
+                readImage: {
+                    if let passedImage {
+                        if let fileURL = passedImage.fileURL {
+                            return await PasteboardImageReader.normalize(fileAt: fileURL)
+                        }
+                        return await PasteboardImageReader.normalize(passedImage.data)
+                    }
+                    return await PasteboardImageReader.read(from: pasteboard, types: pasteboard.types)
                 }
-                return UIPasteboard.general.string
+            )
+        } else {
+            do {
+                queued = try await Self.captureClipboard(
+                    resolveAppGroup: { AppGroupContainer.live() },
+                    readText: { passedText ?? pasteboard.string }
+                )
+            } catch CaptureError.noTextReceived
+                where readsClipboard && PasteboardAcknowledgement.declaresImage(in: pasteboard.types) {
+                // Empty text beside an image: save the image, as automatic capture does.
+                queued = try await Self.captureImage(
+                    resolveAppGroup: { AppGroupContainer.live() },
+                    readImage: { await PasteboardImageReader.read(from: pasteboard, types: pasteboard.types) }
+                )
             }
-        )
+        }
+        if readsClipboard {
+            queued.clipboardChangeCount = clipboardChangeCount
+        }
         let result = await Self.importAndSync(queued)
         return .result(dialog: IntentDialog(stringLiteral: result.message))
     }
@@ -98,6 +148,41 @@ struct CaptureClipIntent: AppIntent {
         let inbox = appGroup.shareInbox
         let entry = try await enqueue(text: text, in: inbox)
         return QueuedCapture(entry: entry, inbox: inbox)
+    }
+
+    @MainActor
+    static func captureImage(
+        resolveAppGroup: @MainActor () -> AppGroupContainer?,
+        readImage: @MainActor () async -> PasteboardImageReader.Result
+    ) async throws -> QueuedCapture {
+        guard let appGroup = resolveAppGroup() else {
+            throw CaptureError.storageUnavailable
+        }
+        switch await readImage() {
+        case .unreadable:
+            throw CaptureError.imageUnreadable
+        case .unsupported:
+            throw CaptureError.imageTooLarge
+        case let .png(pngData):
+            let inbox = appGroup.shareInbox
+            let entry = try await enqueue(imagePNG: pngData, in: inbox)
+            return QueuedCapture(entry: entry, inbox: inbox)
+        }
+    }
+
+    nonisolated static func enqueue(imagePNG pngData: Data, in inbox: ShareCaptureInbox) async throws -> ShareCaptureInbox.Entry {
+        do {
+            return try await Task.detached(priority: .userInitiated) {
+                try inbox.enqueue(imagePNG: pngData, sourceApp: "Shortcuts")
+            }.value
+        } catch ShareCaptureInbox.Error.quotaExceeded {
+            throw CaptureError.captureQueueFull
+        } catch ShareCaptureInbox.Error.payloadTooLarge {
+            throw CaptureError.imageTooLarge
+        } catch {
+            logFailure("Queueing the image", error)
+            throw CaptureError.storageUnavailable
+        }
     }
 
     @discardableResult
@@ -200,6 +285,10 @@ struct CaptureClipIntent: AppIntent {
         guard isImported else {
             run.finish(.queuedOnly)
             return
+        }
+        // The clipboard still holds what was saved, so opening Yank must not save it again.
+        if let changeCount = queued.clipboardChangeCount, UIPasteboard.general.changeCount == changeCount {
+            IOSForegroundRefreshCoordinator.shared.markPasteboardChangeHandled(changeCount)
         }
         run.stage = .imported
         guard runtime.settings.syncEnabled else {

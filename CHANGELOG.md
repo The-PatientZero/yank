@@ -11,6 +11,7 @@ and passes that section to `gh release create --notes-file`.
 ### Added
 
 - A Menu bar icon style setting on the Mac, under Settings > General. Plain draws the icon in one color that matches the other menu bar icons. Color, the default, keeps the logo's colors. The update, sync and pause marks keep their colors in both styles.
+- iPhone and iPad save copied images, not only text. With Check When Yank Opens, a copied photo or screenshot is saved when you return to Yank. The Save Clipboard shortcut saves a copied image, or an image passed to its new Image input. Copied text that carries an image is still saved as text, as on the Mac.
 
 ## [1.3.0] - 2026-11-04
 

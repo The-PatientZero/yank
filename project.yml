@@ -111,6 +111,7 @@ targets:
       - iOS/IOSClipBlobStore.swift
       - iOS/IOSSettings.swift
       - iOS/PasteboardBootTime.swift
+      - iOS/PasteboardImageReader.swift
       - iOS/IOSSyncedSettingsBridge.swift
       - iOS/HistoryLimitConfirmation.swift
       - iOS/RetentionConfirmation.swift
@@ -201,6 +202,7 @@ targets:
       - Sources/YankCore/ClipboardSearchIndex.swift
       - Sources/YankCore/ContentClassifier.swift
       - Sources/YankCore/KeyboardHistoryProjection.swift
+      - Sources/YankCore/PNGDownsampler.swift
       - Sources/YankCore/ShareCaptureInbox.swift
       - Sources/YankCore/ShareImageImportPolicy.swift
       - Sources/YankCore/SyncBlobPolicy.swift
