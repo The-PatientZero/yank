@@ -90,6 +90,7 @@ extension ClipboardStore {
     }
 
     func clear() {
+        pendingDeletion = nil
         resetCaptureSuppression()
         heldElements = []
         let result = ClipboardMutations.removeItems(ids: Set(items.map(\.id)), from: items)
