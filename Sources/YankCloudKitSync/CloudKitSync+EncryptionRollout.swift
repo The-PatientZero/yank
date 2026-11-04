@@ -169,6 +169,10 @@ extension CloudKitSyncService {
             for prepared in batch {
                 let recordName = prepared.record.recordID.recordName
                 if let serverRecord = serverRecords[recordName] {
+                    // A pin, tag or enrichment edit made before this device pulled another
+                    // device's delete does not beat it. Leave the tombstone; the next pull
+                    // delivers the delete here.
+                    if Self.serverDeleteOutranks(prepared.record, serverRecord: serverRecord) { continue }
                     var source = prepared
                     if fileOmittingCandidateIDs.contains(prepared.itemID),
                        let item = itemsByID[prepared.itemID],
@@ -209,6 +213,14 @@ extension CloudKitSyncService {
             skippedClips: fresh.skippedClips,
             unconfirmedCount: unconfirmedCount
         )
+    }
+
+    /// Whether the server copy is a tombstone that beats the live clip in `fresh`.
+    private static func serverDeleteOutranks(_ fresh: CKRecord, serverRecord: CKRecord) -> Bool {
+        guard fresh[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+              let serverDeletedAt = serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date,
+              let liveTimestamp = fresh[ClipboardCloudMapping.Key.timestamp] as? Date else { return false }
+        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: serverDeletedAt, liveTimestamp: liveTimestamp)
     }
 
     /// Asks iCloud for the file names of the given clips, a batch at a time, and returns the
