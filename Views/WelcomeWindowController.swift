@@ -5,10 +5,14 @@ import SwiftUI
 final class WelcomeWindowController: NSWindowController {
     private let axPermission: AccessibilityPermission
 
-    init(axPermission: AccessibilityPermission, syncAvailable: Bool, manager: SettingsManager = .shared) {
+    private static let contentWidth: CGFloat = 460
+    /// Tall enough for the iCloud row with its longest status line, so nothing clips at the edge.
+    private static let contentHeight: CGFloat = 560
+
+    init(axPermission: AccessibilityPermission, syncAvailable: Bool, store: ClipboardStore, manager: SettingsManager = .shared) {
         self.axPermission = axPermission
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
+            contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: Self.contentHeight),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -21,6 +25,7 @@ final class WelcomeWindowController: NSWindowController {
             rootView: WelcomeView(
                 axPermission: axPermission,
                 syncAvailable: syncAvailable,
+                store: store,
                 manager: manager,
                 onDismiss: { [weak self] in self?.close() }
             )
@@ -52,6 +57,7 @@ final class WelcomeWindowController: NSWindowController {
 private struct WelcomeView: View {
     let axPermission: AccessibilityPermission
     let syncAvailable: Bool
+    let store: ClipboardStore
     let manager: SettingsManager
     let onDismiss: () -> Void
 
@@ -78,13 +84,15 @@ private struct WelcomeView: View {
 
                 Divider().overlay(Color.yankHairline)
 
-                welcomeRow(
-                    icon: "icloud",
-                    title: syncAvailable ? "Synced and on hand" : "Local and on hand",
-                    body: syncAvailable
-                        ? "Clips sync across your devices over iCloud, and Yank lives in the menu bar — its mark sits up top, near the clock."
-                        : "This build keeps clips on this Mac. Yank lives in the menu bar — its mark sits up top, near the clock."
-                )
+                if syncAvailable {
+                    syncRow
+                } else {
+                    welcomeRow(
+                        icon: "icloud",
+                        title: "Local and on hand",
+                        body: "This build keeps clips on this Mac. \(Self.menuBarSentence)"
+                    )
+                }
 
                 Divider().overlay(Color.yankHairline)
 
@@ -128,6 +136,55 @@ private struct WelcomeView: View {
         .padding(Space.xxl)
         .frame(width: 460)
         .background(YankWindowBackground())
+    }
+
+    private static let menuBarSentence = "Yank lives in the menu bar — its mark sits up top, near the clock."
+
+    /// The same switch and code path as Settings; the caption only appears while sync is on.
+    private var syncRow: some View {
+        HStack(alignment: .top, spacing: Space.md) {
+            Image(systemName: "icloud")
+                .foregroundColor(AppTheme.active.foreground)
+                .font(.system(size: TypeScale.title))
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack {
+                    Text("iCloud Sync").font(.system(size: TypeScale.body, weight: .medium))
+                    Spacer()
+                    Toggle("iCloud Sync", isOn: Binding(
+                        get: { manager.syncEnabled },
+                        set: { manager.setSyncEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
+                Text("\(SyncCopy.welcomeSyncDescription) \(Self.menuBarSentence)")
+                    .font(.system(size: TypeScale.caption))
+                    .foregroundColor(.secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                if manager.syncEnabled {
+                    Text(Self.syncCaption(for: store.syncStatus))
+                        .font(.system(size: TypeScale.caption, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Until the controller reports, a freshly enabled switch reads as syncing rather than as
+    /// "disabled" or "not available in this build", which would contradict the switch.
+    private static func syncCaption(for status: SyncStatus) -> String {
+        switch status {
+        case .syncing, .localOnly(.disabled), .localOnly(.notProvisioned): SyncCopy.syncingHeadline
+        case .healthy: SyncCopy.syncedHeadline
+        case .localOnly(.notAuthenticated): SyncCopy.signedOut
+        case .failed(let message): message
+        }
     }
 
     @ViewBuilder
