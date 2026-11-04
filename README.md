@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/macOS-14.0+-black?style=for-the-badge&logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6-orange?style=for-the-badge&logo=swift" alt="Swift 6">
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/The-PatientZero/yank"><img src="https://img.shields.io/ossf-scorecard/github.com/The-PatientZero/yank?style=for-the-badge&label=OpenSSF%20Scorecard" alt="OpenSSF Scorecard"></a>
 </p>
 
 > **Status: Yank is publicly available for macOS, iPhone, and iPad.** Yank started as a
