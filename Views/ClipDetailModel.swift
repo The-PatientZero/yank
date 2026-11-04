@@ -48,7 +48,10 @@ final class ClipDetailModel {
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
-            previewImage = await loadImage(item)
+            let image = await loadImage(item)
+            // A late preview must not replace the newly focused clip's.
+            guard !Task.isCancelled, chunkedText.itemID == item.id else { return }
+            previewImage = image
         case .text:
             if item.isFileBacked {
                 await loadInitialChunk(item)
