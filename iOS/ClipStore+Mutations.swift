@@ -133,10 +133,13 @@ extension ClipStore {
     nonisolated static func textChunk(
         for item: ClipboardItem,
         textURL: URL?,
-        charCount: Int
+        charCount: Int,
+        byteOffset: Int = 0
     ) -> TextChunkPage? {
         if let textURL, item.textFilename != nil {
-            return TextChunkReader.page(for: item, textURL: textURL, charCount: charCount) { error in
+            return TextChunkReader.page(
+                for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset
+            ) { error in
                 clipStoreLog.error("Failed to read iOS text chunk: \(error.localizedDescription)")
             }
         }

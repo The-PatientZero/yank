@@ -8,6 +8,10 @@ struct ChunkedTextState {
     var loadedCharCount: Int = 0
     var reachedEOF: Bool = true
     var isLoadingMore: Bool = false
+    /// Where the next page starts in the file, so a page reads only its own bytes.
+    var nextByteOffset: Int = 0
+    /// The clip these pages belong to, so a page that arrives after focus moved on is dropped.
+    var itemID: UUID?
     static let chunkSize = 2_000
     static let initialChars = 2_000
     var hasMore: Bool { !reachedEOF && loadedCharCount >= Self.initialChars }
@@ -56,6 +60,7 @@ final class ClipDetailModel {
         reset()
         showTagInput = beginTagInput
         guard let item = item else { return }
+        chunkedText.itemID = item.id
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
@@ -84,11 +89,13 @@ final class ClipDetailModel {
         let result = await Task.detached(priority: .userInitiated) {
             ClipboardStore.textChunk(for: item, textURL: textURL, charCount: ChunkedTextState.initialChars)
         }.value
+        guard chunkedText.itemID == item.id else { return }
         if let result = result {
             chunkedText.visibleText = result.text
             chunkedText.totalBytes = result.totalBytes
             chunkedText.loadedCharCount = result.text.count
             chunkedText.reachedEOF = result.reachedEOF
+            chunkedText.nextByteOffset = result.nextByteOffset
         }
         chunkedText.isLoadingMore = false
     }
@@ -96,16 +103,24 @@ final class ClipDetailModel {
     func loadNextChunk(_ item: ClipboardItem) async {
         guard !chunkedText.isLoadingMore && chunkedText.hasMore else { return }
         chunkedText.isLoadingMore = true
-        let nextCharCount = chunkedText.loadedCharCount + ChunkedTextState.chunkSize
+        let startOffset = chunkedText.nextByteOffset
         let textURL = store.blobURL(for: item)
         let result = await Task.detached(priority: .userInitiated) {
-            ClipboardStore.textChunk(for: item, textURL: textURL, charCount: nextCharCount)
+            ClipboardStore.textChunk(
+                for: item,
+                textURL: textURL,
+                charCount: ChunkedTextState.chunkSize,
+                byteOffset: startOffset
+            )
         }.value
+        // Appending to another clip's text would corrupt it; the new clip's own load resets this.
+        guard chunkedText.itemID == item.id, chunkedText.nextByteOffset == startOffset else { return }
         if let result = result {
-            chunkedText.visibleText = result.text
+            chunkedText.visibleText += result.text
             chunkedText.totalBytes = result.totalBytes
-            chunkedText.loadedCharCount = result.text.count
+            chunkedText.loadedCharCount += result.text.count
             chunkedText.reachedEOF = result.reachedEOF
+            chunkedText.nextByteOffset = result.nextByteOffset
         }
         chunkedText.isLoadingMore = false
     }

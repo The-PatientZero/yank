@@ -350,6 +350,10 @@ final class ClipDetailContentModel {
     var reachedEOF = true
     var isLoadingMore = false
     var itemSize: Int?
+    /// Where the next page starts in the file, so a page reads only its own bytes.
+    private var nextByteOffset = 0
+    /// The clip these pages belong to, so a page that arrives after focus moved on is dropped.
+    private var itemID: UUID?
 
     private let store: ClipStore
 
@@ -364,9 +368,11 @@ final class ClipDetailContentModel {
 
     func load(_ item: ClipboardItem) async {
         previewImage = nil
+        itemID = item.id
         visibleText = ""
         totalBytes = 0
         loadedCharCount = 0
+        nextByteOffset = 0
         reachedEOF = true
         isLoadingMore = false
         itemSize = store.itemSize(for: item)
@@ -375,7 +381,7 @@ final class ClipDetailContentModel {
             previewImage = await loadImage(item)
         case .text:
             if item.isFileBacked {
-                await loadChunk(item, charCount: Self.initialChars)
+                await loadChunk(item, charCount: Self.initialChars, byteOffset: 0)
             } else {
                 visibleText = item.textContent ?? ""
                 reachedEOF = true
@@ -385,20 +391,26 @@ final class ClipDetailContentModel {
 
     func loadNextChunk(_ item: ClipboardItem) async {
         guard !isLoadingMore && hasMore else { return }
-        await loadChunk(item, charCount: loadedCharCount + Self.chunkSize)
+        await loadChunk(item, charCount: Self.chunkSize, byteOffset: nextByteOffset)
     }
 
-    private func loadChunk(_ item: ClipboardItem, charCount: Int) async {
+    /// Reads one page starting at `byteOffset` and appends it, so a page costs its own bytes
+    /// however much is already shown.
+    private func loadChunk(_ item: ClipboardItem, charCount: Int, byteOffset: Int) async {
         isLoadingMore = true
         let textURL = store.blobURL(for: item)
         let result = await Task.detached(priority: .userInitiated) {
-            ClipStore.textChunk(for: item, textURL: textURL, charCount: charCount)
+            ClipStore.textChunk(for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset)
         }.value
+        // Appending to another clip's text would corrupt it; the new clip's own load resets this.
+        guard itemID == item.id, nextByteOffset == byteOffset else { return }
         if let result {
-            visibleText = result.text
+            // The first page replaces, so two overlapping loads of the same clip cannot double it.
+            visibleText = byteOffset == 0 ? result.text : visibleText + result.text
             totalBytes = result.totalBytes
-            loadedCharCount = result.text.count
+            loadedCharCount = byteOffset == 0 ? result.text.count : loadedCharCount + result.text.count
             reachedEOF = result.reachedEOF
+            nextByteOffset = result.nextByteOffset
         }
         isLoadingMore = false
     }
