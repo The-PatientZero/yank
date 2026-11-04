@@ -1,22 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Paged text-loading state for a single large clip.
-struct ChunkedTextState {
-    var visibleText: String = ""
-    var totalBytes: Int = 0
-    var loadedCharCount: Int = 0
-    var reachedEOF: Bool = true
-    var isLoadingMore: Bool = false
-    /// Where the next page starts in the file, so a page reads only its own bytes.
-    var nextByteOffset: Int = 0
-    /// The clip these pages belong to, so a page that arrives after focus moved on is dropped.
-    var itemID: UUID?
-    static let chunkSize = 2_000
-    static let initialChars = 2_000
-    var hasMore: Bool { !reachedEOF && loadedCharCount >= Self.initialChars }
-}
-
 /// Owns the focused clip's preview / OCR / tag-input state and the async loading
 /// that backs it. Keeping it here lets `ClipDetailView` stay a pure renderer while
 /// the coordinator drives detail actions (add tag, save image, OCR) from its key monitor.
@@ -24,7 +8,7 @@ struct ChunkedTextState {
 @Observable
 final class ClipDetailModel {
     var previewImage: NSImage?
-    var chunkedText = ChunkedTextState()
+    var chunkedText = ChunkedTextPaging()
     var isExtractingText = false
     /// The clip whose last extraction found no usable text; cleared when focus moves or a new run starts.
     private(set) var noTextFoundItemID: UUID?
@@ -44,7 +28,7 @@ final class ClipDetailModel {
 
     func reset() {
         previewImage = nil
-        chunkedText = ChunkedTextState()
+        chunkedText = ChunkedTextPaging()
         isExtractingText = false
         noTextFoundItemID = nil
         activeExtractionRun = nil
@@ -60,7 +44,7 @@ final class ClipDetailModel {
         reset()
         showTagInput = beginTagInput
         guard let item = item else { return }
-        chunkedText.itemID = item.id
+        chunkedText.begin(itemID: item.id)
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
@@ -69,8 +53,7 @@ final class ClipDetailModel {
             if item.isFileBacked {
                 await loadInitialChunk(item)
             } else {
-                chunkedText.visibleText = item.textContent ?? ""
-                chunkedText.reachedEOF = true
+                chunkedText.showInline(item.textContent ?? "")
             }
         }
     }
@@ -84,45 +67,28 @@ final class ClipDetailModel {
     }
 
     private func loadInitialChunk(_ item: ClipboardItem) async {
-        chunkedText.isLoadingMore = true
-        let textURL = store.blobURL(for: item)
-        let result = await Task.detached(priority: .userInitiated) {
-            ClipboardStore.textChunk(for: item, textURL: textURL, charCount: ChunkedTextState.initialChars)
-        }.value
-        guard chunkedText.itemID == item.id else { return }
-        if let result = result {
-            chunkedText.visibleText = result.text
-            chunkedText.totalBytes = result.totalBytes
-            chunkedText.loadedCharCount = result.text.count
-            chunkedText.reachedEOF = result.reachedEOF
-            chunkedText.nextByteOffset = result.nextByteOffset
-        }
-        chunkedText.isLoadingMore = false
+        guard let request = chunkedText.firstRequest() else { return }
+        await read(request, of: item)
     }
 
     func loadNextChunk(_ item: ClipboardItem) async {
-        guard !chunkedText.isLoadingMore && chunkedText.hasMore else { return }
-        chunkedText.isLoadingMore = true
-        let startOffset = chunkedText.nextByteOffset
+        guard let request = chunkedText.nextRequest() else { return }
+        await read(request, of: item)
+    }
+
+    /// Reads one page off the main thread and hands it back; the paging state drops a page that
+    /// arrives after focus moved to another clip.
+    private func read(_ request: ChunkedTextPaging.Request, of item: ClipboardItem) async {
         let textURL = store.blobURL(for: item)
-        let result = await Task.detached(priority: .userInitiated) {
+        let page = await Task.detached(priority: .userInitiated) {
             ClipboardStore.textChunk(
                 for: item,
                 textURL: textURL,
-                charCount: ChunkedTextState.chunkSize,
-                byteOffset: startOffset
+                charCount: request.charCount,
+                byteOffset: request.byteOffset
             )
         }.value
-        // Appending to another clip's text would corrupt it; the new clip's own load resets this.
-        guard chunkedText.itemID == item.id, chunkedText.nextByteOffset == startOffset else { return }
-        if let result = result {
-            chunkedText.visibleText += result.text
-            chunkedText.totalBytes = result.totalBytes
-            chunkedText.loadedCharCount += result.text.count
-            chunkedText.reachedEOF = result.reachedEOF
-            chunkedText.nextByteOffset = result.nextByteOffset
-        }
-        chunkedText.isLoadingMore = false
+        chunkedText.apply(page, for: request.itemID, at: request.byteOffset)
     }
 
     func extractText(from item: ClipboardItem) async {

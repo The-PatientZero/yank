@@ -122,24 +122,21 @@ extension ClipboardStore {
         charCount: Int,
         byteOffset: Int = 0
     ) -> TextChunkPage? {
-        if let url = textURL, item.textFilename != nil {
-            return TextChunkReader.page(
-                for: item, textURL: url, charCount: charCount, byteOffset: byteOffset
-            ) { error in
-                Log.store.error("Failed to read text chunk: \(error.localizedDescription)")
-            }
+        TextChunkReader.page(
+            for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset
+        ) { error in
+            Log.store.error("Failed to read text chunk: \(error.localizedDescription)")
         }
-        return TextChunkReader.page(for: item, textURL: nil, charCount: charCount)
     }
 
     /// Total size of an item, in bytes.
     func itemSize(for item: ClipboardItem) -> Int? {
-        if let original = item.originalSizeBytes { return original }
+        if let inline = item.inlineSizeBytes { return inline }
 
         switch item.type {
         case .text:
-            guard let filename = item.textFilename else { return item.textContent?.utf8.count }
-            guard let url = blobStore.textURL(filename: filename) else {
+            guard let filename = item.textFilename,
+                  let url = blobStore.textURL(filename: filename) else {
                 return nil
             }
             return cachedFileSize(id: item.id, url: url)

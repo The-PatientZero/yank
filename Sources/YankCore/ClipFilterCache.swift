@@ -22,6 +22,22 @@ public struct ClipFilterCache {
         self.result = result
     }
 
+    /// The filtered list for this search and tag: the cached result when it matches, otherwise
+    /// the items not waiting out their undo window, filtered and stored. Both stores call this
+    /// from `filteredItems`; they invalidate the cache whenever `items` or the pending delete change.
+    mutating func filtered(
+        _ items: [ClipboardItem],
+        pending: PendingDeletion?,
+        search: String,
+        activeTag: String?
+    ) -> [ClipboardItem] {
+        if let cached = result(query: search, tag: activeTag) { return cached }
+        let visible = PendingDeletePolicy.visibleItems(items, pending: pending)
+        let filtered = ClipQuery.filter(visible, search: search, activeTag: activeTag)
+        store(filtered, query: search, tag: activeTag)
+        return filtered
+    }
+
     public mutating func invalidate() {
         query = nil
         tag = nil

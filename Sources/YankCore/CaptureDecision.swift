@@ -22,4 +22,13 @@ enum DuplicateCaptureDecision: Equatable, Sendable {
         guard let newestMatch else { return .insert }
         return .refresh(existingID: newestMatch.id)
     }
+
+    /// Same decision, excluding the clips waiting out their undo window.
+    static func decide(
+        for candidate: ClipboardItem,
+        in history: [ClipboardItem],
+        pending: PendingDeletion?
+    ) -> DuplicateCaptureDecision {
+        decide(for: candidate, in: history, excluding: Set(pending?.items.map(\.id) ?? []))
+    }
 }

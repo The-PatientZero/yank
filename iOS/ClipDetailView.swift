@@ -341,75 +341,50 @@ struct ClipDetailView: View {
 @Observable
 final class ClipDetailContentModel {
     var previewImage: UIImage?
-    var visibleText = ""
-    var totalBytes = 0
-    var loadedCharCount = 0
-    var reachedEOF = true
-    var isLoadingMore = false
+    private var paging = ChunkedTextPaging()
     var itemSize: Int?
-    /// Where the next page starts in the file, so a page reads only its own bytes.
-    private var nextByteOffset = 0
-    /// The clip these pages belong to, so a page that arrives after focus moved on is dropped.
-    private var itemID: UUID?
 
     private let store: ClipStore
 
-    private static let chunkSize = 2_000
-    private static let initialChars = 2_000
-
     private static let previewMaxPixel = 1_600
 
-    var hasMore: Bool { !reachedEOF && loadedCharCount >= Self.initialChars }
+    var visibleText: String { paging.visibleText }
+    var totalBytes: Int { paging.totalBytes }
+    var isLoadingMore: Bool { paging.isLoadingMore }
+    var hasMore: Bool { paging.hasMore }
 
     init(store: ClipStore) { self.store = store }
 
     func load(_ item: ClipboardItem) async {
         previewImage = nil
-        itemID = item.id
-        visibleText = ""
-        totalBytes = 0
-        loadedCharCount = 0
-        nextByteOffset = 0
-        reachedEOF = true
-        isLoadingMore = false
+        paging.begin(itemID: item.id)
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
             previewImage = await loadImage(item)
         case .text:
             if item.isFileBacked {
-                await loadChunk(item, charCount: Self.initialChars, byteOffset: 0)
+                guard let request = paging.firstRequest() else { return }
+                await read(request, of: item)
             } else {
-                visibleText = item.textContent ?? ""
-                reachedEOF = true
+                paging.showInline(item.textContent ?? "")
             }
         }
     }
 
     func loadNextChunk(_ item: ClipboardItem) async {
-        guard !isLoadingMore && hasMore else { return }
-        await loadChunk(item, charCount: Self.chunkSize, byteOffset: nextByteOffset)
+        guard let request = paging.nextRequest() else { return }
+        await read(request, of: item)
     }
 
-    /// Reads one page starting at `byteOffset` and appends it, so a page costs its own bytes
-    /// however much is already shown.
-    private func loadChunk(_ item: ClipboardItem, charCount: Int, byteOffset: Int) async {
-        isLoadingMore = true
+    /// Reads one page off the main thread and hands it back; the paging state drops a page that
+    /// arrives after focus moved to another clip, so a page costs its own bytes however much is shown.
+    private func read(_ request: ChunkedTextPaging.Request, of item: ClipboardItem) async {
         let textURL = store.blobURL(for: item)
-        let result = await Task.detached(priority: .userInitiated) {
-            ClipStore.textChunk(for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset)
+        let page = await Task.detached(priority: .userInitiated) {
+            ClipStore.textChunk(for: item, textURL: textURL, charCount: request.charCount, byteOffset: request.byteOffset)
         }.value
-        // Appending to another clip's text would corrupt it; the new clip's own load resets this.
-        guard itemID == item.id, nextByteOffset == byteOffset else { return }
-        if let result {
-            // The first page replaces, so two overlapping loads of the same clip cannot double it.
-            visibleText = byteOffset == 0 ? result.text : visibleText + result.text
-            totalBytes = result.totalBytes
-            loadedCharCount = byteOffset == 0 ? result.text.count : loadedCharCount + result.text.count
-            reachedEOF = result.reachedEOF
-            nextByteOffset = result.nextByteOffset
-        }
-        isLoadingMore = false
+        paging.apply(page, for: request.itemID, at: request.byteOffset)
     }
 
     private func loadImage(_ item: ClipboardItem) async -> UIImage? {
