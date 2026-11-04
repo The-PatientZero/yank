@@ -203,7 +203,7 @@ final class HistorySnapshotWriter {
                     tombstonesURL: tombstonesURL
                 )
 
-                let envelopeData = try HistorySnapshotTransaction.makeEnvelopeData(
+                let snapshot = try HistorySnapshotTransaction.encodeSnapshot(
                     items: items,
                     preservedElements: preservedElements,
                     tombstones: tombstones,
@@ -212,7 +212,7 @@ final class HistorySnapshotWriter {
                     fileProtection: fileProtection
                 )
                 try HistorySnapshotTransaction.stage(
-                    envelopeData,
+                    snapshot.envelopeData,
                     at: transactionURL,
                     writeOptions: writeOptions,
                     filePermissions: filePermissions,
@@ -220,9 +220,17 @@ final class HistorySnapshotWriter {
                 )
                 try failureInjector?(.transactionStaged)
 
-                try HistorySnapshotTransaction.replayIfPresent(
+                // The staged envelope is the crash-safe checkpoint; the bytes below are the ones
+                // just encoded for it, so they are written as they are instead of being read
+                // back and parsed again. An interrupted write still recovers from the envelope.
+                try HistorySnapshotTransaction.replace(
+                    historyData: snapshot.historyData,
+                    tombstonesData: snapshot.tombstonesData,
                     historyURL: historyURL,
                     tombstonesURL: tombstonesURL,
+                    writeOptions: writeOptions.union(.atomic),
+                    filePermissions: filePermissions,
+                    fileProtection: fileProtection,
                     afterCanonicalWrite: failureInjector
                 )
             } catch {
