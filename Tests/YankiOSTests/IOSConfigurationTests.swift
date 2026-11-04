@@ -43,7 +43,7 @@ struct IOSConfigurationTests {
         )
 
         #expect(macReasons == Set(["CA92.1", "C617.1"]))
-        #expect(iosReasons == Set(["CA92.1", "1C8F.1"]))
+        #expect(iosReasons == Set(["CA92.1", "1C8F.1", "8FFB.1"]))
         #expect(extensionReasons.isEmpty)
     }
 
