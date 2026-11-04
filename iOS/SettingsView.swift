@@ -140,12 +140,14 @@ struct SettingsView: View {
             HStack(spacing: Space.md) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Syncing…")
+                Text(store.syncClipsReceived.map(SyncCopy.syncingWithCount) ?? SyncCopy.syncingHeadline)
                     .foregroundStyle(.secondary)
                     .font(.yank(.subheadline))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Syncing your clips")
+            .accessibilityLabel(SyncCopy.syncingYourClipsLabel)
+            .accessibilityValue(store.syncClipsReceived.map(SyncCopy.receivedCount) ?? "")
         case .healthy(let lastSynced):
             HStack {
                 Label("Synced", systemImage: "checkmark.icloud.fill")

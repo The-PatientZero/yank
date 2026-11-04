@@ -33,6 +33,21 @@ extension ClipboardStore {
         NotificationCenter.default.post(name: .yankSyncStatusChanged, object: nil)
     }
 
+    func markSyncProgress(clipsReceived: Int) {
+        guard syncClipsReceived != clipsReceived || syncStatus != .syncing else { return }
+        syncStatus = .syncing
+        syncFailureKind = nil
+        syncClipsReceived = clipsReceived
+        NotificationCenter.default.post(name: .yankSyncStatusChanged, object: nil)
+    }
+
+    /// Drops a count left behind by a sync service that stopped without reporting anything.
+    func clearSyncProgress() {
+        guard syncClipsReceived != nil else { return }
+        syncClipsReceived = nil
+        NotificationCenter.default.post(name: .yankSyncStatusChanged, object: nil)
+    }
+
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         encryptionStatus = nil
         waitingClips = []
@@ -47,6 +62,7 @@ extension ClipboardStore {
     private func setSyncState(_ status: SyncStatus, failureKind: SyncFailureKind?) {
         syncStatus = status
         syncFailureKind = failureKind
+        syncClipsReceived = nil
         NotificationCenter.default.post(name: .yankSyncStatusChanged, object: nil)
     }
 

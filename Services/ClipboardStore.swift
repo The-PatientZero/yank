@@ -49,6 +49,9 @@ final class ClipboardStore {
     /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
     var syncFailureKind: SyncFailureKind?
 
+    /// Clip records iCloud has delivered so far in a pull that spans several pages; nil otherwise.
+    var syncClipsReceived: Int?
+
     /// Clips the last push could not prepare for upload. Read through `visibleWaitingClips`.
     var waitingClips: [SyncWaitingClip] = []
 

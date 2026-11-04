@@ -215,7 +215,8 @@ struct StatusMenuView: View {
             VStack(alignment: .leading, spacing: Space.xxs) {
                 switch sync.status {
                 case .syncing:
-                    Label(SyncCopy.syncingHeadline, systemImage: SyncCopy.Symbol.syncing)
+                    Label(sync.clipsReceived.map(SyncCopy.syncingWithCount) ?? SyncCopy.syncingHeadline,
+                          systemImage: SyncCopy.Symbol.syncing)
                         .foregroundColor(.secondary)
                 case .healthy(let lastSynced):
                     Label(SyncCopy.syncedText(lastSynced: lastSynced, now: context.date),
