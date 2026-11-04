@@ -359,7 +359,7 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
 }
 
 /// Notices when automatic capture keeps finding nothing to read although the clipboard holds
-/// plain text, which is how a denied "Paste from Other Apps" setting looks to the app: iOS gives
+/// plain text or an image, which is how a denied "Paste from Other Apps" setting looks to the app: iOS gives
 /// no way to ask. It counts visits that failed, not reads, and lives in memory only.
 @MainActor
 @Observable
@@ -377,10 +377,12 @@ final class PasteAccessMonitor {
         currentVisitFailed = false
     }
 
-    /// Records a read that came back empty. Only a clipboard that declares plain text counts, so
-    /// HTML-only or RTF-only content never raises the banner.
+    /// Records a read that came back empty. Only a clipboard that declares plain text, or an image
+    /// without plain text, counts, so HTML-only or RTF-only content never raises the banner.
     func recordEmptyRead(declaredTypes: [String]) {
-        guard !currentVisitFailed, Self.declaresPlainText(declaredTypes) else { return }
+        guard !currentVisitFailed,
+              Self.declaresPlainText(declaredTypes) || PasteboardAcknowledgement.prefersImage(in: declaredTypes)
+        else { return }
         currentVisitFailed = true
         failedVisits += 1
     }
@@ -1186,7 +1188,11 @@ struct YankApp: App {
             },
             readImage: {
                 let read = await PasteboardImageReader.read(from: pasteboard, types: pasteboardTypes)
-                if case .png = read { pasteAccess.recordSuccessfulRead() }
+                if read == .unreadable {
+                    pasteAccess.recordEmptyRead(declaredTypes: pasteboardTypes)
+                } else {
+                    pasteAccess.recordSuccessfulRead()
+                }
                 return read
             },
             captureImage: { pngData, generation in

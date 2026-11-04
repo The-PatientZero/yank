@@ -77,18 +77,27 @@ struct CaptureClipIntent: AppIntent {
     struct QueuedCapture: Sendable {
         let entry: ShareCaptureInbox.Entry
         let inbox: ShareCaptureInbox
+        /// The clipboard generation the clip was read from, when it came from the clipboard.
+        var clipboardChangeCount: Int?
     }
 
     /// Passed text first, then a passed image, then the clipboard. The clipboard is saved as an
-    /// image only when it holds one and no plain text, the rule automatic capture follows.
+    /// image only when it holds one and no plain text, the rule automatic capture follows. When
+    /// both inputs are passed and the clipboard holds an image, the image wins: Get Clipboard wired
+    /// to both inputs turns a copied photo into its file name for the Text input.
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let passedText = text.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         let passedImage = image
         let pasteboard = UIPasteboard.general
-        let queued: QueuedCapture
-        if passedText == nil,
-           passedImage != nil || PasteboardAcknowledgement.prefersImage(in: pasteboard.types) {
+        // Read before the clipboard is, so a later copy is never mistaken for the one saved.
+        let clipboardChangeCount = pasteboard.changeCount
+        let clipboardPrefersImage = PasteboardAcknowledgement.prefersImage(in: pasteboard.types)
+        let readsClipboard = passedText == nil && passedImage == nil
+        let savesImage = passedImage != nil && (passedText == nil || clipboardPrefersImage)
+            || readsClipboard && clipboardPrefersImage
+        var queued: QueuedCapture
+        if savesImage {
             queued = try await Self.captureImage(
                 resolveAppGroup: { AppGroupContainer.live() },
                 readImage: {
@@ -106,6 +115,9 @@ struct CaptureClipIntent: AppIntent {
                 resolveAppGroup: { AppGroupContainer.live() },
                 readText: { passedText ?? pasteboard.string }
             )
+        }
+        if readsClipboard {
+            queued.clipboardChangeCount = clipboardChangeCount
         }
         let result = await Self.importAndSync(queued)
         return .result(dialog: IntentDialog(stringLiteral: result.message))
@@ -264,6 +276,10 @@ struct CaptureClipIntent: AppIntent {
         guard isImported else {
             run.finish(.queuedOnly)
             return
+        }
+        // The clipboard still holds what was saved, so opening Yank must not save it again.
+        if let changeCount = queued.clipboardChangeCount, UIPasteboard.general.changeCount == changeCount {
+            IOSForegroundRefreshCoordinator.shared.markPasteboardChangeHandled(changeCount)
         }
         run.stage = .imported
         guard runtime.settings.syncEnabled else {

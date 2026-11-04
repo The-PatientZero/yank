@@ -1,3 +1,4 @@
+import ImageIO
 import UIKit
 import UniformTypeIdentifiers
 
@@ -12,10 +13,21 @@ enum PasteboardImageReader {
         case unsupported
     }
 
-    /// Reads the first declared image type. Only one read, so a paste prompt appears once.
+    /// Image types ImageIO can decode. SVG and other vector types are not among them.
+    private static let decodableTypes = Set((CGImageSourceCopyTypeIdentifiers() as? [String]) ?? [])
+    /// Compact formats first, so a huge uncompressed TIFF is not chosen over a PNG of the same image.
+    private static let compactTypes = [UTType.png, .jpeg, .heic].map(\.identifier)
+
+    /// The declared type to read: a decodable one, compact formats first.
+    static func preferredImageType(in types: [String]) -> String? {
+        let decodable = types.filter { decodableTypes.contains($0) }
+        return decodable.first { compactTypes.contains($0) } ?? decodable.first
+    }
+
+    /// Reads one declared image type. Only one read, so a paste prompt appears once.
     @MainActor
     static func read(from pasteboard: UIPasteboard, types: [String]) async -> Result {
-        guard let imageType = types.first(where: { UTType($0)?.conforms(to: .image) == true }) else {
+        guard let imageType = preferredImageType(in: types) else {
             return .unsupported
         }
         guard let data = pasteboard.data(forPasteboardType: imageType) else { return .unreadable }

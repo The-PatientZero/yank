@@ -48,9 +48,9 @@ is enabled with Full Access off. Use non-identifying account aliases rather than
 - [ ] Deny Paste from Other Apps and confirm the denied generation remains unacknowledged and retryable; allow access and confirm that same generation is captured exactly once.
 - [ ] Multiple copies made while Yank is suspended retain only the latest system clipboard value.
 - [ ] With Yank force-quit, a Save Clipboard Shortcut run (Get Clipboard, then Save Clipboard with its Text input set) appears in history and in the keyboard without opening Yank, and opening Yank shows exactly one clip.
-- [ ] Save Clipboard saves a copied photo as an image clip, both with no input and with Get Clipboard passed to its Image input.
+- [ ] Save Clipboard saves a copied photo as an image clip with no input, with Get Clipboard passed to its Image input, and with Get Clipboard passed to both inputs. Opening Yank afterwards with Check When Yank Opens on shows that image once.
 - [ ] With iCloud sync on, that Shortcut clip reaches a second device within a minute without Yank being opened on the phone. With sync off the result reads "Saved to Yank" and does not mention sync.
-- [ ] Run the Shortcut with an empty Text input and write down whether the background clipboard read saved the text or showed "No text was received". Run it with no text anywhere: the message names the Text input and does not call the clipboard empty.
+- [ ] Run the Shortcut with an empty Text input and write down whether the background clipboard read saved the text or showed "Nothing to save was received". Run it with nothing anywhere: the message asks for text or an image and does not call the clipboard empty.
 - [ ] After a restart and before the first unlock, the Shortcut shows the storage error and does not claim anything was saved.
 - [ ] A Shortcut capture confirms the Shortcut method in the capture setup screen without Yank being opened, and running it twice with the same text leaves one clip.
 - [ ] Note the time the Shortcut takes on a cold run with a large history, and check that the result wording matches what happened (saved, saved with sync pending, or only queued).
