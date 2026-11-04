@@ -3,58 +3,80 @@ import UniformTypeIdentifiers
 
 @MainActor
 extension PasteController {
-    static func showAccessibilityHUD() {
+    /// How long the manual-paste card stays on screen.
+    private static let accessibilityCardDuration: Duration = .seconds(6)
+
+    /// Shown after a pick copied a clip but Accessibility access is missing, so Yank cannot paste:
+    /// tells the user to press ⌘V and offers the one shared grant flow. The card never takes focus;
+    /// `previousApp` is brought back to the front (only if Yank is still active, so a late pick
+    /// does not pull the user back to a stale app) so the user's ⌘V lands there.
+    static func showAccessibilityHUD(_ permission: AccessibilityPermission,
+                                     previousApp: NSRunningApplication? = nil) {
+        if NSApp.isActive {
+            previousApp?.activate()
+        }
+
+        // Only one card exists at a time: a newer pick replaces the earlier card.
+        PasteControllerHUDOpener.shared.pendingPanel?.close()
+
         let (panel, content) = YankPanelFactory.makePanel(
             size: YankPanelTokens.compactToastPanelSize,
-            title: "Accessibility access needed"
+            title: accessibilityCardTitle,
+            anchorApp: previousApp
         )
-        panel.setAccessibilityTitle("Accessibility access needed")
-        content.setAccessibilityLabel("Accessibility access needed")
+        panel.setAccessibilityTitle(accessibilityCardAnnouncement)
+        content.setAccessibilityLabel(accessibilityCardAnnouncement)
 
-        PasteControllerHUDOpener.shared.pendingURL = AccessibilityPermission.settingsURL
+        PasteControllerHUDOpener.shared.permission = permission
         PasteControllerHUDOpener.shared.pendingPanel = panel
 
-        let settingsButton = YankPanelFactory.makeButton(
-            title: "Open System Settings",
-            style: .primary,
+        let enableButton = YankPanelFactory.makeButton(
+            title: "Enable auto-paste",
             target: PasteControllerHUDOpener.shared,
-            action: #selector(PasteControllerHUDOpener.openSettings(_:)),
-            accessibilityLabel: "Open System Settings",
-            accessibilityHelp: "Opens Privacy and Security settings for Accessibility access."
+            action: #selector(PasteControllerHUDOpener.grantAccess(_:)),
+            accessibilityLabel: "Enable auto-paste",
+            accessibilityHelp: "Opens Accessibility settings so Yank can paste for you."
         )
-        panel.defaultButtonCell = settingsButton.cell as? NSButtonCell
 
         YankPanelFactory.populateCard(
             content: content,
             configuration: YankPanelCardConfiguration(
-                symbolName: "lock.fill",
-                accentColor: YankPanelTokens.warningGlyph,
-                eyebrow: "Permission needed",
-                title: "Accessibility access needed",
-                message: "Clip copied. Grant access to auto-paste.",
-                detail: nil,
-                textAlignment: .leading,
-                actionAlignment: .trailing,
-                verticalPlacement: .top,
-                actions: [settingsButton]
+                symbolName: "doc.on.clipboard",
+                accentColor: YankPanelTokens.infoGlyph,
+                title: accessibilityCardTitle,
+                message: "Press ⌘V to paste.",
+                detail: "Turn on Accessibility access to paste automatically.",
+                actions: [enableButton]
             )
         )
 
         panel.alphaValue = 0
         YankPanelFactory.show(panel)
         YankPanelFactory.fadeIn(panel)
+        // A non-key panel is not announced by itself.
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: accessibilityCardAnnouncement,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue
+            ]
+        )
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(6))
+            try? await Task.sleep(for: accessibilityCardDuration)
             guard PasteControllerHUDOpener.shared.pendingPanel === panel else { return }
             YankPanelFactory.fadeOut(panel) {
                 if PasteControllerHUDOpener.shared.pendingPanel === panel {
                     PasteControllerHUDOpener.shared.pendingPanel = nil
-                    PasteControllerHUDOpener.shared.pendingURL = nil
+                    PasteControllerHUDOpener.shared.permission = nil
                 }
                 panel.close()
             }
         }
     }
+
+    private static let accessibilityCardTitle = "Copied"
+    private static let accessibilityCardAnnouncement = "Copied. Press Command V to paste."
 
     /// Wait for target focus, then dispatch only while the pasteboard still contains the exact
     /// generation Yank wrote. A newer external copy must never become the payload of Yank's
@@ -129,15 +151,13 @@ extension PasteController {
 @MainActor
 final class PasteControllerHUDOpener: NSObject {
     static let shared = PasteControllerHUDOpener()
-    var pendingURL: URL?
+    var permission: AccessibilityPermission?
     var pendingPanel: NSPanel?
 
-    @objc func openSettings(_ sender: Any?) {
-        if let url = pendingURL {
-            NSWorkspace.shared.open(url)
-        }
+    @objc func grantAccess(_ sender: Any?) {
+        permission?.grantAccess()
         pendingPanel?.close()
         pendingPanel = nil
-        pendingURL = nil
+        permission = nil
     }
 }

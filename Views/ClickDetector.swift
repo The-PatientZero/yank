@@ -27,7 +27,9 @@ struct ClickDetector: NSViewRepresentable {
                 mouseDownClickCount = 1
             }
             let mouseUpPoint = convert(event.locationInWindow, from: nil)
-            if let mouseDownPoint, Self.isClick(from: mouseDownPoint, to: mouseUpPoint) {
+            // Control-click is a context-menu gesture, never a paste or selection click.
+            if let mouseDownPoint, !mouseDownModifiers.contains(.control),
+               Self.isClick(from: mouseDownPoint, to: mouseUpPoint) {
                 onClick?(mouseDownModifiers, max(mouseDownClickCount, event.clickCount))
             }
             super.mouseUp(with: event)

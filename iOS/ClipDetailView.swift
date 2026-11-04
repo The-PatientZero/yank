@@ -12,9 +12,9 @@ struct ClipDetailView: View {
     @State private var model: ClipDetailContentModel
     @State private var localOCR: String?
     @State private var isExtracting = false
+    @State private var foundNoText = false
     @State private var newTag = ""
     @State private var copied = false
-    @State private var tagSuggestions: [String] = []
 
     /// Clip content reads a touch larger than the stock body, still scaling with Dynamic Type.
     @ScaledMetric(relativeTo: .body) private var bodySize: CGFloat = IOSType.readingBody
@@ -27,7 +27,10 @@ struct ClipDetailView: View {
 
     /// Re-read from the store so pin/bookmark/tag toggles reflect immediately.
     private var current: ClipboardItem { store.items.first { $0.id == item.id } ?? item }
-    private var ocrText: String? { current.ocrText ?? localOCR }
+    private var tagSuggestions: [String] {
+        TagSuggestions.suggestions(forInput: newTag, in: store.allTags, excluding: current.tags)
+    }
+    private var ocrText: String? { current.recognizedText ?? localOCR }
     private var canExtract: Bool { current.type == .image && model.previewImage != nil && ocrText == nil }
 
     var body: some View {
@@ -38,7 +41,11 @@ struct ClipDetailView: View {
                 if current.richContentState != .none {
                     richContentNote
                 }
-                if let ocr = ocrText { ocrSection(ocr) }
+                if let ocr = ocrText {
+                    ocrSection(ocr)
+                } else if foundNoText {
+                    noTextFoundNote
+                }
                 tagSection
             }
             .padding(Space.lg)
@@ -51,6 +58,7 @@ struct ClipDetailView: View {
         .animation(IOSMotion.state(reduceMotion), value: copied)
         .animation(IOSMotion.state(reduceMotion), value: isExtracting)
         .animation(IOSMotion.state(reduceMotion), value: ocrText)
+        .animation(IOSMotion.state(reduceMotion), value: foundNoText)
         .animation(IOSMotion.present(reduceMotion), value: model.previewImage != nil)
         .task(id: item.id) { await model.load(current) }
     }
@@ -147,9 +155,20 @@ struct ClipDetailView: View {
         }
     }
 
+    /// Shown when text recognition returned nothing (including when it failed); the extraction
+    /// action stays available for another try.
+    private var noTextFoundNote: some View {
+        Text(Self.noTextFoundMessage)
+            .font(.yank(.caption))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static let noTextFoundMessage = "Couldn't read any text from this image."
+
     private var truncationNote: some View {
         Label(
-            "Content was too large to store (\(model.formattedBytes(current.originalSizeBytes ?? 0))). Showing the start only.",
+            ClipActionCopy.tooLargeNote(sizeText: model.formattedBytes(current.originalSizeBytes ?? 0)),
             systemImage: "exclamationmark.triangle"
         )
         .font(.yank(.caption))
@@ -203,13 +222,9 @@ struct ClipDetailView: View {
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .onChange(of: newTag) { _, value in
-                        tagSuggestions = TagSuggestions.matching(searchText: value, in: store.allTags)
-                            .filter { !current.tags.contains($0) }
-                    }
                     .onSubmit(addTag)
                 Button("Add", action: addTag)
-                    .disabled(TagChip.normalize(newTag).isEmpty)
+                    .disabled(TagNormalization.normalize(newTag).isEmpty)
             }
             if !tagSuggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -218,7 +233,6 @@ struct ClipDetailView: View {
                             TagChip(label: tag, displayPrefix: "#", onTap: {
                                 store.addTag(tag, to: current)
                                 newTag = ""
-                                tagSuggestions = []
                             })
                         }
                     }
@@ -239,14 +253,14 @@ struct ClipDetailView: View {
             } label: {
                 Image(systemName: current.isPinned ? "pin.fill" : "pin")
             }
-            .accessibilityLabel(current.isPinned ? "Unpin" : "Pin to top")
+            .accessibilityLabel(ClipActionCopy.pin(isPinned: current.isPinned))
 
             Button {
                 store.toggleBookmark(current)
             } label: {
                 Image(systemName: current.isBookmarked ? "bookmark.fill" : "bookmark")
             }
-            .accessibilityLabel(current.isBookmarked ? "Remove bookmark" : "Bookmark")
+            .accessibilityLabel(ClipActionCopy.bookmark(isBookmarked: current.isBookmarked))
 
             Menu {
                 if canExtract {
@@ -301,7 +315,7 @@ struct ClipDetailView: View {
     }
 
     private func addTag() {
-        let tag = TagChip.normalize(newTag)
+        let tag = TagNormalization.normalize(newTag)
         guard !tag.isEmpty else { return }
         store.addTag(tag, to: current)
         withAnimation(IOSMotion.state(reduceMotion)) { newTag = "" }
@@ -311,10 +325,14 @@ struct ClipDetailView: View {
         // Convert on the main actor so only the Sendable CGImage crosses to the OCR task.
         guard let cgImage = model.previewImage?.cgImage else { return }
         isExtracting = true
+        foundNoText = false
         defer { isExtracting = false }
-        if let text = await OCRService.shared.recognizeText(from: cgImage) {
+        if let text = await OCRService.shared.recognizeText(from: cgImage), ClipboardItem.isUsableOCRText(text) {
             store.setOCRText(text, for: current)
             withAnimation(IOSMotion.state(reduceMotion)) { localOCR = text }
+        } else {
+            withAnimation(IOSMotion.state(reduceMotion)) { foundNoText = true }
+            UIAccessibility.post(notification: .announcement, argument: Self.noTextFoundMessage)
         }
     }
 }
@@ -323,63 +341,50 @@ struct ClipDetailView: View {
 @Observable
 final class ClipDetailContentModel {
     var previewImage: UIImage?
-    var visibleText = ""
-    var totalBytes = 0
-    var loadedCharCount = 0
-    var reachedEOF = true
-    var isLoadingMore = false
+    private var paging = ChunkedTextPaging()
     var itemSize: Int?
 
     private let store: ClipStore
 
-    private static let chunkSize = 2_000
-    private static let initialChars = 2_000
-
     private static let previewMaxPixel = 1_600
 
-    var hasMore: Bool { !reachedEOF && loadedCharCount >= Self.initialChars }
+    var visibleText: String { paging.visibleText }
+    var totalBytes: Int { paging.totalBytes }
+    var isLoadingMore: Bool { paging.isLoadingMore }
+    var hasMore: Bool { paging.hasMore }
 
     init(store: ClipStore) { self.store = store }
 
     func load(_ item: ClipboardItem) async {
         previewImage = nil
-        visibleText = ""
-        totalBytes = 0
-        loadedCharCount = 0
-        reachedEOF = true
-        isLoadingMore = false
+        paging.begin(itemID: item.id)
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
             previewImage = await loadImage(item)
         case .text:
             if item.isFileBacked {
-                await loadChunk(item, charCount: Self.initialChars)
+                guard let request = paging.firstRequest() else { return }
+                await read(request, of: item)
             } else {
-                visibleText = item.textContent ?? ""
-                reachedEOF = true
+                paging.showInline(item.textContent ?? "")
             }
         }
     }
 
     func loadNextChunk(_ item: ClipboardItem) async {
-        guard !isLoadingMore && hasMore else { return }
-        await loadChunk(item, charCount: loadedCharCount + Self.chunkSize)
+        guard let request = paging.nextRequest() else { return }
+        await read(request, of: item)
     }
 
-    private func loadChunk(_ item: ClipboardItem, charCount: Int) async {
-        isLoadingMore = true
+    /// Reads one page off the main thread and hands it back; the paging state drops a page that
+    /// arrives after focus moved to another clip, so a page costs its own bytes however much is shown.
+    private func read(_ request: ChunkedTextPaging.Request, of item: ClipboardItem) async {
         let textURL = store.blobURL(for: item)
-        let result = await Task.detached(priority: .userInitiated) {
-            ClipStore.textChunk(for: item, textURL: textURL, charCount: charCount)
+        let page = await Task.detached(priority: .userInitiated) {
+            ClipStore.textChunk(for: item, textURL: textURL, charCount: request.charCount, byteOffset: request.byteOffset)
         }.value
-        if let result {
-            visibleText = result.text
-            totalBytes = result.totalBytes
-            loadedCharCount = result.text.count
-            reachedEOF = result.reachedEOF
-        }
-        isLoadingMore = false
+        paging.apply(page, for: request.itemID, at: request.byteOffset)
     }
 
     private func loadImage(_ item: ClipboardItem) async -> UIImage? {

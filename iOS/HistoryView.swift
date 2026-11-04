@@ -1,22 +1,21 @@
 import SwiftUI
 
 enum HistoryEmptyPresentation: Equatable {
-    case iCloudSignedOut
     case syncFailed(String)
     case syncing
-    case captureSetup
     case ready
 
+    /// A signed-out or restricted account never blocks the empty state: the banner above it
+    /// explains the account, and the app works without iCloud.
     static func resolve(
         iCloudSignedOut: Bool,
         syncFailureMessage: String?,
-        isAwaitingFirstSync: Bool,
-        captureSetupCompleted: Bool
+        isAwaitingFirstSync: Bool
     ) -> Self {
-        if iCloudSignedOut { return .iCloudSignedOut }
+        if iCloudSignedOut { return .ready }
         if let syncFailureMessage { return .syncFailed(syncFailureMessage) }
         if isAwaitingFirstSync { return .syncing }
-        return captureSetupCompleted ? .ready : .captureSetup
+        return .ready
     }
 }
 
@@ -25,15 +24,28 @@ struct HistoryView: View {
     var settings: IOSSettings
     var iCloudSignedOut: Bool = false
     var onRetrySync: (() async -> Void)? = nil
+    var onKeepLocalOnly: (([UUID]) -> Void)? = nil
+    /// Reopens the first-run screen on the capture methods; owned by the app, which holds the session.
+    var onReviewCaptureMethods: (() -> Void)? = nil
+    var pasteAccess: PasteAccessMonitor? = nil
     /// Bumped by the app each time it returns from the background; resets search, filter and scroll.
     var openRequest = 0
+    /// A clip a Spotlight result asked for. Kept until the history is readable, then cleared
+    /// whether or not the clip exists.
+    @Binding var requestedClipID: UUID?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
+    /// The query the list is filtered by: `query` once typing has paused.
+    @State private var appliedQuery = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var activeTag: String?
     @State private var showSettings = false
 
     @State private var openItem: ClipboardItem?
+    /// The clip a Spotlight tap opened. The list scrolls to it (not to the newest clip) until the
+    /// user opens something else, so the return-from-background scroll cannot move it away.
+    @State private var spotlightScrollID: UUID?
 
     @State private var isSelecting = false
     @State private var selection: Set<UUID> = []
@@ -50,7 +62,13 @@ struct HistoryView: View {
     @ScaledMetric(relativeTo: .title2) var wordmarkSize: CGFloat = TypeScale.stat
 
     private var filtered: [ClipboardItem] {
-        store.filteredItems(search: query, activeTag: activeTag)
+        store.filteredItems(search: appliedQuery, activeTag: activeTag)
+    }
+
+    /// History is readable once it has been read and storage is not waiting on the first unlock
+    /// or unavailable; before that the list is empty and a requested clip cannot be found.
+    private var isHistoryReadable: Bool {
+        store.hasLoaded && !store.isAwaitingFirstUnlock && !store.storageUnavailable
     }
 
     private var visibleItems: [ClipboardItem] {
@@ -99,23 +117,22 @@ struct HistoryView: View {
         .resolve(
             iCloudSignedOut: iCloudSignedOut,
             syncFailureMessage: firstSyncFailureMessage,
-            isAwaitingFirstSync: isAwaitingFirstSync,
-            captureSetupCompleted: settings.captureSetupCompleted
+            isAwaitingFirstSync: isAwaitingFirstSync
         )
     }
 
     private var browse: some View {
         Group {
-            if store.items.isEmpty {
+            if !store.hasLoaded {
+                // Neutral until the saved history has been read, so "No clips", the onboarding
+                // screen or a sync problem never flashes over a history that is about to appear.
+                loadingState
+            } else if store.items.isEmpty {
                 switch emptyPresentation {
-                case .iCloudSignedOut:
-                    iCloudSignedOutState
                 case .syncFailed(let message):
                     syncFailedState(message: message)
                 case .syncing:
                     syncingState
-                case .captureSetup:
-                    onboardingState
                 case .ready:
                     readyEmptyState
                 }
@@ -124,8 +141,25 @@ struct HistoryView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if store.storageUnavailable {
-                StorageUnavailableBanner()
+            VStack(spacing: 0) {
+                if store.storageUnavailable {
+                    StorageUnavailableBanner()
+                }
+                if store.items.isEmpty && iCloudSignedOut {
+                    ICloudSignedOutBanner(
+                        isRestricted: store.syncFailureKind == .accountRestricted,
+                        onUseWithoutICloud: { settings.syncEnabled = false }
+                    )
+                }
+                if let pasteAccess, pasteAccess.isDenied {
+                    PasteDeniedBanner()
+                }
+                if store.heldClipCount > 0 {
+                    HeldClipsNotice(count: store.heldClipCount)
+                }
+                if !store.items.isEmpty, let received = store.syncClipsReceived {
+                    SyncProgressLine(clipsReceived: received)
+                }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -139,22 +173,33 @@ struct HistoryView: View {
         }
         .animation(IOSMotion.state(reduceMotion), value: isAwaitingFirstSync)
         .animation(IOSMotion.state(reduceMotion), value: firstSyncFailureMessage)
-        .animation(IOSMotion.state(reduceMotion), value: settings.captureSetupCompleted)
         .animation(IOSMotion.state(reduceMotion), value: store.storageUnavailable)
         .animation(IOSMotion.state(reduceMotion), value: store.pendingDeletion != nil)
         .navigationBarTitleDisplayMode(.inline)
         .modifier(HistorySearchModifier(query: $query, isEnabled: !store.items.isEmpty))
         .onSubmit(of: .search) { applyTagSuggestion() }
+        .onChange(of: query) { _, newValue in scheduleSearch(for: newValue) }
         .onChange(of: openRequest) { _, _ in
             query = ""
             activeTag = nil
         }
+        .onChange(of: requestedClipID) { openRequestedClip() }
+        .onChange(of: isHistoryReadable) { openRequestedClip() }
+        .onChange(of: openItem?.id) { _, newID in
+            if newID != spotlightScrollID { spotlightScrollID = nil }
+        }
+        .onAppear { openRequestedClip() }
         .toolbar { toolbarContent }
         .animation(IOSMotion.state(reduceMotion), value: isSelecting)
         .animation(IOSMotion.state(reduceMotion), value: activeTag)
         .animation(IOSMotion.state(reduceMotion), value: openItem?.id)
         .sheet(isPresented: $showSettings) {
-            SettingsView(store: store, settings: settings)
+            SettingsView(
+                store: store,
+                settings: settings,
+                onRetrySync: onRetrySync,
+                onKeepLocalOnly: onKeepLocalOnly
+            )
         }
         .sheet(isPresented: $showShare) { ShareSheet(items: shareItems) }
         .sensoryFeedback(.success, trigger: successPulse)
@@ -212,11 +257,11 @@ struct HistoryView: View {
 
     @ViewBuilder private var selectionActions: some View {
         Button { applyPin() } label: {
-            Label(selectedAllPinned ? "Unpin" : "Pin", systemImage: selectedAllPinned ? "pin.slash" : "pin")
+            Label(ClipActionCopy.pin(isPinned: selectedAllPinned), systemImage: selectedAllPinned ? "pin.slash" : "pin")
         }.disabled(selection.isEmpty)
         Spacer()
         Button { applyBookmark() } label: {
-            Label(selectedAllBookmarked ? "Remove Bookmark" : "Bookmark",
+            Label(ClipActionCopy.bookmark(isBookmarked: selectedAllBookmarked),
                   systemImage: selectedAllBookmarked ? "bookmark.slash" : "bookmark")
         }.disabled(selection.isEmpty)
         Spacer()
@@ -263,9 +308,18 @@ struct HistoryView: View {
                     .onChange(of: openRequest) { _, _ in
                         // Wait one turn so the cleared search has been applied to the list.
                         Task { @MainActor in
+                            if let spotlightScrollID {
+                                proxy.scrollTo(spotlightScrollID, anchor: .center)
+                                return
+                            }
                             guard let newestID = filtered.first?.id else { return }
                             proxy.scrollTo(newestID, anchor: .top)
                         }
+                    }
+                    .onChange(of: spotlightScrollID) { _, id in
+                        guard let id else { return }
+                        // Wait one turn so the cleared search has been applied to the list.
+                        Task { @MainActor in proxy.scrollTo(id, anchor: .center) }
                     }
                 }
             }
@@ -283,12 +337,19 @@ struct HistoryView: View {
 
     private var syncPausedStrip: some View {
         HStack(spacing: Space.md) {
-            Label("Sync paused", systemImage: "exclamationmark.icloud")
-                .font(.yank(.caption))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                Label(SyncCopy.problemHeadline, systemImage: "exclamationmark.icloud")
+                    .font(.yank(.caption, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if case .failed(let message) = store.syncStatus {
+                    Text(message)
+                        .font(.yank(.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 0)
             if let onRetrySync {
-                Button("Retry") {
+                Button(SyncCopy.tryAgain) {
                     Task { await onRetrySync() }
                 }
                 .font(.yank(.caption, weight: .semibold))
@@ -335,7 +396,8 @@ struct HistoryView: View {
             mode: settings.viewMode,
             density: settings.density,
             isHighlighted: isOpen(item),
-            isSelected: selection.contains(item.id)
+            isSelected: selection.contains(item.id),
+            reservesCopySlot: !isSelecting
         )
         if isSelecting {
             Button { toggle(item.id) } label: {
@@ -353,20 +415,24 @@ struct HistoryView: View {
                 action: "Toggle selection"
             )
         } else {
-            Button { open(item) } label: {
-                tile.overlay(alignment: .topTrailing) {
-                    if copiedItemID == item.id {
-                        copiedFlash
-                            .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+            ZStack(alignment: .bottomTrailing) {
+                Button { open(item) } label: {
+                    tile.overlay(alignment: .topTrailing) {
+                        if copiedItemID == item.id {
+                            copiedFlash
+                                .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                .clipAccessibility(
+                    label: item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt),
+                    isSelected: isOpen(item),
+                    action: "Open details"
+                )
+                ClipCopyButton(excerpt: item.excerpt) { copyClipWithFlash(item) }
+                    .padding(ClipTileView.copyButtonInsets(mode: settings.viewMode))
             }
-            .buttonStyle(.plain)
-            .clipAccessibility(
-                label: item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt),
-                isSelected: isOpen(item),
-                action: "Open details"
-            )
             .contextMenu { itemMenu(item) } preview: { ClipPeekView(item: item, store: store) }
         }
     }
@@ -405,30 +471,34 @@ struct HistoryView: View {
                 action: "Toggle selection"
             )
         } else {
-            Button { open(item) } label: {
-                ClipRowView(item: item, store: store, density: settings.density,
-                            isHighlighted: isOpen(item), onTagTap: applyTag)
-                    .overlay(alignment: .topTrailing) {
-                        if copiedItemID == item.id {
-                            copiedFlash
-                                .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
-                                .padding(Space.xs)
+            ZStack(alignment: .bottomTrailing) {
+                Button { open(item) } label: {
+                    ClipRowView(item: item, store: store, density: settings.density,
+                                isHighlighted: isOpen(item), onTagTap: applyTag, reservesCopySlot: true)
+                        .overlay(alignment: .topTrailing) {
+                            if copiedItemID == item.id {
+                                copiedFlash
+                                    .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+                                    .padding(Space.xs)
+                            }
                         }
-                    }
-            }
+                }
                 .buttonStyle(.plain)
                 .clipAccessibility(
                     label: item.accessibilityDescription(kindLabel: item.kind.label, excerpt: item.excerpt),
                     isSelected: isOpen(item),
                     action: "Open details"
                 )
+                ClipCopyButton(excerpt: item.excerpt) { copyClipWithFlash(item) }
+                    .padding(ClipRowView.copyButtonInsets(density: settings.density))
+            }
                 .listRowBackground(Color.clear)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button { togglePin(item) } label: {
-                        Label(item.isPinned ? "Unpin" : "Pin", systemImage: item.isPinned ? "pin.slash" : "pin")
+                        Label(ClipActionCopy.pin(isPinned: item.isPinned), systemImage: item.isPinned ? "pin.slash" : "pin")
                     }.tint(settings.theme.foreground)
                     Button { toggleBookmark(item) } label: {
-                        Label(item.isBookmarked ? "Unbookmark" : "Bookmark",
+                        Label(ClipActionCopy.bookmark(isBookmarked: item.isBookmarked),
                               systemImage: item.isBookmarked ? "bookmark.slash" : "bookmark")
                     }.tint(Color.yankBookmarkFill)
                 }
@@ -466,10 +536,10 @@ struct HistoryView: View {
     @ViewBuilder private func itemMenu(_ item: ClipboardItem) -> some View {
         Button { copyClipWithFlash(item) } label: { Label("Copy", systemImage: "doc.on.doc") }
         Button { togglePin(item) } label: {
-            Label(item.isPinned ? "Unpin" : "Pin to top", systemImage: item.isPinned ? "pin.slash" : "pin")
+            Label(ClipActionCopy.pin(isPinned: item.isPinned), systemImage: item.isPinned ? "pin.slash" : "pin")
         }
         Button { toggleBookmark(item) } label: {
-            Label(item.isBookmarked ? "Remove Bookmark" : "Bookmark",
+            Label(ClipActionCopy.bookmark(isBookmarked: item.isBookmarked),
                   systemImage: item.isBookmarked ? "bookmark.slash" : "bookmark")
         }
         Button(role: .destructive) { deleteSingle(item) } label: { Label("Delete", systemImage: "trash") }
@@ -494,6 +564,23 @@ struct HistoryView: View {
         reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity)
     }
 
+    // MARK: - Search
+
+    /// Filters at once for an empty or `#` query, otherwise after typing pauses; a newer keystroke
+    /// cancels the pending filter.
+    private func scheduleSearch(for text: String) {
+        searchDebounceTask?.cancel()
+        if ClipQuery.appliesWithoutDebounce(text) {
+            appliedQuery = text
+            return
+        }
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: ClipQuery.searchDebounce)
+            guard !Task.isCancelled else { return }
+            appliedQuery = text
+        }
+    }
+
     // MARK: - Tag autocomplete
 
     private func applyTag(_ tag: String) {
@@ -513,13 +600,6 @@ struct HistoryView: View {
     }
 
     // MARK: - Single-item actions
-
-    private func copyClip(_ item: ClipboardItem) {
-        Task { @MainActor in
-            guard await store.copyToPasteboard(item) else { return }
-            successPulse += 1
-        }
-    }
 
     private func copyClipWithFlash(_ item: ClipboardItem) {
         Task { @MainActor in
@@ -580,6 +660,25 @@ struct HistoryView: View {
     }
 
     // MARK: - Selection
+
+    /// Opens the clip a Spotlight result asked for, once the history can be read. The request is
+    /// cleared whether or not the clip is still there (deleted, or waiting out its undo window),
+    /// so a stale result leaves the app at the list instead of an empty detail page.
+    private func openRequestedClip() {
+        guard let clipID = requestedClipID, isHistoryReadable else { return }
+        requestedClipID = nil
+        guard let item = visibleItems.first(where: { $0.id == clipID }) else { return }
+        searchDebounceTask?.cancel()
+        query = ""
+        appliedQuery = ""
+        activeTag = nil
+        isSelecting = false
+        selection = []
+        showSettings = false
+        showShare = false
+        spotlightScrollID = item.id
+        withAnimation(IOSMotion.present(reduceMotion)) { openItem = item }
+    }
 
     private func open(_ item: ClipboardItem) {
         IOSMotion.selectionFeedback()

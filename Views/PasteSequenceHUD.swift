@@ -27,6 +27,11 @@ final class PasteSequenceHUDState {
     var itemCount = 0
     var nextIndex = 0
     var shortcut = ""
+    /// True while the sequence can still be cancelled; the HUD then offers a Cancel button.
+    var canCancel = false
+    /// Runs when the Cancel button is pressed. Set by the coordinator, which guards against a
+    /// late press.
+    @ObservationIgnored var onCancel: (() -> Void)?
 
     var statusText: String {
         switch phase {
@@ -94,14 +99,27 @@ private final class PasteSequencePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Holds the Cancel button alone, so it is the only part of the HUD that takes clicks.
+private final class PasteSequenceCancelPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Lets the first click press the button while another app stays frontmost.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class PasteSequenceHUDController {
     fileprivate static let panelSize = NSSize(width: 520, height: 76)
+    fileprivate static let cancelButtonSize = NSSize(width: 76, height: 28)
     private static let topInset: CGFloat = Space.lg
 
     let state = PasteSequenceHUDState()
 
     private let panel: NSPanel
+    private let cancelPanel: NSPanel
 
     init() {
         let panel = PasteSequencePanel(
@@ -111,6 +129,23 @@ final class PasteSequenceHUDController {
             defer: false
         )
         self.panel = panel
+
+        let cancelPanel = PasteSequenceCancelPanel(
+            contentRect: NSRect(origin: .zero, size: Self.cancelButtonSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        self.cancelPanel = cancelPanel
+        cancelPanel.level = .statusBar
+        cancelPanel.isFloatingPanel = true
+        cancelPanel.hidesOnDeactivate = false
+        cancelPanel.becomesKeyOnlyIfNeeded = true
+        cancelPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        cancelPanel.backgroundColor = .clear
+        cancelPanel.isOpaque = false
+        cancelPanel.hasShadow = false
+        cancelPanel.animationBehavior = .none
 
         panel.level = .statusBar
         panel.isFloatingPanel = true
@@ -125,25 +160,38 @@ final class PasteSequenceHUDController {
         panel.setAccessibilityTitle("Paste Sequence")
 
         panel.contentView = NSHostingView(rootView: PasteSequenceHUDView(state: state))
+
+        cancelPanel.setAccessibilityTitle(PasteSequenceCancelButton.accessibilityLabel)
+        let cancelHost = FirstMouseHostingView(rootView: PasteSequenceCancelButton(state: state))
+        cancelHost.frame = NSRect(origin: .zero, size: Self.cancelButtonSize)
+        cancelPanel.contentView = cancelHost
     }
 
     func show() {
         moveToActiveDisplay()
-        guard !panel.isVisible else { return }
+        guard !panel.isVisible else {
+            syncCancelPanel(alpha: panel.alphaValue)
+            return
+        }
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             panel.alphaValue = 1
             panel.orderFrontRegardless()
+            syncCancelPanel(alpha: 1)
             return
         }
         panel.alphaValue = 0
         panel.orderFrontRegardless()
+        syncCancelPanel(alpha: 0)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = YankPanelTokens.fadeInDuration
             panel.animator().alphaValue = 1
+            cancelPanel.animator().alphaValue = 1
         }
     }
 
     func close() {
+        // The button goes at once, so a click during the fade-out finds nothing to press.
+        hideCancelPanel()
         guard panel.isVisible else { return }
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             panel.close()
@@ -166,6 +214,32 @@ final class PasteSequenceHUDController {
                 .priority: NSAccessibilityPriorityLevel.high.rawValue
             ]
         )
+    }
+
+    /// Shows the Cancel button at the HUD's trailing edge while the sequence can be cancelled,
+    /// and removes it otherwise. It is a child window, so it moves with the HUD.
+    private func syncCancelPanel(alpha: CGFloat) {
+        guard state.canCancel else {
+            hideCancelPanel()
+            return
+        }
+        let hudFrame = panel.frame
+        cancelPanel.setFrameOrigin(NSPoint(
+            x: hudFrame.maxX - Space.xl - Self.cancelButtonSize.width,
+            y: hudFrame.midY - Self.cancelButtonSize.height / 2
+        ))
+        cancelPanel.alphaValue = alpha
+        if cancelPanel.parent == nil {
+            panel.addChildWindow(cancelPanel, ordered: .above)
+        }
+        cancelPanel.orderFrontRegardless()
+    }
+
+    private func hideCancelPanel() {
+        if cancelPanel.parent != nil {
+            panel.removeChildWindow(cancelPanel)
+        }
+        cancelPanel.orderOut(nil)
     }
 
     private func moveToActiveDisplay() {
@@ -207,6 +281,12 @@ private struct PasteSequenceHUDView: View {
 
             Spacer(minLength: Space.md)
 
+            if state.canCancel {
+                // The Cancel button is its own window; keep the status text clear of it.
+                Color.clear
+                    .frame(width: PasteSequenceHUDController.cancelButtonSize.width, height: 1)
+                    .accessibilityHidden(true)
+            }
         }
         .padding(.horizontal, Space.xl)
         .frame(width: PasteSequenceHUDController.panelSize.width,
@@ -230,5 +310,33 @@ private struct PasteSequenceHUDView: View {
         } else {
             Rectangle().fill(.ultraThinMaterial)
         }
+    }
+}
+
+/// The Cancel button, hosted in its own small window so the rest of the HUD stays click-through.
+private struct PasteSequenceCancelButton: View {
+    static let accessibilityLabel = "Cancel Paste Sequence"
+
+    let state: PasteSequenceHUDState
+
+    var body: some View {
+        Button {
+            state.onCancel?()
+        } label: {
+            Text("Cancel")
+                .font(.system(size: TypeScale.control, weight: .semibold))
+                .foregroundStyle(AppTheme.active.foreground)
+                .frame(width: PasteSequenceHUDController.cancelButtonSize.width,
+                       height: PasteSequenceHUDController.cancelButtonSize.height)
+                .background(Color.yankSubtleFill, in: RoundedRectangle(cornerRadius: Radius.md))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.md)
+                        .strokeBorder(Color.yankHairline, lineWidth: Hairline.width)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: Radius.md))
+        }
+        .buttonStyle(.plain)
+        .help("Stops collecting and pasting. Your clipboard is not changed.")
+        .accessibilityLabel(Self.accessibilityLabel)
     }
 }

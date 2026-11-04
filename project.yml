@@ -93,38 +93,46 @@ targets:
       - Shared/ThumbnailCache.swift
       - Shared/ClipPresentationCache.swift
       - Shared/SyncCopy.swift
+      - Shared/ClipActionCopy.swift
       - Shared/YankWordmark.swift
       - Shared/ClipSwatchPreview.swift
       - Shared/ClipKindIcon.swift
       - Shared/UndoDeleteBanner.swift
       - Shared/StorageUnavailableBanner.swift
+      - Shared/HeldClipsNotice.swift
       - Shared/AppNotifications.swift
       - Sources/YankCore
       - Sources/YankCloudKitSync
       - iOS/AppGroupContainer.swift
       - iOS/AppGroupContext.swift
+      - iOS/BackupExclusion.swift
       - iOS/ClipStore.swift
       - iOS/ClipStore+Mutations.swift
       - iOS/IOSClipBlobStore.swift
       - iOS/IOSSettings.swift
+      - iOS/PasteboardBootTime.swift
       - iOS/IOSSyncedSettingsBridge.swift
       - iOS/HistoryLimitConfirmation.swift
+      - iOS/RetentionConfirmation.swift
       - iOS/YankIOSDesignSystem.swift
       - iOS/YankApp.swift
       - iOS/HistoryView.swift
       - iOS/HistoryEmptyStates.swift
       - iOS/HistorySupportViews.swift
       - iOS/SettingsView.swift
+      - iOS/WaitingClipsView.swift
       - iOS/ClipRowView.swift
       - iOS/ClipTileView.swift
       - iOS/ClipThumbnailView.swift
       - iOS/ClipDetailView.swift
       - iOS/ClipPeekView.swift
       - iOS/EmptyStateView.swift
+      - iOS/IOSPrivacyCover.swift
       - iOS/ShareSheet.swift
       - iOS/CaptureClipIntent.swift
       - Shared/SpotlightIndexer.swift
       - iOS/YankAppDelegate.swift
+      - iOS/IOSAppRuntime.swift
       - path: Privacy/YankiOS/PrivacyInfo.xcprivacy
       - path: iOS/Assets.xcassets
     dependencies:

@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct CopyConfirmationCapsule: View {
+    /// How long the capsule stays up after a copy, in the history window and the Quick Picker.
+    static let displayDuration: Duration = .milliseconds(1_400)
+
     var body: some View {
         HStack(spacing: 0) {
             Text("Copied").foregroundStyle(.primary)

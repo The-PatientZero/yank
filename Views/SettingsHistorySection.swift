@@ -6,20 +6,19 @@ extension SettingsView {
             adaptiveGrid(minimum: 112) {
                 ForEach(HistoryLimit.allCases, id: \.self) { tier in tierButton(tier) }
             }
-            Text("How many clips Yank keeps. \(SyncCopy.historyLimitScope(syncEnabled: manager.syncEnabled)) Pinned and bookmarked clips are always safe.")
+            Text("How many clips Yank keeps. \(SyncCopy.historyLimitScope(syncEnabled: manager.syncEnabled)) \(SyncCopy.protectedClips)")
                 .font(.system(size: TypeScale.micro))
                 .foregroundColor(.yankTextTertiary)
 
             Divider().overlay(Color.yankHairline)
 
-            settingRowControl("Auto-delete after", "Older unprotected clips are removed.") {
+            settingRowControl("Auto-delete after", "Older unprotected clips are removed. \(SyncCopy.retentionCaption(syncEnabled: manager.syncEnabled))") {
                 Picker("Auto-delete after", selection: Binding(
                     get: { manager.retentionDays },
-                    set: { manager.setRetentionDays($0) })) {
-                    Text("Never").tag(0)
-                    Text("7 days").tag(7)
-                    Text("30 days").tag(30)
-                    Text("90 days").tag(90)
+                    set: { selectRetentionDays($0) })) {
+                    ForEach(SettingsDefaults.retentionChoices, id: \.self) { days in
+                        Text(SyncCopy.retentionLabel(days: days)).tag(days)
+                    }
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
@@ -40,6 +39,31 @@ extension SettingsView {
                 .accessibilityValue(minCaptureLengthAccessibilityValue)
                 .accessibilityHint("Adjust the minimum copy length Yank captures.")
             }
+        }
+        .alert(
+            SyncCopy.retentionReductionTitle(days: pendingRetention?.days ?? 0),
+            isPresented: $showingRetentionAlert
+        ) {
+            Button("Cancel", role: .cancel) { pendingRetention = nil }
+            Button("Delete Clips", role: .destructive) {
+                if let pending = pendingRetention {
+                    manager.setRetentionDays(pending.days)
+                }
+                pendingRetention = nil
+            }
+        } message: {
+            if let pending = pendingRetention {
+                Text(SyncCopy.retentionReduction(
+                    days: pending.days,
+                    deleting: pending.deleting,
+                    syncEnabled: manager.syncEnabled
+                ))
+            }
+        }
+        .onChange(of: manager.retentionDays) {
+            // An adopted remote window must not be overwritten by a late "Delete Clips".
+            showingRetentionAlert = false
+            pendingRetention = nil
         }
     }
 
@@ -87,8 +111,28 @@ extension SettingsView {
         }
     }
 
+    /// Mirrors the iOS picker's rule: a shortening that would delete, or that other devices may
+    /// act on, asks first; anything else applies at once.
+    func selectRetentionDays(_ days: Int) {
+        switch RetentionChange.requested(
+            days,
+            current: manager.retentionDays,
+            items: store?.items,
+            syncEnabled: manager.syncEnabled,
+            now: Date()
+        ) {
+        case .unchanged:
+            break
+        case .apply(let days):
+            manager.setRetentionDays(days)
+        case .confirm(let days, let deleting):
+            pendingRetention = RetentionChange.Pending(days: days, deleting: deleting)
+            showingRetentionAlert = true
+        }
+    }
+
     var retentionAccessibilityValue: String {
-        manager.retentionDays == 0 ? "Never" : "\(manager.retentionDays) days"
+        SyncCopy.retentionLabel(days: manager.retentionDays)
     }
 
     var minCaptureLengthAccessibilityValue: String {
@@ -97,7 +141,7 @@ extension SettingsView {
 
     func historyLimitAccessibilityHint(for tier: HistoryLimit, selected: Bool) -> String {
         if selected {
-            return "Current history limit. Pinned and bookmarked clips are always safe."
+            return "Current history limit. \(SyncCopy.protectedClips)"
         }
         if case .confirm = HistoryLimitChange.requested(
             tier,
@@ -106,6 +150,6 @@ extension SettingsView {
         ) {
             return "Asks before deleting older unprotected clips to reduce the limit."
         }
-        return "Sets the history limit. Pinned and bookmarked clips are always safe."
+        return "Sets the history limit. \(SyncCopy.protectedClips)"
     }
 }

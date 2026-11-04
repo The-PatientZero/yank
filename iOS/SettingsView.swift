@@ -3,10 +3,13 @@ import SwiftUI
 struct SettingsView: View {
     var store: ClipStore
     @Bindable var settings: IOSSettings
+    var onRetrySync: (() async -> Void)? = nil
+    var onKeepLocalOnly: (([UUID]) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showClearConfirm = false
     @State private var historyLimitConfirmation = HistoryLimitConfirmation()
+    @State private var retentionConfirmation = RetentionConfirmation()
 
     @ScaledMetric(relativeTo: .caption) private var checkmarkSize: CGFloat = TypeScale.caption
 
@@ -75,10 +78,26 @@ struct SettingsView: View {
                 Label("iCloud Sync", systemImage: "icloud")
             }
             syncStatusRow
+            waitingClipsRow
+            encryptionStatusRow
         } header: {
             Text("Sync")
         } footer: {
             Text("\(SyncCopy.optInDescription) \(syncSectionDescription)")
+        }
+    }
+
+    @ViewBuilder private var encryptionStatusRow: some View {
+        if case .localOnly = store.syncStatus {
+            EmptyView()
+        } else if let status = store.encryptionStatus {
+            let text = SyncCopy.encryption(status)
+            let isWarning: Bool = if case .olderDeviceSeen = status { true } else { false }
+            Label(text, systemImage: isWarning ? "exclamationmark.icloud" : "lock.icloud")
+                .foregroundStyle(isWarning ? Color.yankDanger : Color.secondary)
+                .font(.yank(.caption))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(text)
         }
     }
 
@@ -121,12 +140,14 @@ struct SettingsView: View {
             HStack(spacing: Space.md) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Syncing…")
+                Text(store.syncClipsReceived.map(SyncCopy.syncingWithCount) ?? SyncCopy.syncingHeadline)
                     .foregroundStyle(.secondary)
                     .font(.yank(.subheadline))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Syncing your clips")
+            .accessibilityLabel(SyncCopy.syncingYourClipsLabel)
+            .accessibilityValue(store.syncClipsReceived.map(SyncCopy.receivedCount) ?? "")
         case .healthy(let lastSynced):
             HStack {
                 Label("Synced", systemImage: "checkmark.icloud.fill")
@@ -142,16 +163,57 @@ struct SettingsView: View {
             .accessibilityValue(Text(lastSynced, style: .relative))
         case .failed(let message):
             VStack(alignment: .leading, spacing: Space.xs) {
-                Label("Sync failed", systemImage: "exclamationmark.icloud.fill")
+                Label(SyncCopy.problemHeadline, systemImage: "exclamationmark.icloud.fill")
                     .foregroundStyle(Color.yankDanger)
                     .font(.yank(.subheadline))
                 Text(message)
                     .font(.yank(.caption))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if let hint = SyncCopy.pathHint(for: store.syncFailureKind) {
+                    Text(hint)
+                        .font(.yank(.caption))
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: Space.md) {
+                    ForEach(SyncCopy.actions(for: store.syncFailureKind), id: \.self) { action in
+                        failureActionButton(action)
+                    }
+                }
+                .padding(.top, Space.xs)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Sync failed. \(message)")
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    @ViewBuilder private func failureActionButton(_ action: SyncCopy.FailureAction) -> some View {
+        switch action {
+        case .openSettings:
+            Button(SyncCopy.title(for: action)) {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .buttonStyle(.bordered)
+        case .tryAgain:
+            if let onRetrySync {
+                Button(SyncCopy.title(for: action)) {
+                    Task { await onRetrySync() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    @ViewBuilder private var waitingClipsRow: some View {
+        let waiting = store.visibleWaitingClips
+        if !waiting.isEmpty {
+            NavigationLink {
+                WaitingClipsView(store: store, onKeepLocalOnly: onKeepLocalOnly)
+            } label: {
+                Label(SyncCopy.waitingCount(waiting.count), systemImage: "exclamationmark.icloud")
+                    .foregroundStyle(Color.yankDanger)
+                    .font(.yank(.subheadline))
+            }
         }
     }
 
@@ -222,6 +284,16 @@ struct SettingsView: View {
         settings.setHistoryLimit(applied)
     }
 
+    private func selectRetentionDays(_ days: Int) {
+        guard let applied = retentionConfirmation.select(
+            days,
+            current: settings.retentionDays,
+            items: store.items,
+            syncEnabled: settings.syncEnabled
+        ) else { return }
+        settings.setRetentionDays(applied)
+    }
+
     private func coerceMacOnlyViewMode(_ mode: ClipViewMode) {
         if mode == .split { settings.viewMode = .list }
     }
@@ -254,14 +326,37 @@ struct SettingsView: View {
             } message: {
                 Text(SyncCopy.historyLimitReduction(syncEnabled: settings.syncEnabled))
             }
+            // Committed-value binding: see `RetentionConfirmation` for the cancel-path guarantee.
             Picker("Auto-delete", selection: Binding(
                 get: { settings.retentionDays },
-                set: { settings.setRetentionDays($0) }
+                set: { selectRetentionDays($0) }
             )) {
-                Text("Never").tag(0)
-                Text("After 7 days").tag(7)
-                Text("After 30 days").tag(30)
-                Text("After 90 days").tag(90)
+                ForEach(SettingsDefaults.retentionChoices, id: \.self) { days in
+                    Text(SyncCopy.retentionLabel(days: days)).tag(days)
+                }
+            }
+            .confirmationDialog(
+                SyncCopy.retentionReductionTitle(days: retentionConfirmation.pending?.days ?? 0),
+                isPresented: Binding(
+                    get: { retentionConfirmation.isConfirming },
+                    set: { if !$0 { retentionConfirmation.cancel() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete Clips", role: .destructive) {
+                    if let days = retentionConfirmation.confirm() {
+                        settings.setRetentionDays(days)
+                    }
+                }
+                Button("Cancel", role: .cancel) { retentionConfirmation.cancel() }
+            } message: {
+                if let pending = retentionConfirmation.pending {
+                    Text(SyncCopy.retentionReduction(
+                        days: pending.days,
+                        deleting: pending.deleting,
+                        syncEnabled: settings.syncEnabled
+                    ))
+                }
             }
             Toggle(isOn: Binding(
                 get: { settings.spotlightIndexing },
@@ -279,10 +374,14 @@ struct SettingsView: View {
         } header: {
             Text("History")
         } footer: {
-            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.syncedRetention) Pinned, bookmarked, and tagged clips are always kept.")
+            Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.retentionCaption(syncEnabled: settings.syncEnabled))")
         }
         .onChange(of: settings.historyLimit) { _, _ in store.enforceRetentionAndLimit() }
-        .onChange(of: settings.retentionDays) { _, _ in store.enforceRetentionAndLimit() }
+        .onChange(of: settings.retentionDays) { _, _ in
+            // An adopted remote window must not be overwritten by a late "Delete Clips".
+            retentionConfirmation.cancel()
+            store.enforceRetentionAndLimit()
+        }
     }
 
     // MARK: - Data section
@@ -292,17 +391,23 @@ struct SettingsView: View {
             Button(role: .destructive) { showClearConfirm = true } label: {
                 Label("Clear History", systemImage: "trash")
             }
-            .confirmationDialog("Clear all clips on this device?",
+            .confirmationDialog(SyncCopy.clearHistoryTitle(syncEnabled: settings.syncEnabled),
                                 isPresented: $showClearConfirm, titleVisibility: .visible) {
                 Button("Clear History", role: .destructive) { store.clear() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Removes every clip from this device. With sync on, the clearance propagates to your other devices.")
+                Text([
+                    SyncCopy.clearHistoryMessage(syncEnabled: settings.syncEnabled),
+                    HeldClipsNotice.clearWarning(count: store.heldClipCount)
+                ].compactMap { $0 }.joined(separator: " "))
+            }
+            Toggle(isOn: $settings.includeHistoryInBackups) {
+                Label("Include History in Device Backups", systemImage: "externaldrive.badge.icloud")
             }
         } header: {
             Text("Data")
         } footer: {
-            Text("\(store.items.count) clips on this device.")
+            Text("\(store.items.count) clips on this device. \(SyncCopy.backupFooter(syncEnabled: settings.syncEnabled))")
         }
     }
 

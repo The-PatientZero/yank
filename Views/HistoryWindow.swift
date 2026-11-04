@@ -99,15 +99,6 @@ enum HistoryWindowFramePersistencePolicy {
             return false
         }
     }
-
-    static func placementAfterUserFrame(_ current: HistoryWindowPlacement) -> HistoryWindowPlacement {
-        switch current {
-        case .lastPosition:
-            return current
-        case .menuBarIcon, .center, .topRight:
-            return .lastPosition
-        }
-    }
 }
 
 @MainActor
@@ -118,6 +109,8 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private let appStatus: AppStatus
     private let anchorFrameProvider: @MainActor () -> NSRect?
     private var previousApp: NSRunningApplication?
+    /// True while Paste as Text loads a clip's full text, so a repeated key press pastes once.
+    private var isLoadingPasteText = false
     private var didBecomeKeyObserver: NSObjectProtocol?
 
     /// Guards the summon-dismiss animation so a `resignKey` (or a paste-triggered close)
@@ -243,10 +236,6 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             isWindowVisible: window?.isVisible == true
         ) else { return }
         persistFrame()
-        guard settings.historyWindowPlacement != .lastPosition else { return }
-        settings.historyWindowPlacement = HistoryWindowFramePersistencePolicy
-            .placementAfterUserFrame(settings.historyWindowPlacement)
-        settings.save()
     }
 
     override func close() {
@@ -404,13 +393,18 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func pasteItemAsText(_ item: ClipboardItem) {
-        guard let text = item.ocrText ?? item.textContent, !text.isEmpty else { return }
-        let appToRestore = previousApp
-        let ax = axPermission
-        let delay = pasteDelay
-        close()
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            PasteController.pasteText(text, axPermission: ax, previousApp: appToRestore)
+        guard !isLoadingPasteText else { return }
+        isLoadingPasteText = true
+        Task {
+            defer { isLoadingPasteText = false }
+            guard let text = await store.pasteAsTextContent(for: item) else { return }
+            let appToRestore = previousApp
+            let ax = axPermission
+            let delay = pasteDelay
+            close()
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                PasteController.pasteText(text, axPermission: ax, previousApp: appToRestore)
+            }
         }
     }
 
@@ -441,6 +435,9 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         // then selects and scrolls to the newest clip of the unfiltered list.
         if isNewOpen {
             NotificationCenter.default.post(name: .yankHistoryWindowDidShow, object: nil)
+        } else {
+            // No open step follows, so a clip the caller asked for is handed over directly.
+            NotificationCenter.default.post(name: .yankHistoryFocusRequested, object: nil)
         }
 
         super.showWindow(sender)

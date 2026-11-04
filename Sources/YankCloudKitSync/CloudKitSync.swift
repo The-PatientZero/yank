@@ -13,10 +13,11 @@ let syncLog = Logger(subsystem: "com.thepatientzero.yank", category: "sync")
 enum CloudKitSyncError: LocalizedError {
     case missingBlobAsset(String)
     case partialRecordFailures(Int)
-    case partialRecordSaves(Int)
+    case partialRecordSaves(Int, SyncFailure? = nil)
     case unrecoverableLocalRecords(Int)
     case backfillDidNotConverge(Int)
     case pushReceiptEncodingFailed
+    case changeTokenEncodingFailed
     case pullQuarantineEncodingFailed
     case pullQuarantineOverflow
     case encryptedDataKeyReset
@@ -27,7 +28,7 @@ enum CloudKitSyncError: LocalizedError {
             "Synced blob \(filename) is missing from CloudKit. Sync will retry."
         case .partialRecordFailures(let count):
             "CloudKit could not return \(count) changed record(s). Sync will retry."
-        case .partialRecordSaves(let count):
+        case .partialRecordSaves(let count, _):
             "CloudKit could not save \(count) record(s). Sync will retry."
         case .unrecoverableLocalRecords(let count):
             "Backfill stopped before upload because \(count) local record(s) are missing required blob data."
@@ -35,6 +36,8 @@ enum CloudKitSyncError: LocalizedError {
             "Backfill finished uploading, but \(count) local record(s) are still missing from CloudKit."
         case .pushReceiptEncodingFailed:
             "CloudKit push acknowledgements could not be saved. Sync will safely replay."
+        case .changeTokenEncodingFailed:
+            "Where sync stopped could not be saved. Sync will safely replay."
         case .pullQuarantineEncodingFailed:
             "Skipped CloudKit records could not be recorded. Sync will safely replay."
         case .pullQuarantineOverflow:
@@ -43,19 +46,43 @@ enum CloudKitSyncError: LocalizedError {
             "iCloud's encrypted data key was reset. Yank is uploading your clips again."
         }
     }
+
+    /// What the apps show: the classified cause when a save recorded one, otherwise this
+    /// error's own sentence.
+    var failure: SyncFailure {
+        if case .partialRecordSaves(_, let cause?) = self { return cause }
+        return SyncFailure(kind: .other, detail: errorDescription)
+    }
 }
 
+/// What one backfill pass counted; every count is a number of records (tombstones included), not of clips.
 public struct CloudKitBackfillResult: Equatable, Sendable {
+    /// Records the local store offered for sync.
     public let localRecordCount: Int
+    /// Of those, the records CloudKit already held before the pass.
     public let presentRecordCountBefore: Int
+    /// Of those, the records CloudKit did not hold before the pass.
     public let missingRecordCountBefore: Int
+    /// Records handed to the save; 0 on a dry run.
     public let uploadedRecordCount: Int
+    /// Of the local records, the number CloudKit held when the pass finished.
     public let presentRecordCountAfter: Int
+    /// Of the local records, the number CloudKit still did not hold when the pass finished.
     public let remainingMissingRecordCount: Int
 
+    /// Whether `remainingMissingRecordCount` is 0.
     public var converged: Bool {
         remainingMissingRecordCount == 0
     }
+}
+
+/// What one remote-change run did, for callers that report it to the system.
+enum CloudKitRemoteChangeOutcome: Equatable, Sendable {
+    /// The run fetched changes from CloudKit.
+    case newData
+    /// The run succeeded and fetched nothing.
+    case noData
+    case failed
 }
 
 /// Syncs the local store with the user's CloudKit private database.
@@ -63,24 +90,31 @@ public struct CloudKitBackfillResult: Equatable, Sendable {
 /// Conflicts resolve through `ClipboardMerge` (last-writer-wins); deletes propagate via tombstones.
 @MainActor
 public final class CloudKitSyncService {
-    private let database: any CloudKitDatabase
-    private let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+    let database: any CloudKitDatabase
+    let zoneID = CKRecordZone.ID(zoneName: "YankZone", ownerName: CKCurrentUserDefaultName)
+    let devicesZoneID = CKRecordZone.ID(
+        zoneName: CloudKitDeviceRegistry.zoneName,
+        ownerName: CKCurrentUserDefaultName
+    )
     private let subscriptionID = "yank-changes"
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
+    let rolloutState: EncryptionRolloutState
     private let tokenKey: String
     private let pushWatermarkKey: String
     private let pushReceiptsKey: String
     private let pullQuarantineKey: String
-    private let encryptedCopyBackfillKey: String
+    let encryptedCopyBackfillKey: String
+    private let historyCoverageKey: String
+    private let localOnlyClipsKey: String
     private let pushDebounceNanoseconds: UInt64
     private let pushRetryDelaysNanoseconds: [UInt64]
     private let beforeReceiptPersistence: (() throws -> Void)?
     private let afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)?
-    private weak var store: SyncableStore?
+    weak var store: SyncableStore?
     /// Weak like `store`: the composition root owns the settings bridge and outlives the
     /// service, so a strong edge here would keep the app's settings graph alive past `stop()`.
     private weak var settingsStore: (any SyncedSettingsStore)?
-    private var changeToken: CKServerChangeToken?
+    var changeToken: CKServerChangeToken?
     private var pushReceipts: [UUID: Date]?
     private var pullQuarantine: [String: CloudKitPullQuarantineEntry]
     /// Whether the settings record is worth a round trip on the next push. Purely an
@@ -96,8 +130,36 @@ public final class CloudKitSyncService {
     private var pushRetry: Task<Void, Never>?
     private var pushRetryAttempt = 0
     private var activePush: (id: UUID, task: Task<Void, Error>)?
+    /// True while a pull waits for its snapshot to reach the disk; pushes wait for it to clear.
+    private var durablePullApplyInFlight = false
+    private var durablePullApplyWaiters: [CheckedContinuation<Void, Never>] = []
+    private var activePull: PullFlight?
+    /// Changes every pull of this service fetched so far; a caller that cannot see a pull's own
+    /// count (the start) compares it before and after.
+    private(set) var fetchedChangesTotal = 0
+    /// Pull requests made so far; a running pull serves the ones made before it started.
+    private var pullRequestCount: UInt64 = 0
+    /// A caller asked for a pull that fetches changes since the last pull started.
+    private var changePullRequested = false
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
+    /// The clips the last push that got past preparing could not upload.
+    private var waitingClips: [SyncWaitingClip] = []
+
+    // Encryption rollout. `rolloutDeviceID` stays nil until the app opts in, which keeps the
+    // service dual-writing and silent about devices (the safe default for SwiftPM users).
+    var rolloutDeviceID: String?
+    weak var encryptionStatusReporter: (any SyncEncryptionStatusReporting)?
+    var lastRolloutEvaluation: Date?
+    var rolloutReevaluationRequested = false
+    /// Whether the last rollout evaluation could read the devices zone; `false` until one has.
+    var deviceZoneReadSucceeded = false
+    var activeRolloutEvaluation: (id: UUID, task: Task<Void, Never>)?
+    var activeSweep: (id: UUID, task: Task<Void, Never>)?
+    var loggedBlankClipIDs: Set<UUID> = []
+    /// Failed saves per clip of the erase of its readable copy, so a clip that keeps failing stops
+    /// holding its page back after a few attempts. Kept in memory: a relaunch starts counting again.
+    var readableCopyEraseAttempts: [String: Int] = [:]
 
     /// Live entry point: binds to the container's private database. `CKContainer(identifier:)`
     /// hard-traps on a binary not provisioned for the container, so callers must gate on
@@ -120,14 +182,20 @@ public final class CloudKitSyncService {
     private static func liveDatabase(for containerIdentifier: String) -> any CloudKitDatabase {
         let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
         #if DEBUG
+        var wrapped: any CloudKitDatabase = database
         if KeyResetInjectingDatabase.isRequested {
-            return KeyResetInjectingDatabase(wrapping: database)
+            wrapped = KeyResetInjectingDatabase(wrapping: wrapped)
         }
-        #endif
+        if DebugRolloutOverrides.simulateDeviceZoneFailure {
+            wrapped = DeviceZoneFailureInjectingDatabase(wrapping: wrapped)
+        }
+        return wrapped
+        #else
         return database
+        #endif
     }
 
-    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch)
+    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch, history coverage)
     /// for a container. They describe the previous iCloud account's zone, and keeping them would
     /// suppress re-uploading the library into a new one. Call before constructing a fresh service.
     public static func resetPersistedState(
@@ -140,6 +208,22 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.encryptedCopyBackfill.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.historyCoverage.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.localOnlyClips.\(containerIdentifier)")
+        EncryptionRolloutState.reset(containerIdentifier: containerIdentifier, defaults: defaults)
+    }
+
+    /// Forgets only where the last pull stopped, so the next pull reads the zone from the start.
+    /// For a device whose local history is gone (for example restored from a backup that left it
+    /// out) while its preferences, and the position in them, came back. Pulling from the start is
+    /// safe against clips and deletions already on the device. Push receipts, the upload
+    /// watermark, the quarantine and the encryption rollout state are kept. Call before
+    /// constructing the service, which reads the token once in `init`.
+    public static func resetPullPosition(
+        containerIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.removeObject(forKey: "cloudkit.changeToken.\(containerIdentifier)")
     }
 
     /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
@@ -159,11 +243,14 @@ public final class CloudKitSyncService {
         self.store = store
         self.settingsStore = settingsStore
         self.defaults = defaults
+        self.rolloutState = EncryptionRolloutState(defaults: defaults, containerIdentifier: containerIdentifier)
         self.tokenKey = "cloudkit.changeToken.\(containerIdentifier)"
         self.pushWatermarkKey = "cloudkit.lastPushedModifiedAt.\(containerIdentifier)"
         self.pushReceiptsKey = "cloudkit.pushReceipts.\(containerIdentifier)"
         self.pullQuarantineKey = "cloudkit.pullQuarantine.\(containerIdentifier)"
         self.encryptedCopyBackfillKey = "cloudkit.encryptedCopyBackfill.\(containerIdentifier)"
+        self.historyCoverageKey = "cloudkit.historyCoverage.\(containerIdentifier)"
+        self.localOnlyClipsKey = "cloudkit.localOnlyClips.\(containerIdentifier)"
         self.pushDebounceNanoseconds = pushDebounceNanoseconds
         self.pushRetryDelaysNanoseconds = pushRetryDelaysNanoseconds
         self.beforeReceiptPersistence = beforeReceiptPersistence
@@ -198,6 +285,12 @@ public final class CloudKitSyncService {
         pushRetryAttempt = 0
         activePush?.task.cancel()
         activePush = nil
+        activePull?.task.cancel()
+        activePull = nil
+        activeRolloutEvaluation?.task.cancel()
+        activeRolloutEvaluation = nil
+        activeSweep?.task.cancel()
+        activeSweep = nil
         if let localChangeObserver {
             NotificationCenter.default.removeObserver(localChangeObserver)
             self.localChangeObserver = nil
@@ -213,6 +306,50 @@ public final class CloudKitSyncService {
     public func reportUnavailable(reason: SyncStatus.Reason) {
         guard !isStopped else { return }
         store?.markSyncUnavailable(reason: reason)
+    }
+
+    /// Records a failure on the store as one plain sentence, keeping CloudKit's own text in the
+    /// log for diagnosis. A store that does not adopt `SyncIssueReporting` gets the same sentence
+    /// through `markSyncFailed(_:)`.
+    @discardableResult
+    private func reportFailure(_ error: any Error, during phase: String) -> SyncFailure {
+        let failure = CloudKitSyncFailureClassifier.classify(error)
+        syncLog.error("\(phase, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        if let reporter = store as? any SyncIssueReporting {
+            reporter.markSyncFailure(failure)
+        } else {
+            store?.markSyncFailed(failure.message)
+        }
+        return failure
+    }
+
+    private func reportWaitingClips(_ clips: [SyncWaitingClip]) {
+        waitingClips = clips
+        (store as? any SyncIssueReporting)?.markClipsWaiting(clips)
+    }
+
+    /// Stops waiting for these clips: they stay on this device and are not uploaded unless they
+    /// are edited. Meant for clips listed as waiting; ids that are not live clips are ignored.
+    public func keepLocalOnly(clipIDs: [UUID]) {
+        guard let store else { return }
+        let requested = Set(clipIDs)
+        let live = store.itemsForSync().filter { requested.contains($0.id) }
+        var kept = CloudKitLocalOnlyClips.load(from: defaults, key: localOnlyClipsKey)
+        kept.keep(live)
+        kept.persist(to: defaults, key: localOnlyClipsKey)
+        guard !isStopped else { return }
+        reportWaitingClips(waitingClips.filter { !requested.contains($0.id) })
+    }
+
+    /// Clips to leave out of an upload because the user chose to keep them on this device.
+    /// Entries for clips that were edited or removed since lapse here.
+    private func itemsNotKeptLocalOnly(_ items: [ClipboardItem], among local: [ClipboardItem]) -> [ClipboardItem] {
+        var kept = CloudKitLocalOnlyClips.load(from: defaults, key: localOnlyClipsKey)
+        guard !kept.isEmpty else { return items }
+        if kept.prune(against: local) {
+            kept.persist(to: defaults, key: localOnlyClipsKey)
+        }
+        return items.filter { !kept.isKept($0) }
     }
 
     /// One-shot bring-up: ensure zone + push subscription, pull remote, push local.
@@ -231,27 +368,33 @@ public final class CloudKitSyncService {
             // Bring-up always reconciles the settings record, which is what recovers a record
             // an earlier build could not read and one this device never managed to publish.
             settingsReconciliationPending = true
-            try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
-            try await pull(generation: generation)
+            // The backfill marker ends the blank repair for good, so it waits until the repair could
+            // tell whether the rollout is open.
+            if try await prepareBlankRepairIfNeeded(generation: generation) {
+                try scheduleEncryptedCopyBackfillIfNeeded(generation: generation)
+            }
+            try await coalescedPull(generation: generation)
             try requireActive(generation)
+            // Before observers and the first push, so nothing is built in the wrong write mode.
+            try await reconcileEncryptionRollout(generation: generation)
             try startObservingLocalChanges(generation: generation)
             try startObservingSettingsChanges(generation: generation)
             try await pushLocal(generation: generation)
             try requireActive(generation)
+            // The push may have adopted a newer settings record the pull did not carry.
+            try await coalescedPull(generation: generation, fetchesChanges: false)
             store?.markSyncSucceeded(at: Date())
             return .started
         } catch {
-            let message = error.localizedDescription
             guard shouldReport(error, generation: generation) else {
-                return .failed(message: message)
+                return .failed(message: CloudKitSyncFailureClassifier.classify(error).message)
             }
             // Keep listening even though bring-up failed: local edits must still schedule
             // pushes once the transport recovers.
             try? startObservingLocalChanges(generation: generation)
             try? startObservingSettingsChanges(generation: generation)
-            syncLog.error("start failed: \(message, privacy: .public)")
-            store?.markSyncFailed(message)
-            return .failed(message: message)
+            let failure = reportFailure(error, during: "start")
+            return .failed(message: failure.message)
         }
     }
 
@@ -276,10 +419,11 @@ public final class CloudKitSyncService {
         let localRecordNames = localItems.map { $0.id.uuidString }
         let before = try await fetchRecordPresence(for: localRecordNames, generation: generation)
         try requireActive(generation)
-        let missingItems = localItems.filter {
-            before.missingRecordNames.contains($0.id.uuidString)
-        }
-        let prepared = Self.preparePushRecords(missingItems, in: zoneID) { item in
+        let missingItems = itemsNotKeptLocalOnly(
+            localItems.filter { before.missingRecordNames.contains($0.id.uuidString) },
+            among: localItems
+        )
+        let prepared = Self.preparePushRecords(missingItems, in: zoneID, policy: plainContentPolicy) { item in
             item.isDeleted ? nil : existingBlobURL(for: item)
         }
         guard prepared.skippedItemIDs.isEmpty else {
@@ -346,6 +490,11 @@ public final class CloudKitSyncService {
                     try self.requireActive(generation)
                     self.settingsReconciliationPending = true
                     try self.schedulePush(generation: generation)
+                    // A lowered limit trims this device at once and is recorded; a raised one
+                    // refetches the clips that trimming dropped, even when the zone has no news.
+                    if self.historyLimitRoseAboveCoverage() {
+                        await self.handleRemoteChange()
+                    }
                 } catch {
                     // Same as the local-change observer above: ignore it.
                 }
@@ -356,23 +505,30 @@ public final class CloudKitSyncService {
     /// Called from the silent push handler to fold in remote changes.
     @discardableResult
     public func handleRemoteChange() async -> Bool {
-        guard let generation = activeGeneration else { return false }
+        await handleRemoteChangeOutcome() != .failed
+    }
+
+    /// Like `handleRemoteChange()`, and says whether the run fetched anything, which is what
+    /// iOS wants to hear after a background push.
+    func handleRemoteChangeOutcome() async -> CloudKitRemoteChangeOutcome {
+        guard let generation = activeGeneration else { return .failed }
         do {
             try requireActive(generation)
-            try await pull(generation: generation)
+            let fetched = try await coalescedPull(generation: generation)
             try requireActive(generation)
+            try await reconcileEncryptionRollout(generation: generation)
             // Receipt comparison makes this a no-op for a clean pull. Always reconsidering
             // local state is what lets an ordinary remote change repair a missing CKAsset.
             try await pushLocal(generation: generation)
             try requireActive(generation)
+            // The push may have adopted a newer settings record the pull did not carry.
+            try await coalescedPull(generation: generation, fetchesChanges: false)
             store?.markSyncSucceeded(at: Date())
-            return true
+            return fetched > 0 ? .newData : .noData
         } catch {
-            let message = error.localizedDescription
-            guard shouldReport(error, generation: generation) else { return false }
-            syncLog.error("remote pull failed: \(message, privacy: .public)")
-            store?.markSyncFailed(message)
-            return false
+            guard shouldReport(error, generation: generation) else { return .failed }
+            reportFailure(error, during: "remote pull")
+            return .failed
         }
     }
 
@@ -393,9 +549,7 @@ public final class CloudKitSyncService {
                 self.store?.markSyncSucceeded(at: Date())
             } catch {
                 guard let self, self.shouldReport(error, generation: generation) else { return }
-                let message = error.localizedDescription
-                syncLog.error("local push failed: \(message, privacy: .public)")
-                self.store?.markSyncFailed(message)
+                self.reportFailure(error, during: "local push")
                 self.schedulePushRetry(after: error, generation: generation)
             }
         }
@@ -429,9 +583,7 @@ public final class CloudKitSyncService {
                 self.store?.markSyncSucceeded(at: Date())
             } catch {
                 guard let self, self.shouldReport(error, generation: generation) else { return }
-                let message = error.localizedDescription
-                syncLog.error("local push retry failed: \(message, privacy: .public)")
-                self.store?.markSyncFailed(message)
+                self.reportFailure(error, during: "local push retry")
                 self.schedulePushRetry(after: error, generation: generation)
             }
         }
@@ -483,24 +635,138 @@ public final class CloudKitSyncService {
         try await database.ensureSubscription(id: subscriptionID)
     }
 
-    /// Returns true when an expired token was recovered and callers should reconsider local state.
+    /// One running pull and the requests it was started for.
+    private struct PullFlight {
+        let id: UUID
+        let task: Task<Int, Error>
+        /// The pull serves every request made up to the moment it started.
+        let servesRequestsThrough: UInt64
+        /// False when the pull only runs the history-limit refetch.
+        let fetchesChanges: Bool
+    }
+
+    /// Runs a pull with at most one in flight. A caller that arrives meanwhile waits for it and
+    /// then for one follow-up pull that every caller waiting before it started shares; a caller
+    /// that arrives while the follow-up runs asks for one more. A pull that failed for an earlier
+    /// caller does not fail the later ones; their pull reports its own result. Returns the
+    /// changes fetched by the pulls this caller waited on. `fetchesChanges: false` is for the
+    /// history-limit refetch alone, which a pull that fetches changes also covers.
     @discardableResult
-    private func pull(generation: UInt64) async throws -> Bool {
+    private func coalescedPull(generation: UInt64, fetchesChanges: Bool = true) async throws -> Int {
+        try requireActive(generation)
+        pullRequestCount &+= 1
+        let request = pullRequestCount
+        if fetchesChanges { changePullRequested = true }
+        var fetched = 0
+        while true {
+            try requireActive(generation)
+            let flight = activePull ?? startPullFlight(generation: generation)
+            let result = await flight.task.result
+            let servesRequest = flight.servesRequestsThrough >= request
+                && (flight.fetchesChanges || !fetchesChanges)
+            switch result {
+            case .success(let count):
+                fetched += count
+                if servesRequest { return fetched }
+            case .failure(let error):
+                if servesRequest { throw error }
+            }
+        }
+    }
+
+    private func startPullFlight(generation: UInt64) -> PullFlight {
+        let id = UUID()
+        let fetchesChanges = changePullRequested
+        changePullRequested = false
+        let task = Task { @MainActor [weak self] () throws -> Int in
+            guard let self else { throw CancellationError() }
+            defer { if self.activePull?.id == id { self.activePull = nil } }
+            guard fetchesChanges else {
+                return try await self.backfillIfHistoryLimitRose(generation: generation)
+            }
+            let recovered = try await self.pullRecoveringFromTokenLoss(generation: generation)
+            let backfilled = try await self.backfillIfHistoryLimitRose(generation: generation)
+            return recovered + backfilled
+        }
+        let flight = PullFlight(
+            id: id,
+            task: task,
+            servesRequestsThrough: pullRequestCount,
+            fetchesChanges: fetchesChanges
+        )
+        activePull = flight
+        return flight
+    }
+
+    /// The history limit the settings store applies right now, or `nil` when there is no
+    /// settings store or its preferences cannot be read.
+    private var effectiveHistoryLimit: Int? {
+        settingsStore?.syncedSettings?.historyLimit.rawValue
+    }
+
+    /// The lowest history limit this device has applied since its change token last started
+    /// from nothing; the clips above it were trimmed here and are still in iCloud. A device from
+    /// a build that predates the marker is assumed to have been trimmed to the default limit.
+    /// `nil` while there is no token to describe, because the next pull starts from nothing and
+    /// records the limit itself.
+    private func historyCoverage() -> Int? {
+        if let stored = defaults.object(forKey: historyCoverageKey) as? Int { return stored }
+        return changeToken == nil ? nil : HistoryLimit.essential.rawValue
+    }
+
+    /// Records a limit this device has just applied. Never raises the marker: it only falls when
+    /// the device trims further, and a pull that starts from nothing resets it explicitly.
+    private func lowerHistoryCoverage(to limit: Int) {
+        guard let coverage = historyCoverage(), limit < coverage else { return }
+        defaults.set(limit, forKey: historyCoverageKey)
+    }
+
+    /// Lowers the marker to the effective limit, then reports whether the limit sits above what
+    /// this device was last trimmed to.
+    private func historyLimitRoseAboveCoverage() -> Bool {
+        guard let limit = effectiveHistoryLimit else { return false }
+        lowerHistoryCoverage(to: limit)
+        guard let coverage = historyCoverage() else { return false }
+        return limit > coverage
+    }
+
+    /// Fetches the zone again from the start once the history limit exceeds what this device was
+    /// last trimmed to, so clips an earlier, lower limit dropped come back up to the new limit.
+    /// Trimming never tombstones, so they are still in iCloud. Push receipts are kept: the
+    /// refetch re-seeds them for the winners it re-delivers, and a full re-upload is not wanted.
+    /// The restarted pull records the limit it applied, so this cannot repeat.
+    private func backfillIfHistoryLimitRose(generation: UInt64) async throws -> Int {
+        try requireActive(generation)
+        guard historyLimitRoseAboveCoverage(),
+              let limit = effectiveHistoryLimit,
+              let coverage = historyCoverage() else { return 0 }
+        syncLog.info(
+            "history limit rose from \(coverage, privacy: .public) to \(limit, privacy: .public); refetching the zone from the start"
+        )
+        try persistToken(nil, generation: generation)
+        changeToken = nil
+        let fetched = try await pullUsingCurrentToken(generation: generation)
+        try requireActive(generation)
+        syncLog.info("history backfill finished under limit \(limit, privacy: .public)")
+        return fetched
+    }
+
+    private func pullRecoveringFromTokenLoss(generation: UInt64) async throws -> Int {
         do {
-            try await pullUsingCurrentToken(generation: generation)
+            let fetched = try await pullUsingCurrentToken(generation: generation)
             try requireActive(generation)
             // A key reset noticed on a record-level failure does not abort the pull; the
             // recovery runs once the rest of the pull is durable.
             try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
-            return false
+            return fetched
         } catch {
             try requireActive(generation)
             if CloudKitEncryptedDataKeyReset.isReset(error) {
                 noteEncryptedDataKeyReset(during: "pull")
                 try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
-                try await pullUsingCurrentToken(generation: generation)
+                let fetched = try await pullUsingCurrentToken(generation: generation)
                 try requireActive(generation)
-                return true
+                return fetched
             }
             guard Self.isExpiredChangeTokenError(error) else { throw error }
             syncLog.info("CloudKit change token expired; retrying from the beginning.")
@@ -509,22 +775,57 @@ public final class CloudKitSyncService {
             try requireActive(generation)
             try persistToken(nil, generation: generation)
             changeToken = nil
-            try await pullUsingCurrentToken(generation: generation)
+            let fetched = try await pullUsingCurrentToken(generation: generation)
             try requireActive(generation)
-            return true
+            return fetched
         }
     }
 
-    private func pullUsingCurrentToken(generation: UInt64) async throws {
+    /// Fetches and applies the zone changes after the saved position, logging where it started
+    /// and what it fetched. Returns the number of changes that reached this device's history.
+    private func pullUsingCurrentToken(generation: UInt64) async throws -> Int {
+        let startingFrom = changeToken == nil ? "nothing" : "saved position"
+        syncLog.notice("Sync pull started (starting from: \(startingFrom, privacy: .public))")
+        do {
+            let fetched = try await fetchAndApplyZoneChanges(generation: generation)
+            fetchedChangesTotal += fetched
+            syncLog.notice("Sync pull finished (changes: \(fetched, privacy: .public), result: ok)")
+            return fetched
+        } catch {
+            syncLog.notice("Sync pull finished (changes: 0, result: failed)")
+            throw error
+        }
+    }
+
+    /// The most clip records one change-feed page asks for. The server may return fewer.
+    private nonisolated static let pullPageSize = 100
+
+    /// Pulls the zone one page at a time. Each page is merged, made durable and acknowledged with
+    /// its change token before the next one is fetched, so a pull that stops part-way keeps what
+    /// it applied and the next pull resumes after it.
+    private func fetchAndApplyZoneChanges(generation: UInt64) async throws -> Int {
         try requireActive(generation)
-        guard let store else { return }
+        guard let store else { return 0 }
+        // Holds the page being applied only: blobs of an applied page are referenced by durable
+        // history and are never cleaned up by a later page's failure.
         var accumulation = PullAccumulation()
         var quarantine = QuarantineState(entries: pullQuarantine)
         var token = changeToken
+        let startedFromNothing = token == nil
         var moreComing = true
+        var isFirstPage = true
+        var reportsProgress = false
+        // A pull from nothing on a device with no history needs every file, so it asks for full
+        // records. Any other pull, including a refetch from the start on a device that already
+        // holds its files, asks for the fields only and fetches the missing files per record,
+        // until too many of its records need the file.
+        var asksForFullRecords = startedFromNothing && store.itemsForSync().isEmpty
+        var fetchedChanges = 0
+        var changedHistory = 0
+        var clipsDelivered = 0
         do {
             // Re-attempt earlier skipped records first, so a recovered one lands in the same
-            // durable apply as this pull's page set.
+            // durable apply as the first page.
             try await recoverQuarantinedRecords(
                 into: store,
                 accumulation: &accumulation,
@@ -532,79 +833,81 @@ public final class CloudKitSyncService {
                 generation: generation
             )
             while moreComing {
-                let changes = try await database.fetchZoneChanges(zoneID, since: token)
+                let changes = try await database.fetchZoneChanges(
+                    zoneID,
+                    since: token,
+                    desiredKeys: asksForFullRecords ? nil : ClipboardCloudMapping.pullFieldKeys,
+                    resultsLimit: Self.pullPageSize
+                )
                 try requireActive(generation)
+                fetchedChanges += changes.changedRecords.count + changes.deletedRecordNames.count
+                let pageClipCount = changes.changedRecords.filter {
+                    $0.recordType != SyncedSettingsCloudMapping.recordType
+                }.count
+                clipsDelivered += pageClipCount
+                if isFirstPage, changes.moreComing {
+                    reportsProgress = true
+                    try await adoptSettingsBeforeFirstPage(of: changes, generation: generation)
+                }
+                if reportsProgress {
+                    store.markSyncProgress(clipsReceived: clipsDelivered)
+                }
                 try quarantinePermanentServerFailures(
                     changes.failedRecords,
                     quarantine: &quarantine
                 )
-                for record in changes.changedRecords {
+                var filesFetched = Self.assetCount(in: changes.changedRecords)
+                var pagePlan = MetadataPagePlan()
+                if changes.assetsOmitted {
+                    pagePlan = planMetadataPage(changes.changedRecords, store: store)
+                    if pagePlan.exceedsFullFetchShare { asksForFullRecords = true }
+                }
+                for record in changes.changedRecords
+                where !pagePlan.needsFullRecord.contains(record.recordID.recordName) {
                     try requireActive(generation)
                     try await accumulateRemoteRecord(
                         record,
                         into: store,
                         accumulation: &accumulation,
                         quarantine: &quarantine,
+                        assetKnownPresent: pagePlan.knownPresent.contains(record.recordID.recordName),
                         generation: generation
                     )
                 }
+                filesFetched += try await accumulateFullRecords(
+                    named: pagePlan.needsFullRecord.sorted(),
+                    into: store,
+                    accumulation: &accumulation,
+                    quarantine: &quarantine,
+                    generation: generation
+                )
                 for recordName in changes.deletedRecordNames {
                     // A record deleted server-side has nothing left to recover.
                     quarantine.clear(recordName)
+                    forgetErasedVersion(of: recordName)
                     if let id = UUID(uuidString: recordName) {
                         accumulation.remote.append(tombstone(id))
                     }
                 }
+                syncLog.notice(
+                    "Sync pull page (clips: \(pageClipCount, privacy: .public), files fetched: \(filesFetched, privacy: .public))"
+                )
+                changedHistory += try await applyPulledPage(
+                    accumulation,
+                    to: store,
+                    quarantine: &quarantine,
+                    token: changes.changeToken,
+                    isFirstPageOfPullFromNothing: startedFromNothing && isFirstPage,
+                    startedFromNothing: startedFromNothing,
+                    generation: generation
+                )
                 token = changes.changeToken
                 moreComing = changes.moreComing
+                isFirstPage = false
+                accumulation = PullAccumulation()
             }
-            try requireActive(generation)
-            let local = store.itemsForSync()
-            for bypassed in accumulation.bypassedMissingAssets {
-                guard Self.localTombstoneDominates(
-                    bypassed.item,
-                    in: local
-                ) else {
-                    throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
-                }
-            }
-            let reconciled = ClipboardMerge.reconcile(local, accumulation.remote)
-            try requireActive(generation)
-            try store.applyReconciledDurably(reconciled)
-            try requireActive(generation)
-            deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
-            // After the clips land, so a tightened remote limit trims the merged set rather than
-            // the pre-merge one. Adoption is idempotent against the local stamp, so replaying
-            // this pull after a later failure re-decides the same way.
-            if let remoteSettings = accumulation.remoteSettings {
-                applySettingsFromChangeFeed(remoteSettings)
-                try requireActive(generation)
-            }
-            let receiptChanges = Self.pullReceiptChanges(
-                remote: accumulation.remote,
-                reconciled: reconciled,
-                repairItemIDs: accumulation.receiptInvalidationItemIDs
-            )
-            if !receiptChanges.isEmpty {
-                // A push that started before this pull may still commit an older receipt
-                // snapshot. Let it finish, then make this the last durable receipt transition
-                // before acknowledging the remote change token.
-                try await awaitActivePushCompletion(generation: generation)
-                try requireActive(generation)
-                try applyPullReceiptChanges(receiptChanges, generation: generation)
-                try afterReceiptInvalidationBeforeTokenPersistence?()
-                try requireActive(generation)
-            }
-            guard !quarantine.didOverflow else {
-                throw CloudKitSyncError.pullQuarantineOverflow
-            }
-            // Durable before the token: a crash here replays the page instead of losing the
-            // record that was skipped.
-            if quarantine.didChange {
-                try persistPullQuarantine(quarantine.entries, generation: generation)
-            }
-            try persistToken(token, generation: generation)
-            changeToken = token
+            // A refetch from nothing re-delivers records this device already has.
+            return startedFromNothing ? changedHistory : fetchedChanges
         } catch {
             if canMutate(generation) {
                 deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
@@ -613,18 +916,288 @@ public final class CloudKitSyncService {
         }
     }
 
-    /// Everything one pull collects before it becomes a single durable apply.
-    private struct PullAccumulation {
+    /// The live clips in this pull that this device has neither as a clip nor as a deleted one.
+    nonisolated static func arrivingClipIDs(remote: [ClipboardItem], local: [ClipboardItem]) -> Set<UUID> {
+        let known = Set(local.map(\.id))
+        return Set(remote.filter { !$0.isDeleted && !known.contains($0.id) }.map(\.id))
+    }
+
+    /// Merges one page into the history, makes it durable and acknowledges its change token.
+    /// Returns how many clips of the page were new to this device or newer than its copy.
+    private func applyPulledPage(
+        _ accumulation: PullAccumulation,
+        to store: SyncableStore,
+        quarantine: inout QuarantineState,
+        token: CKServerChangeToken?,
+        isFirstPageOfPullFromNothing: Bool,
+        startedFromNothing: Bool,
+        generation: UInt64
+    ) async throws -> Int {
+        try requireActive(generation)
+        // Before the snapshot and the apply, so the cap below is the adopted limit rather
+        // than this device's old one. Nothing suspends between here and the apply. Adoption is
+        // idempotent against the local stamp, so replaying this page after a later failure
+        // re-decides the same way.
+        if let remoteSettings = accumulation.remoteSettings {
+            if applySettingsFromChangeFeed(remoteSettings) {
+                syncLog.info(
+                    "adopted synced history limit \(remoteSettings.historyLimit.rawValue, privacy: .public) before applying \(accumulation.remote.count, privacy: .public) pulled clip(s)"
+                )
+            }
+            try requireActive(generation)
+        }
+        let appliedLimit = effectiveHistoryLimit
+        let local = store.itemsForSync()
+        for bypassed in accumulation.bypassedMissingAssets {
+            guard Self.localTombstoneDominates(
+                bypassed.item,
+                in: local
+            ) else {
+                throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
+            }
+        }
+        let merged = ClipboardMerge.reconcile(
+            Self.droppingHealedBlankItems(
+                from: local,
+                remote: accumulation.remote,
+                healable: accumulation.healableItemIDs
+            ),
+            accumulation.remote
+        )
+        // The same text copied on two devices before they synced is one clip. Only clips new
+        // to this device qualify, and never in a pull that started from nothing, so history
+        // already on a device and a full re-download are left as they are.
+        let reconciled = startedFromNothing ? merged : ClipboardMerge.collapsingCrossDeviceDuplicates(
+            merged,
+            arrivals: Self.arrivingClipIDs(remote: accumulation.remote, local: local),
+            pendingDeleteIDs: (store as? any PendingDeletionReporting)?.pendingDeletionIDs ?? []
+        )
+        try requireActive(generation)
+        let changedHistory = Self.changedItemCount(from: local, to: reconciled)
+        try await applyPulledStateDurably(reconciled, to: store)
+        try requireActive(generation)
+        deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
+        let receiptChanges = Self.pullReceiptChanges(
+            remote: accumulation.remote,
+            reconciled: reconciled,
+            repairItemIDs: accumulation.receiptInvalidationItemIDs,
+            omittedFields: accumulation.omittedFieldsByItem
+        )
+        if !receiptChanges.isEmpty {
+            // A push that started before this pull may still commit an older receipt
+            // snapshot. Let it finish, then make this the last durable receipt transition
+            // before acknowledging the remote change token.
+            try await awaitActivePushCompletion(generation: generation)
+            try requireActive(generation)
+            try applyPullReceiptChanges(receiptChanges, generation: generation)
+            try afterReceiptInvalidationBeforeTokenPersistence?()
+            try requireActive(generation)
+        }
+        guard !quarantine.didOverflow else {
+            throw CloudKitSyncError.pullQuarantineOverflow
+        }
+        try await eraseReadableCopies(from: accumulation, generation: generation)
+        // Durable before the token: a crash here replays the page instead of losing the
+        // record that was skipped.
+        if quarantine.didChange {
+            try persistPullQuarantine(quarantine.entries, generation: generation)
+            quarantine.didChange = false
+        }
+        if let appliedLimit {
+            if isFirstPageOfPullFromNothing {
+                defaults.set(appliedLimit, forKey: historyCoverageKey)
+            } else {
+                lowerHistoryCoverage(to: appliedLimit)
+            }
+        }
+        try persistToken(token, generation: generation)
+        changeToken = token
+        return changedHistory
+    }
+
+    /// Adopts the synced history limit before the first page of a pull that has more pages is
+    /// applied, so no page is trimmed under this device's old or default limit even when the
+    /// settings record sits on a later page. A page that carries the record needs nothing here.
+    private func adoptSettingsBeforeFirstPage(
+        of changes: CloudKitZoneChanges,
+        generation: UInt64
+    ) async throws {
+        guard !changes.changedRecords.contains(where: {
+            $0.recordType == SyncedSettingsCloudMapping.recordType
+        }) else { return }
+        guard let record = try await fetchSettingsRecordStrictly(generation: generation),
+              let settings = SyncedSettingsCloudMapping.settings(from: record) else { return }
+        if applySettingsFromChangeFeed(settings) {
+            syncLog.info(
+                "adopted synced history limit \(settings.historyLimit.rawValue, privacy: .public) before applying the first page"
+            )
+        }
+    }
+
+    /// Like `fetchSettingsRecord`, but an absent answer that is not "the record does not exist"
+    /// is a failure: the live fetch drops transient per-record errors, and adopting nothing
+    /// there would trim the first page under the wrong limit.
+    private func fetchSettingsRecordStrictly(generation: UInt64) async throws -> CKRecord? {
+        let fetched = try await database.fetchRecords(
+            for: [SyncedSettingsCloudMapping.recordName],
+            in: zoneID
+        )
+        try requireActive(generation)
+        if let record = fetched.records.first(where: {
+            $0.recordType == SyncedSettingsCloudMapping.recordType
+        }) {
+            return record
+        }
+        guard fetched.permanentlyMissingRecordNames.contains(SyncedSettingsCloudMapping.recordName) else {
+            throw CloudKitSyncError.partialRecordFailures(1)
+        }
+        return nil
+    }
+
+    /// Past this share of a page's file-bearing records needing the file, a pull stops asking for
+    /// fields only: fetching most files one batch at a time costs more than the page would.
+    private nonisolated static let metadataModeMaximumFullFetchShare = 0.5
+
+    /// Records fetched in full at a time when a page came without files. Bounds the temporary
+    /// disk the downloaded files take.
+    private nonisolated static let fullFetchBatchSize = 20
+
+    /// How a page that came without files splits.
+    private struct MetadataPagePlan {
+        /// Records whose file this device already holds and iCloud is known to hold.
+        var knownPresent: Set<String> = []
+        /// Records that have to be fetched again with their file or their content.
+        var needsFullRecord: Set<String> = []
+        var fileBearingCount = 0
+        var fileBearingNeedingFullRecord = 0
+
+        var exceedsFullFetchShare: Bool {
+            fileBearingCount > 0
+                && Double(fileBearingNeedingFullRecord) / Double(fileBearingCount)
+                    > CloudKitSyncService.metadataModeMaximumFullFetchShare
+        }
+    }
+
+    /// Decides which records of a page that came without files can be used as delivered. A clip
+    /// is known present only when this device holds the same file, the local clip names it and a
+    /// push receipt says iCloud accepted the clip; anything less asks for the full record. A live
+    /// clip with no readable content at all is fetched in full too, in case the page left out the
+    /// encrypted copy.
+    private func planMetadataPage(_ records: [CKRecord], store: SyncableStore) -> MetadataPagePlan {
+        var plan = MetadataPagePlan()
+        let localByID = Dictionary(
+            store.itemsForSync().map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for record in records where record.recordType == ClipboardCloudMapping.recordType {
+            guard record[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+                  let item = ClipboardCloudMapping.item(from: record) else { continue }
+            let recordName = record.recordID.recordName
+            guard let blob = item.syncBlobReference else {
+                if Self.lacksReadableContent(record) { plan.needsFullRecord.insert(recordName) }
+                continue
+            }
+            plan.fileBearingCount += 1
+            let localClip = localByID[item.id]
+            let holdsFile = store.blobURL(for: blob).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            if holdsFile, localClip?.isDeleted == false, localClip?.syncBlobReference == blob,
+               pushReceipts?[item.id] != nil, !Self.lacksReadableContent(record) {
+                plan.knownPresent.insert(recordName)
+            } else {
+                plan.needsFullRecord.insert(recordName)
+                plan.fileBearingNeedingFullRecord += 1
+            }
+        }
+        return plan
+    }
+
+    private nonisolated static func lacksReadableContent(_ record: CKRecord) -> Bool {
+        switch ClipboardCloudMapping.encryptedCopyState(of: record) {
+        case .absent, .unreadable: !ClipboardCloudMapping.hasPlainContent(record)
+        case .newerFormat, .stale, .current: false
+        }
+    }
+
+    /// Fetches the named records with their files, a batch at a time, and folds each batch into
+    /// the page before the next is fetched, so only one batch of downloaded files exists at once.
+    /// Returns how many of them arrived with a file. A record CloudKit no longer has is skipped.
+    /// A record it neither returned nor reported gone failed transiently, which holds the page.
+    private func accumulateFullRecords(
+        named recordNames: [String],
+        into store: SyncableStore,
+        accumulation: inout PullAccumulation,
+        quarantine: inout QuarantineState,
+        generation: UInt64
+    ) async throws -> Int {
+        var filesFetched = 0
+        for batch in recordNames.chunked(into: Self.fullFetchBatchSize) {
+            try requireActive(generation)
+            let fetched = try await database.fetchRecords(for: batch, in: zoneID, desiredKeys: nil)
+            try requireActive(generation)
+            if fetched.encryptedDataKeyWasReset {
+                noteEncryptedDataKeyReset(during: "pull")
+            }
+            let answered = Set(fetched.records.map(\.recordID.recordName))
+                .union(fetched.permanentlyMissingRecordNames)
+            let unanswered = batch.filter { !answered.contains($0) }
+            if fetched.encryptedDataKeyWasReset {
+                // Quarantined like a failed feed record: re-fetched after the re-upload.
+                for recordName in unanswered {
+                    quarantine.record(recordName, reason: CloudKitSyncError.encryptedDataKeyReset.localizedDescription)
+                }
+            } else if !unanswered.isEmpty {
+                throw CloudKitSyncError.partialRecordFailures(unanswered.count)
+            }
+            filesFetched += Self.assetCount(in: fetched.records)
+            for record in fetched.records {
+                try requireActive(generation)
+                try await accumulateRemoteRecord(
+                    record,
+                    into: store,
+                    accumulation: &accumulation,
+                    quarantine: &quarantine,
+                    generation: generation
+                )
+            }
+        }
+        return filesFetched
+    }
+
+    /// How many of the records arrived with their file attached.
+    private nonisolated static func assetCount(in records: [CKRecord]) -> Int {
+        records.filter { $0[ClipboardCloudMapping.Key.blob] is CKAsset }.count
+    }
+
+    /// How many canonical items are new to `local` or newer than its copy.
+    nonisolated static func changedItemCount(
+        from local: [ClipboardItem],
+        to reconciled: [ClipboardItem]
+    ) -> Int {
+        let stamps = Dictionary(local.map { ($0.id, $0.modifiedAt) }, uniquingKeysWith: { first, _ in first })
+        return reconciled.filter { stamps[$0.id] != $0.modifiedAt }.count
+    }
+
+    /// Everything one page of a pull collects before it becomes a durable apply.
+    struct PullAccumulation {
         var remote: [ClipboardItem] = []
         var downloadedBlobs: Set<SyncBlobReference> = []
         var bypassedMissingAssets: [(item: ClipboardItem, blob: SyncBlobReference)] = []
         var receiptInvalidationItemIDs: Set<UUID> = []
-        /// The settings record seen in this pull, if any. Last one wins within a pull — the
-        /// record is a singleton, so a later page can only be a newer copy of the same thing.
+        /// The settings record seen in this page, if any. Last one wins — the record is a
+        /// singleton, so a later copy can only be a newer copy of the same thing.
         var remoteSettings: SyncedSettings?
+        /// Items whose record holds readable content from a current encrypted copy, which can
+        /// replace a blank local copy of the same clip.
+        var healableItemIDs: Set<UUID> = []
+        /// Derived fields a record's encrypted copy left out because the record would not fit.
+        var omittedFieldsByItem: [UUID: Set<String>] = [:]
+        /// Records whose readable copy this device erases once the pull is applied.
+        var readableCopyErasures: [ReadableCopyErasure] = []
+        /// Origins of writers that put readable content back or never learned the encrypted copy.
+        var olderDeviceOrigins: [String] = []
     }
 
-    /// In-flight quarantine list for one pull. Only persisted once the pull's records are durable.
+    /// In-flight quarantine list for one pull. Persisted with each page, once its records are durable.
     private struct QuarantineState {
         var entries: [String: CloudKitPullQuarantineEntry]
         var didChange = false
@@ -673,6 +1246,7 @@ public final class CloudKitSyncService {
         into store: SyncableStore,
         accumulation: inout PullAccumulation,
         quarantine: inout QuarantineState,
+        assetKnownPresent: Bool = false,
         generation: UInt64
     ) async throws {
         try requireActive(generation)
@@ -701,6 +1275,7 @@ public final class CloudKitSyncService {
             resolved = try await resolveRemoteItem(
                 from: record,
                 into: store,
+                assetKnownPresent: assetKnownPresent,
                 generation: generation
             )
         } catch let error where Self.isPermanentRecordResolutionFailure(error) {
@@ -719,6 +1294,7 @@ public final class CloudKitSyncService {
                 accumulation.receiptInvalidationItemIDs.insert(item.id)
             }
             accumulation.remote.append(item)
+            noteEncryptedCopyState(of: record, item: item, accumulation: &accumulation)
         case .missingAssetShadowedByLocalTombstone(let item, let blob):
             accumulation.bypassedMissingAssets.append((item, blob))
             accumulation.receiptInvalidationItemIDs.insert(item.id)
@@ -843,9 +1419,12 @@ public final class CloudKitSyncService {
         )
     }
 
+    /// `assetKnownPresent` says the record came without its file because this device already
+    /// knows iCloud holds it; the missing asset is then not a sign of a lost file.
     private func resolveRemoteItem(
         from record: CKRecord,
         into store: SyncableStore,
+        assetKnownPresent: Bool,
         generation: UInt64
     ) async throws -> RemoteItemResolution? {
         try requireActive(generation)
@@ -853,6 +1432,7 @@ public final class CloudKitSyncService {
         let refreshesEncryptedCopy = Self.logEncryptedRefresh(for: record, itemID: item.id)
         if !item.isDeleted,
            let blob = item.syncBlobReference,
+           !assetKnownPresent,
            (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL == nil,
            Self.localTombstoneDominates(item, in: store.itemsForSync()) {
             syncLog.info(
@@ -864,6 +1444,7 @@ public final class CloudKitSyncService {
             from: record,
             for: item,
             into: store,
+            assetKnownPresent: assetKnownPresent,
             generation: generation
         ) {
         case .notRequired:
@@ -903,14 +1484,15 @@ public final class CloudKitSyncService {
         guard let localWinner = ClipboardMerge.reconcile(sameIDItems, []).first else {
             return false
         }
-        return localWinner.isDeleted && localWinner.modifiedAt >= remoteItem.modifiedAt
+        guard let deletedAt = localWinner.deletedAt else { return false }
+        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: deletedAt, live: remoteItem)
     }
 
     private nonisolated static func isExpiredChangeTokenError(_ error: any Error) -> Bool {
         cloudKitErrorCode(of: error) == .changeTokenExpired
     }
 
-    private nonisolated static func cloudKitErrorCode(of error: any Error) -> CKError.Code? {
+    nonisolated static func cloudKitErrorCode(of error: any Error) -> CKError.Code? {
         if let cloudKitError = error as? CKError {
             return cloudKitError.code
         }
@@ -950,6 +1532,26 @@ public final class CloudKitSyncService {
         }
     }
 
+    /// Applies the pulled state and waits for the disk write without blocking the main actor. The
+    /// apply itself runs before the first suspension, so nothing can interleave between taking
+    /// the local snapshot and applying it. A push that starts during the wait would read state
+    /// that is not durable yet and could record a receipt for it, so pushes wait for this.
+    private func applyPulledStateDurably(_ reconciled: [ClipboardItem], to store: SyncableStore) async throws {
+        durablePullApplyInFlight = true
+        defer {
+            durablePullApplyInFlight = false
+            let waiters = durablePullApplyWaiters
+            durablePullApplyWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+        try await store.applyReconciledAwaitingDurability(reconciled)
+    }
+
+    private func awaitDurablePullApply() async {
+        guard durablePullApplyInFlight else { return }
+        await withCheckedContinuation { durablePullApplyWaiters.append($0) }
+    }
+
     private func awaitActivePushCompletion(generation: UInt64) async throws {
         try requireActive(generation)
         while let activePush {
@@ -977,6 +1579,7 @@ public final class CloudKitSyncService {
         var clipError: (any Error)?
         do {
             try await pushLocalClips(store: store, generation: generation)
+            discardAgedAcknowledgedTombstones(from: store, generation: generation)
         } catch {
             clipError = error
         }
@@ -999,23 +1602,40 @@ public final class CloudKitSyncService {
         replanAfterKeyReset: Bool = true
     ) async throws {
         try requireActive(generation)
+        await awaitDurablePullApply()
+        try requireActive(generation)
         let local = store.itemsForSync()
         let isReceiptMigration = pushReceipts == nil
 
         let existingReceipts = pushReceipts ?? [:]
-        let itemsToPush = Self.itemsNeedingPush(local, receipts: pushReceipts)
+        let policy = plainContentPolicy
+        var itemsToPush = Self.itemsNeedingPush(local, receipts: pushReceipts)
+        if policy == .encryptedOnly {
+            // A blank text clip can only be a copy received from a record whose readable content
+            // was removed; uploading it would overwrite the good encrypted copy for every device.
+            itemsToPush = itemsToPush.filter { !isBlankReceivedTextClip($0) }
+        }
+        itemsToPush = itemsNotKeptLocalOnly(itemsToPush, among: local)
         let currentItemIDs = Set(local.map(\.id))
         let garbageCollectedReceipts = existingReceipts.filter { currentItemIDs.contains($0.key) }
 
         try requireActive(generation)
-        let prepared = Self.preparePushRecords(itemsToPush.filter { !$0.isDeleted }, in: zoneID) { item in
-            existingBlobURL(for: item)
-        }
+        let prepared = try await prepareClipPushRecords(
+            itemsToPush.filter { !$0.isDeleted },
+            policy: policy,
+            receipts: existingReceipts,
+            generation: generation
+        )
         // A clip CloudKit cannot represent (blob file gone, unusable blob metadata) is skipped
         // instead of blocking every other pending record. It keeps no receipt, so an ordinary
         // later push replays it once the local state is repaired.
         for skippedID in prepared.skippedItemIDs {
             syncLog.error("skipping clip with invalid sync blob metadata: \(skippedID.uuidString, privacy: .public)")
+        }
+        // Reported on every push that gets this far, including with nothing waiting, which is
+        // how the list clears. A stopped or replaced service must not write a stale list.
+        if canMutate(generation) {
+            reportWaitingClips(prepared.skippedClips)
         }
         let tombstoneRecords = try await prepareTombstonePushRecords(
             itemsToPush.filter(\.isDeleted),
@@ -1028,16 +1648,23 @@ public final class CloudKitSyncService {
             try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
             return
         }
-        let recordsToSave = prepared.records + tombstoneRecords
+        let recordsToSave = prepared.records + tombstoneRecords.records
         guard !recordsToSave.isEmpty else {
-            if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
-                try persistPushReceipts(garbageCollectedReceipts, generation: generation)
+            let settledReceipts = garbageCollectedReceipts.merging(tombstoneRecords.settled) { _, settled in settled }
+            if isReceiptMigration || settledReceipts != existingReceipts {
+                try persistPushReceipts(settledReceipts, generation: generation)
             }
+            try throwIfUnconfirmed(prepared)
             return
         }
 
         try requireActive(generation)
-        var committedReceipts = existingReceipts
+        let withoutFileCount = recordsToSave.filter(\.withoutFile).count
+        syncLog.notice(
+            "Sync push (records: \(recordsToSave.count, privacy: .public), without a file: \(withoutFileCount, privacy: .public))"
+        )
+        // Deletes the server already holds count as pushed, so they stop being retried and can age out.
+        var committedReceipts = existingReceipts.merging(tombstoneRecords.settled) { _, settled in settled }
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
         do {
@@ -1052,19 +1679,44 @@ public final class CloudKitSyncService {
         } catch CloudKitSyncError.encryptedDataKeyReset where replanAfterKeyReset {
             // Recovery has already emptied the receipts; one more pass uploads every clip.
             try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
+            return
+        }
+        #if DEBUG
+        await logRecordShapes(for: recordsToSave.map(\.record.recordID.recordName))
+        #endif
+        try throwIfUnconfirmed(prepared)
+    }
+
+    /// Lets the store age out the deletes past the tombstone horizon that iCloud now holds. A delete
+    /// counts as held when its receipt carries its own date; one left unsent never does.
+    private func discardAgedAcknowledgedTombstones(from store: SyncableStore, generation: UInt64) {
+        guard canMutate(generation), let receipts = pushReceipts else { return }
+        let acknowledged = Set(
+            store.itemsForSync().filter { $0.isDeleted && receipts[$0.id] == $0.modifiedAt }.map(\.id)
+        )
+        store.discardAgedTombstones(among: acknowledged)
+    }
+
+    /// Fails the push for clips that were left out because their server copy could not be read,
+    /// so the retry backoff uploads them instead of the sync reporting healthy over a missing clip.
+    private func throwIfUnconfirmed(_ prepared: PreparedPushRecords) throws {
+        guard prepared.unconfirmedCount == 0 else {
+            throw CloudKitSyncError.partialRecordFailures(prepared.unconfirmedCount)
         }
     }
 
     /// Tombstones save onto the server's fetched record: only assignments on a fetched record
     /// mark `.changedKeys`, erasing the clip's content/asset. A record the server never had gets
     /// a minimal tombstone directly; one merely not handed over yet stays unsent, not downgraded.
+    /// A delete the server already holds, equal or newer and without content, needs no save: it
+    /// comes back as `settled` so the caller keeps its receipt.
     private func prepareTombstonePushRecords(
         _ tombstones: [ClipboardItem],
         generation: UInt64
-    ) async throws -> [PreparedPushRecord] {
-        guard !tombstones.isEmpty else { return [] }
-        var records: [PreparedPushRecord] = []
-        records.reserveCapacity(tombstones.count)
+    ) async throws -> PreparedTombstones {
+        guard !tombstones.isEmpty else { return PreparedTombstones() }
+        var prepared = PreparedTombstones()
+        prepared.records.reserveCapacity(tombstones.count)
         let itemsByRecordName = Dictionary(
             tombstones.map { ($0.id.uuidString, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -1082,8 +1734,26 @@ public final class CloudKitSyncService {
             for recordName in batch {
                 guard let item = itemsByRecordName[recordName] else { continue }
                 if let serverRecord = serverRecords[recordName] {
+                    // A copy another device used again or protected since this delete was dated
+                    // outranks it. Erasing that copy would lose its content for every device, so
+                    // the tombstone stays unsent and no receipt is kept; the next pull delivers
+                    // the live copy here, and it replaces the tombstone.
+                    if Self.liveServerCopyOutranks(item, serverRecord: serverRecord) { continue }
+                    // A server tombstone newer than this one already stands. Overwriting it would
+                    // lower the delete date, so the local one stays unsent and the next pull
+                    // brings the server's tombstone here. One as new as this one is overwritten
+                    // only to erase content it still carries; otherwise it stands as the push.
+                    switch Self.serverTombstoneStanding(against: item, serverRecord: serverRecord) {
+                    case .older, .sameDateHoldingContent:
+                        break
+                    case .newerHoldingContent:
+                        continue
+                    case .settled:
+                        prepared.settled[item.id] = item.modifiedAt
+                        continue
+                    }
                     ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
-                    records.append(PreparedPushRecord(
+                    prepared.records.append(PreparedPushRecord(
                         itemID: item.id,
                         record: serverRecord,
                         modifiedAt: item.modifiedAt
@@ -1092,7 +1762,7 @@ public final class CloudKitSyncService {
                     guard let record = ClipboardCloudMapping.record(from: item, in: zoneID) else {
                         continue
                     }
-                    records.append(PreparedPushRecord(
+                    prepared.records.append(PreparedPushRecord(
                         itemID: item.id,
                         record: record,
                         modifiedAt: item.modifiedAt
@@ -1100,7 +1770,59 @@ public final class CloudKitSyncService {
                 }
             }
         }
-        return records
+        return prepared
+    }
+
+    /// How the server record stands against the local delete `tombstone`.
+    enum ServerTombstoneStanding: Equatable {
+        /// The record is live, or a tombstone dated before the local one: the local delete is saved.
+        case older
+        /// A tombstone with the same date that still carries content: saved again to erase it.
+        case sameDateHoldingContent
+        /// A tombstone dated after the local one that still carries content: left as it is.
+        case newerHoldingContent
+        /// A tombstone dated the same or later with no content: it already says what the local one does.
+        case settled
+    }
+
+    nonisolated static func serverTombstoneStanding(
+        against tombstone: ClipboardItem,
+        serverRecord: CKRecord
+    ) -> ServerTombstoneStanding {
+        guard let serverDeletedAt = serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date else {
+            return .older
+        }
+        let localDeletedAt = tombstone.deletedAt ?? tombstone.modifiedAt
+        guard serverDeletedAt >= localDeletedAt else { return .older }
+        guard serverTombstoneHoldsContent(serverRecord) else { return .settled }
+        return serverDeletedAt > localDeletedAt ? .newerHoldingContent : .sameDateHoldingContent
+    }
+
+    /// Whether a server tombstone still carries a clip's encrypted or readable content, as a
+    /// delete from an older build leaves it.
+    private nonisolated static func serverTombstoneHoldsContent(_ serverRecord: CKRecord) -> Bool {
+        if ClipboardCloudMapping.encryptedRefreshReason(for: serverRecord) == .tombstoneHoldsContent {
+            return true
+        }
+        return [
+            ClipboardCloudMapping.Key.textContent,
+            ClipboardCloudMapping.Key.textFilename,
+            ClipboardCloudMapping.Key.imageFilename,
+            ClipboardCloudMapping.Key.blob
+        ].contains { serverRecord[$0] != nil }
+    }
+
+    /// Whether the server's copy is a live clip that beats the local delete `tombstone`.
+    private nonisolated static func liveServerCopyOutranks(
+        _ tombstone: ClipboardItem,
+        serverRecord: CKRecord
+    ) -> Bool {
+        guard serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+              let serverCopy = ClipboardCloudMapping.item(from: serverRecord) else { return false }
+        return !ClipboardMerge.deleteOutranksLiveCopy(
+            deletedAt: tombstone.deletedAt ?? tombstone.modifiedAt,
+            live: serverCopy
+        )
     }
 
     // MARK: - Synced settings
@@ -1146,7 +1868,11 @@ public final class CloudKitSyncService {
     /// a genuine mid-flight race rather than the guaranteed cost of every publish.
     private func reconcileSettings(generation: UInt64) async throws {
         try requireActive(generation)
-        guard settingsStore?.syncedSettings != nil else { return }
+        guard settingsStore?.syncedSettings != nil else {
+            // Nothing synced to read, so nothing for the store to wait on.
+            store?.markSyncedSettingsRead()
+            return
+        }
 
         for _ in 0..<Self.maximumSettingsSaveAttempts {
             try requireActive(generation)
@@ -1160,10 +1886,12 @@ public final class CloudKitSyncService {
             ) {
             case .idle:
                 settingsReconciliationPending = false
+                store?.markSyncedSettingsRead()
                 return
             case .adopt(let remote):
                 settingsStore?.applySyncedSettings(remote)
                 settingsReconciliationPending = false
+                store?.markSyncedSettingsRead()
                 return
             case .publish:
                 let record: CKRecord
@@ -1176,6 +1904,7 @@ public final class CloudKitSyncService {
                 if try await database.saveRecordIfUnchanged(record) == .saved {
                     try requireActive(generation)
                     settingsReconciliationPending = false
+                    store?.markSyncedSettingsRead()
                     return
                 }
                 // Someone wrote between the fetch and the save. Re-read and re-decide; if they
@@ -1200,10 +1929,13 @@ public final class CloudKitSyncService {
     /// Live fast path for a settings record in the change feed — lands another device's choice
     /// without waiting for launch. Purely an accelerator; the fetch-first reconcile guarantees
     /// convergence, so an unreadable record here is simply ignored.
-    private func applySettingsFromChangeFeed(_ remote: SyncedSettings) {
-        guard let settingsStore, let local = settingsStore.syncedSettings else { return }
-        guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return }
+    /// Returns whether the record was newer than the local choice and so was adopted.
+    @discardableResult
+    private func applySettingsFromChangeFeed(_ remote: SyncedSettings) -> Bool {
+        guard let settingsStore, let local = settingsStore.syncedSettings else { return false }
+        guard Self.millisecondStamp(remote.updatedAt) > Self.millisecondStamp(local.updatedAt) else { return false }
         settingsStore.applySyncedSettings(remote)
+        return true
     }
 
     private nonisolated static let maximumSettingsSaveAttempts = 2
@@ -1247,7 +1979,7 @@ public final class CloudKitSyncService {
                     try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
                     throw CloudKitSyncError.encryptedDataKeyReset
                 }
-                throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count)
+                throw CloudKitSyncError.partialRecordSaves(result.failedRecordNames.count, result.failure)
             }
             try afterBatch(batch)
         }
@@ -1257,7 +1989,7 @@ public final class CloudKitSyncService {
 
     /// The one place every CloudKit surface reports a reset of the user's encrypted-data key.
     /// Recovery itself runs at a point where it cannot disturb a half-applied pull or push.
-    private func noteEncryptedDataKeyReset(during phase: String) {
+    func noteEncryptedDataKeyReset(during phase: String) {
         syncLog.error("iCloud reported a reset encrypted-data key during \(phase, privacy: .public)")
         encryptedDataKeyResetPending = true
     }
@@ -1304,39 +2036,69 @@ public final class CloudKitSyncService {
         let itemID: UUID
         let record: CKRecord
         let modifiedAt: Date
+        /// The record carries neither the file nor its names, because iCloud already holds them.
+        var withoutFile = false
+    }
+
+    /// The deletes to save, and the ones the server already holds, by clip with the date the local delete carries.
+    struct PreparedTombstones {
+        var records: [PreparedPushRecord] = []
+        var settled: [UUID: Date] = [:]
     }
 
     struct PreparedPushRecords {
         let records: [PreparedPushRecord]
         let skippedItemIDs: [UUID]
+        /// The same clips as `skippedItemIDs`, with why each one cannot be uploaded.
+        var skippedClips: [SyncWaitingClip] = []
+        /// Clips left out because iCloud neither returned their server copy nor reported it
+        /// missing. The push reports a failure for them once it has saved the rest.
+        var unconfirmedCount = 0
     }
 
     nonisolated static func preparePushRecords(
         _ items: [ClipboardItem],
         in zoneID: CKRecordZone.ID,
+        policy: ClipboardCloudMapping.PlainContentPolicy = .dualWrite,
+        blobHeldByServer: Set<UUID> = [],
         blobURL: (ClipboardItem) -> URL?
     ) -> PreparedPushRecords {
         var records: [PreparedPushRecord] = []
         var skippedItemIDs: [UUID] = []
+        var skippedClips: [SyncWaitingClip] = []
         records.reserveCapacity(items.count)
 
         for item in items {
             let itemBlobURL = item.isDeleted ? nil : blobURL(item)
             if !item.isDeleted, item.syncBlobReference != nil, itemBlobURL == nil {
                 skippedItemIDs.append(item.id)
+                skippedClips.append(SyncWaitingClip(id: item.id, reason: .contentFileMissing))
                 continue
             }
-            guard let record = ClipboardCloudMapping.record(from: item, in: zoneID, blobURL: itemBlobURL) else {
+            let withoutFile = itemBlobURL != nil && blobHeldByServer.contains(item.id)
+            guard let record = ClipboardCloudMapping.record(
+                from: item,
+                in: zoneID,
+                blobURL: itemBlobURL,
+                policy: policy,
+                omitsFileFields: withoutFile
+            ) else {
                 skippedItemIDs.append(item.id)
+                skippedClips.append(SyncWaitingClip(id: item.id, reason: .contentInvalid))
                 continue
             }
-            records.append(PreparedPushRecord(itemID: item.id, record: record, modifiedAt: item.modifiedAt))
+            records.append(PreparedPushRecord(
+                itemID: item.id,
+                record: record,
+                modifiedAt: item.modifiedAt,
+                withoutFile: withoutFile
+            ))
         }
 
-        return PreparedPushRecords(records: records, skippedItemIDs: skippedItemIDs)
+        return PreparedPushRecords(records: records, skippedItemIDs: skippedItemIDs, skippedClips: skippedClips)
     }
 
-    private func existingBlobURL(for item: ClipboardItem) -> URL? {
+    func existingBlobURL(for item: ClipboardItem) -> URL? {
         guard let reference = item.syncBlobReference,
               let url = store?.blobURL(for: reference),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -1352,6 +2114,7 @@ public final class CloudKitSyncService {
         from record: CKRecord,
         for item: ClipboardItem,
         into store: SyncableStore,
+        assetKnownPresent: Bool,
         generation: UInt64
     ) async throws -> RemoteBlobResolution {
         try requireActive(generation)
@@ -1359,9 +2122,9 @@ public final class CloudKitSyncService {
         let assetURL = (record[ClipboardCloudMapping.Key.blob] as? CKAsset)?.fileURL
         // A blob is immutable per filename (an edit mints a new one), so an on-disk file needs no
         // fetch. This skips re-reading the full (up to 32 MB) CKAsset on every metadata-only edit
-        // (pin/tag), which re-surfaces the record in the change feed with its asset attached.
+        // (pin/tag) of a record that arrives with its asset attached.
         if let localURL = store.blobURL(for: blob), FileManager.default.fileExists(atPath: localURL.path) {
-            let requiresLocalRepush = assetURL == nil
+            let requiresLocalRepush = assetURL == nil && !assetKnownPresent
             if requiresLocalRepush {
                 syncLog.error(
                     "synced clip \(item.id.uuidString, privacy: .public) is missing its asset; scheduling repair"
@@ -1463,7 +2226,8 @@ public final class CloudKitSyncService {
     nonisolated static func pullReceiptChanges(
         remote: [ClipboardItem],
         reconciled: [ClipboardItem],
-        repairItemIDs: Set<UUID>
+        repairItemIDs: Set<UUID>,
+        omittedFields: [UUID: Set<String>] = [:]
     ) -> PullReceiptChanges {
         var changes = PullReceiptChanges(invalidated: repairItemIDs)
         guard !remote.isEmpty else { return changes }
@@ -1477,7 +2241,7 @@ public final class CloudKitSyncService {
         }
         for (id, remoteItem) in newestRemote {
             guard let winner = winners[id] else { continue }
-            if ClipboardCloudMapping.syncedFieldsMatch(winner, remoteItem),
+            if ClipboardCloudMapping.syncedFieldsMatch(winner, remoteItem, omitting: omittedFields[id] ?? []),
                !repairItemIDs.contains(id) {
                 changes.seeded[id] = remoteItem.modifiedAt
             } else {
@@ -1582,28 +2346,31 @@ public final class CloudKitSyncService {
         return reset
     }
 
-    private func persistToken(
+    func persistToken(
         _ token: CKServerChangeToken?,
         generation: UInt64
     ) throws {
         try requireActive(generation)
-        guard let token,
-              let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
+        // A nil token removes the key on purpose: the next pull starts from nothing.
+        guard let token else {
             defaults.removeObject(forKey: tokenKey)
             return
+        }
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
+            throw CloudKitSyncError.changeTokenEncodingFailed
         }
         defaults.set(data, forKey: tokenKey)
     }
 
-    private var activeGeneration: UInt64? {
+    var activeGeneration: UInt64? {
         isStopped ? nil : lifecycleGeneration
     }
 
-    private func requireActive(_ generation: UInt64) throws {
+    func requireActive(_ generation: UInt64) throws {
         guard canMutate(generation) else { throw CancellationError() }
     }
 
-    private func canMutate(_ generation: UInt64) -> Bool {
+    func canMutate(_ generation: UInt64) -> Bool {
         !isStopped && lifecycleGeneration == generation && !Task.isCancelled
     }
 
@@ -1619,7 +2386,7 @@ public final class CloudKitSyncService {
     }
 }
 
-private extension Array {
+extension Array {
     func chunked(into size: Int) -> [[Element]] {
         guard size > 0 else { return [self] }
         return stride(from: 0, to: count, by: size).map { start in
@@ -1628,7 +2395,7 @@ private extension Array {
     }
 }
 
-private extension ClipboardItem {
+extension ClipboardItem {
     var syncBlobReference: SyncBlobReference? {
         if let filename = imageFilename { return SyncBlobReference(filename: filename, kind: .image) }
         if let filename = textFilename { return SyncBlobReference(filename: filename, kind: .text) }

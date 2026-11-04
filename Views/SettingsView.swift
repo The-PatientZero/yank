@@ -16,11 +16,16 @@ struct SettingsView: View {
     var store: ClipboardStore? = nil
     var axPermission: AccessibilityPermission? = nil
     var appStatus: AppStatus? = nil
+    /// Deletes a clip with the history window's undo window; Settings has no banner of its own.
+    var onDeleteClip: ((ClipboardItem) -> Void)? = nil
+    var onUndoDelete: (() -> Void)? = nil
 
     var manager: SettingsManager = .shared
     @State var isRecording = false
     @State var showingTrimAlert = false
     @State var pendingTier: HistoryLimit?
+    @State var showingRetentionAlert = false
+    @State var pendingRetention: RetentionChange.Pending?
     @State var shortcutConflict: String?
     @State var launchAtLoginError: String?
     @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -167,6 +172,7 @@ struct SettingsView: View {
                         .foregroundColor(.yankTextTertiary)
                 }
             }
+            SettingsUpdatesRow()
             HStack(spacing: Space.lg) {
                 Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
                 Link("Privacy Policy", destination: YankLinks.privacyPolicy)

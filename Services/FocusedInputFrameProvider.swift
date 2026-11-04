@@ -1,4 +1,5 @@
 import AppKit
+// The Accessibility C types are not annotated Sendable; the compiler does not currently require this.
 @preconcurrency import ApplicationServices
 
 #if DEBUG

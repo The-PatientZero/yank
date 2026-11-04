@@ -4,6 +4,8 @@ import SwiftUI
 
 enum QuickPickerLayout {
     static let size = NSSize(width: 392, height: 430)
+    /// The narrowest the search field may get before the Paste Sequence button drops its label.
+    static let minSearchFieldWidth: CGFloat = 150
     static let accessibilityTitle = "Yank Quick Picker"
     static let styleMask: NSWindow.StyleMask = [
         .titled,
@@ -16,11 +18,41 @@ enum QuickPickerLayout {
 @MainActor
 @Observable
 final class QuickPickerPresentationState {
+    /// How long a footer notice stays before it clears by itself.
+    static let noticeDuration: Duration = .seconds(4)
+
     private(set) var searchFocusRequest = 0
     private(set) var openRequest = 0
+    /// A short message that takes the place of the footer's key hints.
+    private(set) var notice: String?
+    /// True while a Paste Sequence is running, when starting another would do nothing.
+    var isPasteSequenceActive = false
+
+    /// Incremented by every notice, open and close, so a clear scheduled for an old notice never
+    /// removes a newer one.
+    @ObservationIgnored private var noticeGeneration = 0
 
     func requestOpenReset() {
+        clearNotice()
         openRequest &+= 1
+    }
+
+    /// Shows `message` in the footer and announces it; a repeat restarts the countdown.
+    func postNotice(_ message: String) {
+        noticeGeneration &+= 1
+        let generation = noticeGeneration
+        notice = message
+        AccessibilityAnnouncement.post(message)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.noticeDuration)
+            guard let self, self.noticeGeneration == generation else { return }
+            self.notice = nil
+        }
+    }
+
+    func clearNotice() {
+        noticeGeneration &+= 1
+        notice = nil
     }
 
     func requestSearchFocus() {
@@ -49,11 +81,17 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private let focusedInputFrameProvider: @MainActor (NSRunningApplication?) -> NSRect?
     private let onOpenFullHistory: @MainActor () -> Void
     private let onStartPasteSequence: @MainActor () -> Void
+    private let onResumeCapture: @MainActor () -> Void
+    private let isPasteSequenceActive: @MainActor () -> Bool
+    private let copyToast = CopyConfirmationToastController()
     private let presentationState = QuickPickerPresentationState()
     private var previousApp: NSRunningApplication?
+    /// True while Paste as Text loads a clip's full text, so a repeated key press pastes once.
+    private var isLoadingPasteText = false
     private var isApplyingProgrammaticFrame = false
 
     private static let frameDefaultsKey = "QuickPickerWindowFrame"
+    private static let noTextNotice = "This clip has no text to paste"
 
     init(
         store: ClipboardStore,
@@ -64,7 +102,9 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             FocusedInputFrameProvider.frame(preferredApp: $0)
         },
         onOpenFullHistory: @escaping @MainActor () -> Void,
-        onStartPasteSequence: @escaping @MainActor () -> Void = {}
+        onStartPasteSequence: @escaping @MainActor () -> Void = {},
+        onResumeCapture: @escaping @MainActor () -> Void = {},
+        isPasteSequenceActive: @escaping @MainActor () -> Bool = { false }
     ) {
         self.store = store
         self.settings = settings
@@ -73,6 +113,8 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         self.focusedInputFrameProvider = focusedInputFrameProvider
         self.onOpenFullHistory = onOpenFullHistory
         self.onStartPasteSequence = onStartPasteSequence
+        self.onResumeCapture = onResumeCapture
+        self.isPasteSequenceActive = isPasteSequenceActive
 
         let initialFrame = Self.savedFrame() ?? NSRect(origin: .zero, size: QuickPickerLayout.size)
         let initialContentRect = NSWindow.contentRect(
@@ -133,6 +175,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private func setupContent() {
         let view = QuickPickerView(
             store: store,
+            settings: settings,
             presentationState: presentationState,
             onPaste: { [weak self] item in self?.paste(item) },
             onPasteAsText: { [weak self] item in self?.pasteAsText(item) },
@@ -141,6 +184,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             onDismiss: { [weak self] in self?.close() },
             onOpenFullHistory: { [weak self] in self?.openFullHistory() },
             onStartPasteSequence: { [weak self] in self?.startPasteSequence() },
+            onResumeCapture: { [weak self] in self?.onResumeCapture() },
             onSmartSearch: { [weak self] phrase in await self?.smartSearch(phrase) ?? [] }
         )
         let host = NSHostingView(rootView: view)
@@ -158,6 +202,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         super.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        presentationState.isPasteSequenceActive = isPasteSequenceActive()
         presentationState.requestOpenReset()
         presentationState.requestSearchFocus()
         isApplyingProgrammaticFrame = false
@@ -170,10 +215,11 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
               window?.isVisible == true,
               let frame = window?.frame else { return }
         UserDefaults.standard.set(NSStringFromRect(frame), forKey: Self.frameDefaultsKey)
+    }
 
-        guard settings.quickPickerPlacement != .lastPosition else { return }
-        settings.quickPickerPlacement = .lastPosition
-        settings.save()
+    override func close() {
+        presentationState.clearNotice()
+        super.close()
     }
 
     private func openFullHistory() {
@@ -194,7 +240,11 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func copy(_ item: ClipboardItem) {
-        PasteController.copyToClipboard(item, store: store)
+        // The toast belongs on the screen the picker was on; read it before the picker closes.
+        let screen = window?.screen
+        PasteController.copyToClipboard(item, store: store) { [copyToast] didCopy in
+            if didCopy { copyToast.show(on: screen) }
+        }
         close()
     }
 
@@ -214,11 +264,22 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func pasteAsText(_ item: ClipboardItem) {
-        guard let text = item.ocrText ?? item.textContent, !text.isEmpty else { return }
-        let appToRestore = previousApp
-        close()
-        DispatchQueue.main.async {
-            PasteController.pasteText(text, axPermission: self.axPermission, previousApp: appToRestore)
+        guard !isLoadingPasteText else { return }
+        isLoadingPasteText = true
+        Task {
+            defer { isLoadingPasteText = false }
+            let text = await store.pasteAsTextContent(for: item)
+            guard let text else {
+                if window?.isVisible == true {
+                    presentationState.postNotice(Self.noTextNotice)
+                }
+                return
+            }
+            let appToRestore = previousApp
+            close()
+            DispatchQueue.main.async {
+                PasteController.pasteText(text, axPermission: self.axPermission, previousApp: appToRestore)
+            }
         }
     }
 

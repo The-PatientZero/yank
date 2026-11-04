@@ -12,8 +12,8 @@ struct IOSClipStoreOrphanBlobSweepTests {
 
         // First launch: capture one image so its blob is genuinely referenced by history.
         let firstStore = ClipStore(context: fixture.context)
-        let captured = await firstStore.captureImage(pngData: Data([0x01]))
-        #expect(captured)
+        try fixture.context.shareInbox.enqueue(imagePNG: Data([0x01]))
+        await firstStore.drainShareInbox()
         try firstStore.flushPendingWrites()
         let referencedFilename = try #require(firstStore.items.first?.imageFilename)
         let referencedURL = fixture.context.blobsURL.appendingPathComponent(referencedFilename)

@@ -8,6 +8,7 @@ public enum TagNormalization {
     /// width rather than to fit any particular storage bound.
     public static let maximumLength = 24
 
+    /// Returns the canonical tag for `input`, or an empty string when nothing is left of it.
     public static func normalize(_ input: String) -> String {
         let dashed = input
             .lowercased()

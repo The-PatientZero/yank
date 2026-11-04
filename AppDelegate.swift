@@ -7,6 +7,9 @@ import Darwin
 @Observable
 final class AppStatus {
     var hotkeyRegistrationFailed = false
+    /// The clip the next history window open should select and scroll to. Set by the controller
+    /// right before it shows the window, and cleared by the history view once it has used it.
+    var historyFocusClipID: UUID?
 }
 
 struct CloudKitBackfillCommandOutcome: Equatable {
@@ -64,11 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settings = SettingsManager.shared
     let axPermission = AccessibilityPermission()
     let appStatus = AppStatus()
-    let clipboardStore = ClipboardStore(settings: SettingsManager.shared.captureSettings)
+    let clipboardStore = ClipboardStore(settings: SettingsManager.shared.captureSettings, deferHistoryLoad: true)
 
     private var clipboardController: ClipboardController?
     private var hub: HubController?
     private var welcomeWindowController: WelcomeWindowController?
+    /// A Spotlight result tapped before the controller existed (cold start); opened right after it starts.
+    private var pendingSpotlightClipID: UUID?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if startCloudKitBackfillCommandIfRequested() {
@@ -77,32 +82,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
 
+        // First touch of the singleton restores a staged update and posts a state change, so it
+        // happens before the hub exists and registers its observers.
+        UpdateService.shared.checkIfJustUpdated()
+
         let hub = HubController(footer: HubAppFooter(
             updateMenu: { UpdateService.shared.menuPresentation },
+            updateAttention: { UpdateService.shared.state.attentionText },
             onUpdateAction: { UpdateService.shared.handleMenuAction($0) },
             onRestart: { [weak self] in self?.restartOrFinishUpdate() },
             onQuit: { NSApplication.shared.terminate(nil) }
         ), settings: settings)
         self.hub = hub
 
-        let clipboard = ClipboardController(
-            dependencies: ClipboardDependencies(
-                store: clipboardStore,
-                settings: settings,
-                axPermission: axPermission,
-                appStatus: appStatus,
-                hub: hub,
-                hotkeys: HotkeyRegistry()
+        // The saved history loads off the main thread. The controller (watcher, hotkeys, windows
+        // and sync) is built only afterwards, so nothing can capture, sync or show history over
+        // an unloaded store, and a push that arrives during the load is covered by the pull that
+        // starting the controller begins.
+        // Age retention waits for sync to read the synced settings when sync will run, so a stale
+        // local window never deletes clips the user chose to keep from another device.
+        clipboardStore.isRetentionHeldForSettings = settings.syncEnabled
+            && CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID)
+        Task { @MainActor in
+            await clipboardStore.hydrate()
+            let clipboard = ClipboardController(
+                dependencies: ClipboardDependencies(
+                    store: clipboardStore,
+                    settings: settings,
+                    axPermission: axPermission,
+                    appStatus: appStatus,
+                    hub: hub,
+                    hotkeys: HotkeyRegistry()
+                )
             )
-        )
-        clipboardController = clipboard
-        clipboard.start()
+            clipboardController = clipboard
+            clipboard.start()
+            if let clipID = pendingSpotlightClipID {
+                pendingSpotlightClipID = nil
+                clipboard.showHistoryWindow(focusing: clipID)
+            }
+        }
 
-        UpdateService.shared.checkIfJustUpdated()
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
             UpdateService.shared.checkOnLaunchIfNeeded()
         }
+        UpdateService.shared.startPeriodicChecks()
 
         if !UserDefaults.standard.bool(forKey: "yankWelcomeSeen") {
             Task { @MainActor in
@@ -132,6 +157,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardController?.handleRemoteChange()
     }
 
+    /// A tap on a Spotlight result opens the history window on that clip.
+    func application(
+        _ application: NSApplication,
+        continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        guard let clipID = SpotlightActivity.clipID(from: userActivity) else { return false }
+        if let clipboardController {
+            clipboardController.showHistoryWindow(focusing: clipID)
+        } else {
+            pendingSpotlightClipID = clipID
+        }
+        return true
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        Log.app.error("Could not register for remote notifications: \(error.localizedDescription, privacy: .public)")
+    }
+
     /// Reopening the app (e.g. from Finder) surfaces Settings — the recovery path when the
     /// menu-bar icon is hidden, so the user is never stranded.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -143,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showWelcomeWindow() {
         let syncAvailable = CloudContainerProvisioning.isProvisioned(for: ClipboardController.cloudContainerID)
-        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, manager: settings)
+        let controller = WelcomeWindowController(axPermission: axPermission, syncAvailable: syncAvailable, store: clipboardStore, manager: settings)
         controller.showWindow(nil)
         welcomeWindowController = controller
     }
@@ -157,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.prohibited)
         Task { @MainActor in
+            await clipboardStore.hydrate()
             guard settings.syncEnabled else {
                 finishBackfillCommand(.prerequisiteFailure("sync-disabled"))
             }
@@ -169,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     containerIdentifier: ClipboardController.cloudContainerID,
                     store: clipboardStore
                 )
+                sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: nil)
                 let result = try await sync.backfillMissingLocalRecords(dryRun: dryRun)
                 finishBackfillCommand(.completed(dryRun: dryRun, result: result))
             } catch {

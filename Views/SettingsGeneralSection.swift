@@ -3,6 +3,10 @@ import SwiftUI
 extension SettingsView {
     var generalSection: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
+            if let axPermission, !axPermission.isTrusted {
+                axPermissionRow(axPermission)
+                Divider().overlay(Color.yankHairline)
+            }
             VStack(alignment: .leading, spacing: 0) {
                 toggleRow("Launch at login", "Yank starts quietly when you log in.", isOn: Binding(
                     get: { manager.launchAtLogin },
@@ -80,6 +84,7 @@ extension SettingsView {
                     get: { manager.historyWindowPlacement },
                     set: { newValue in
                         manager.historyWindowPlacement = newValue
+                        manager.historyWindowPlacementNoticeDismissed = true
                         manager.save()
                     })) {
                     ForEach(HistoryWindowPlacement.allCases) { placement in
@@ -92,6 +97,22 @@ extension SettingsView {
                 .accessibilityLabel("Open history at")
                 .accessibilityValue(manager.historyWindowPlacement.label)
                 .accessibilityHint(manager.historyWindowPlacement.blurb)
+
+                if manager.historyWindowPlacement == .lastPosition,
+                   !manager.historyWindowPlacementNoticeDismissed {
+                    lastPositionNoticeRow(
+                        control: "history window",
+                        onRestore: {
+                            manager.historyWindowPlacement = HistoryWindowPlacementDefaults
+                                .initialPlacement(storedRawValue: nil)
+                            manager.historyWindowPlacementNoticeDismissed = true
+                            manager.save()
+                        },
+                        onKeep: {
+                            manager.historyWindowPlacementNoticeDismissed = true
+                            manager.save()
+                        })
+                }
             }
             Divider().overlay(Color.yankHairline)
             field("Open quick picker at", manager.quickPickerPlacement.blurb) {
@@ -99,6 +120,7 @@ extension SettingsView {
                     get: { manager.quickPickerPlacement },
                     set: { newValue in
                         manager.quickPickerPlacement = newValue
+                        manager.quickPickerPlacementNoticeDismissed = true
                         manager.save()
                     })) {
                     ForEach(QuickPickerPlacement.allCases) { placement in
@@ -116,6 +138,22 @@ extension SettingsView {
                    let axPermission,
                    !axPermission.isTrusted {
                     quickPickerFieldAccessRow(axPermission)
+                }
+
+                if manager.quickPickerPlacement == .lastPosition,
+                   !manager.quickPickerPlacementNoticeDismissed {
+                    lastPositionNoticeRow(
+                        control: "quick picker",
+                        onRestore: {
+                            manager.quickPickerPlacement = QuickPickerPlacementDefaults
+                                .initialPlacement(storedRawValue: nil)
+                            manager.quickPickerPlacementNoticeDismissed = true
+                            manager.save()
+                        },
+                        onKeep: {
+                            manager.quickPickerPlacementNoticeDismissed = true
+                            manager.save()
+                        })
                 }
             }
             Divider().overlay(Color.yankHairline)
@@ -197,6 +235,46 @@ extension SettingsView {
         }
     }
 
+    func lastPositionNoticeRow(
+        control: String,
+        onRestore: @escaping () -> Void,
+        onKeep: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text("Opens at: Last position. If you didn't choose this, Yank may have set it when you moved the window.")
+                .font(.system(size: TypeScale.micro))
+                .foregroundColor(.yankTextTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Space.md) {
+                Button("Restore default", action: onRestore)
+                    .accessibilityLabel("Restore default placement for the \(control)")
+                Button("Keep", action: onKeep)
+                    .accessibilityLabel("Keep Last position for the \(control)")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: TypeScale.micro))
+            .foregroundColor(AppTheme.active.foreground)
+        }
+    }
+
+    func axPermissionRow(_ axPermission: AccessibilityPermission) -> some View {
+        HStack(spacing: Space.sm) {
+            Image(systemName: "lock.fill").foregroundColor(.yankDanger)
+                .font(.system(size: TypeScale.caption))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(AccessibilityPermission.Copy.accessNeeded)
+                    .font(.system(size: TypeScale.caption, weight: .medium))
+                    .foregroundColor(.yankDanger)
+                Button(AccessibilityPermission.Copy.openSettings) {
+                    axPermission.grantAccess()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: TypeScale.micro))
+                .foregroundColor(AppTheme.active.foreground)
+            }
+        }
+    }
+
     func quickPickerFieldAccessRow(_ axPermission: AccessibilityPermission) -> some View {
         HStack(spacing: Space.sm) {
             Image(systemName: "scope")
@@ -207,7 +285,7 @@ extension SettingsView {
                     .font(.system(size: TypeScale.caption, weight: .medium))
                     .foregroundColor(.yankDanger)
                 Button(AccessibilityPermission.Copy.openSettings) {
-                    axPermission.openSettingsAndAwaitGrant()
+                    axPermission.grantAccess()
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: TypeScale.micro))

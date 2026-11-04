@@ -77,9 +77,14 @@ extension Color {
     static let yankBookmark = yankDynamic(light: YankInk.bookmark.light, dark: YankInk.bookmark.dark)
     /// "Large" badge background; pairs with white text (AA in both appearances).
     static let yankOversize = yankDynamic(light: YankInk.oversize.light, dark: YankInk.oversize.dark)
-    /// Tertiary text for quiet metadata/keyboard hints — tuned to ~5:1 contrast so small text
-    /// (10–11pt) stays AA-safe, unlike `.secondary` + opacity.
+    /// Tertiary text for quiet metadata/keyboard hints — verified AA-safe on paper and raised
+    /// only, unlike `.secondary` + opacity. Text on a selection fill uses
+    /// `yankTextTertiarySelected` instead.
     static let yankTextTertiary = yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
+    /// Tertiary text on a selection fill (selected row/tile, size pill) — darker in light
+    /// and lighter in dark so small text stays AA-safe on the tinted background.
+    static let yankTextTertiarySelected = yankDynamic(
+        light: YankInk.textTertiarySelected.light, dark: YankInk.textTertiarySelected.dark)
     /// Code / preview body text — AA-legible ink for monospaced previews and long excerpts;
     /// kept semantic (not `.primary` + opacity) so dark mode contrast holds.
     static let yankCodeText = yankDynamic(light: YankInk.codeText.light, dark: YankInk.codeText.dark)
@@ -112,14 +117,8 @@ extension NSColor {
     static var yankOnSuccess: NSColor {
         yankDynamic(light: YankInk.onSuccess.light, dark: YankInk.onSuccess.dark)
     }
-    static var yankTextTertiary: NSColor {
-        yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
-    }
     static var yankDanger: NSColor {
         yankDynamic(light: YankInk.danger.light, dark: YankInk.danger.dark)
-    }
-    static var yankWarning: NSColor {
-        yankDynamic(light: YankInk.bookmark.light, dark: YankInk.bookmark.dark)
     }
 }
 
@@ -178,23 +177,23 @@ enum YankMotion {
     }
 
     static func instant(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : expoOut(duration: 0.10)
+        reduceMotion ? nil : expoOut(duration: MotionDuration.instant)
     }
 
     static func quick(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.14)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.quick)
     }
 
     static func state(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.20)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.state)
     }
 
     static func navigation(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : quartOut(duration: 0.28)
+        reduceMotion ? nil : quartOut(duration: MotionDuration.navigation)
     }
 
     static func present(_ reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : expoOut(duration: 0.24)
+        reduceMotion ? nil : expoOut(duration: MotionDuration.present)
     }
 
     static func shimmer(_ reduceMotion: Bool) -> Animation? {
@@ -205,32 +204,23 @@ enum YankMotion {
 // MARK: - AppKit panel tokens
 
 enum YankPanelTokens {
-    static let compactToastPanelSize = NSSize(width: 360, height: 214)
+    static let compactToastPanelSize = NSSize(width: 360, height: 244)
     static let cornerRadius = Radius.window
     static let contentInset: CGFloat = Space.xxxl
     static let stackSpacing: CGFloat = Space.lg
     static let tightStackSpacing: CGFloat = Space.sm
-    static var eyebrowFont: NSFont { NSFont.systemFont(ofSize: TypeScale.micro, weight: .semibold) }
     static var titleFont: NSFont { NSFont.systemFont(ofSize: TypeScale.title, weight: .semibold) }
     static var subtitleFont: NSFont { NSFont.systemFont(ofSize: TypeScale.body) }
     static var detailFont: NSFont { NSFont.systemFont(ofSize: TypeScale.caption) }
     static var buttonFont: NSFont { NSFont.systemFont(ofSize: TypeScale.control, weight: .semibold) }
     static var primaryText: NSColor { .labelColor }
     static var secondaryText: NSColor { .secondaryLabelColor }
-    static var tertiaryText: NSColor { .yankTextTertiary }
     static var infoGlyph: NSColor { .controlAccentColor }
-    static var successGlyph: NSColor { .yankSuccess }
-    static var warningGlyph: NSColor { .yankWarning }
-    static var failureGlyph: NSColor { .yankDanger }
     static var badgeFill: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.12) }
     static var detailFill: NSColor { NSColor.textBackgroundColor.withAlphaComponent(0.55) }
     static var panelStroke: NSColor { .separatorColor }
     static let badgeSize = NSSize(width: 48, height: 48)
-    static let spinnerSize = NSSize(width: 20, height: 20)
     static let primaryButtonSize = NSSize(width: 124, height: 32)
-    static let secondaryButtonSize = NSSize(width: 108, height: 32)
-    static let quietButtonSize = NSSize(width: 82, height: 32)
-    static let scrollableDetailHeight: CGFloat = 108
     static let symbolPointScale: CGFloat = 0.8
     static let fadeInDuration = 0.22
     static let fadeOutDuration = 0.26

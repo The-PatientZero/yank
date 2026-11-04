@@ -47,6 +47,14 @@ appearance-aware `foreground` is the WCAG-AA-verified value for any glyph, label
 only on the two darkest accents — indigo, graphite — so the rest take warm near-black).
 
 - **`selectionFill`** = `color.opacity(0.22)` — tinted fill behind a focused selection row.
+- **Text on a selection fill** — tertiary text drawn on `selectionFill`, the primary-selection
+  fill or the multi-select fill uses `textTertiarySelected`; hovered and unselected rows keep
+  `textTertiary`.
+- **Menu focus ring** — a keyboard-focused row in the menu-bar menu gets `selectionFill` plus a
+  full-strength `foreground` ring (`Stroke.focusRing`, 1.5 pt; 3.78:1 or better against the fill
+  on the solid Reduce Transparency surface). A hovered row gets the fill only, and the ring is
+  hidden while the pointer was the last input. The system focus ring is disabled so it never
+  doubles ours.
 
 ### Neutral "paper" surfaces
 
@@ -66,10 +74,11 @@ All tuned per-appearance to clear WCAG-AA; ratios are recorded in the source.
 |---|---|---|---|
 | `bookmark` | `#9A6F08` | `#FFCC4D` | Gold glyph; ≥3:1 non-text on paper (4.05:1 surface / 4.3:1 raised) |
 | `bookmarkFill` | `#8A6400` | `#8A6400` | Fill behind a white glyph (iOS swipe); white → 5.38:1; doesn't adapt |
-| `textTertiary` | `#6E665A` | `#9C948A` | Quiet metadata / hints, ~5:1 |
+| `textTertiary` | `#6E665A` | `#9C948A` | Quiet metadata / hints on paper and raised only: 5.07:1 / 5.39:1 light, 5.87:1 / 5.31:1 dark. Not safe on a selection fill |
+| `textTertiarySelected` | `#5C554B` | `#BDB5AB` | Metadata text on a selection fill (selected or highlighted row/tile, size pill); at least 5.02:1 light and 4.62:1 dark on every accent fill and the multi-select fill |
 | `codeText` | `#4A453E` | `#C4BCB2` | Monospaced previews & long-text body, ~8:1 light / ~7:1 dark |
 | `danger` | `#C2371F` | `#FF6B5A` | Destructive / error (warm-leaning red) |
-| `success` | `#2F855A` | `#48BB78` | Positive status / confirmations |
+| `success` | `#25704A` | `#48BB78` | Positive status / confirmations; safe for small text: 5.39:1 paper / 5.72:1 raised light, 7.25:1 paper dark |
 | `successFill` | `#2C7A52` | `#48BB78` | Success badge fill; use only with `onSuccess` |
 | `onSuccess` | `#FFFFFF` | `#1A1916` | Small text/glyph on `successFill`; 5.23:1 / 7.25:1 |
 | `oversize` | `#B45309` | `#C2410C` | "Large" badge fill; white → 5.02:1 / 5.18:1 |
@@ -163,7 +172,7 @@ Pills use a `Capsule`, not a radius.
 | Token | Value | Notes |
 |---|---|---|
 | `Hairline.width` | 0.5 | The one separator / border width (crisp on Retina) |
-| `Stroke.focusRing` | 1.5 | Focus ring |
+| `Stroke.focusRing` | 1.5 | Focus ring (also the menu-bar menu's keyboard-focus ring) |
 | `IconSize.clipRow` / `emptyState` | 30 | Kind icon in a list row / empty state |
 | `ControlTarget.compact` | 24 | macOS pointer target (WCAG 2.5.8 compact min) |
 | `ControlTarget.touch` | 44 | iOS touch target (Apple HIG) |
@@ -177,7 +186,9 @@ Pills use a `Capsule`, not a radius.
 Intentionally short timings: Yank is a power-user tool, so motion adds tactility without
 slowing keyboard workflows. Every helper returns `nil` under Reduce Motion. Source:
 [`Views/DesignSystem.swift`](../Views/DesignSystem.swift) (`YankMotion`) and
-[`Shared/DesignScale.swift`](../Shared/DesignScale.swift) (`MotionCurve`, `MotionScale`).
+[`Shared/DesignScale.swift`](../Shared/DesignScale.swift) (`MotionDuration`, `MotionCurve`, `MotionScale`).
+The duration tokens are defined once in `MotionDuration`; macOS `YankMotion` and iOS `IOSMotion`
+both read them, so a transition takes the same time on both platforms.
 
 ### Curves (shared control points)
 
@@ -223,7 +234,7 @@ Compact icon-only button with two guarantees the loose `Button { Image }` patter
 
 ### `TagChip` — [`Shared/TagChip.swift`](../Shared/TagChip.swift)
 A tag pill: a 6×6 hue dot for identity, a same-hue wash (fill `0.14`, border `0.28`), and `.primary` text so legibility never depends on the (light) tag colour. Padding `sm`×`xxs`, `Capsule` shape. Optionally tappable (filter) or removable (`xmark`). Hue = `YankInk.tagPalette[YankInk.tagPaletteIndex(for: tag)]`.
-**`TagChip.normalize`**: lowercase → collapse whitespace to `-` → trim leading/trailing `-` → cap at 32 chars.
+**`TagNormalization.normalize`** ([`Sources/YankCore/TagNormalization.swift`](../Sources/YankCore/TagNormalization.swift)) is the single tag rule: lowercase, whitespace to `-`, keep only letters, digits and `-`, trim `-`, cap at `TagNormalization.maximumLength`.
 
 ### `ClipStatusBadge` / `RichContentBadge` — [`Shared/ClipStatusBadge.swift`](../Shared/ClipStatusBadge.swift)
 - **Status**: `pin.fill` (uses `.tint`) takes precedence over `bookmark.fill` (uses `yankBookmark` gold); nothing renders if neither.
@@ -236,7 +247,7 @@ A 30×30 `Radius.sm` rounded square filled `yankSubtleFill`, with a centred SF S
 Wordmark described under Typography. `YankBrandMark` is the boxed logo: `Radius.md` rounded square, `yankSurface` fill, `yankHairline` border, the `BrandGlyph` asset inset by `size × 0.22`, with a soft `black @ 0.06` shadow.
 
 ### `YankPanelTokens` — [`Views/DesignSystem.swift`](../Views/DesignSystem.swift)
-AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×214`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, buttons `124/108/82 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (eyebrow `micro` semibold, title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
+AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×244`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, button `124 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
 
 ---
 
@@ -282,7 +293,7 @@ Essential `100` · Deep `500` · Unlimited `1,000`. Protected clips (pinned / bo
 
 ## Cross-platform notes
 
-- **Shared scales** (`Space`, `Radius`, `TypeScale`, `IconSize`, `Stroke`, `Hairline`, `ControlTarget`, `MotionCurve`, `MotionScale`) compile into both targets from `Shared/`, so they cannot drift.
+- **Shared scales** (`Space`, `Radius`, `TypeScale`, `IconSize`, `Stroke`, `Hairline`, `ControlTarget`, `MotionCurve`, `MotionScale`, `MotionDuration`) compile into both targets from `Shared/`, so they cannot drift.
 - **Type**: macOS uses the fixed `TypeScale`; iOS uses Dynamic Type via `IOSType` / `Font.yank(_:)`, so iOS labels grow with the user's text size.
 - **Colour bridges**: the `YankInk` pairs are exposed as named `Color`s through an `NSColor` bridge on macOS and a `UIColor` bridge on iOS — identical values, platform-specific plumbing.
 

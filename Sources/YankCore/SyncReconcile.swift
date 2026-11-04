@@ -12,6 +12,25 @@ enum SyncReconcile {
         var cappedVisibleCount: Int
     }
 
+    /// Whether applying this result would change anything a snapshot stores, compared with the
+    /// current state. Compares every stored field and the order, not `==` (which sees only ids),
+    /// so an edited clip is never mistaken for an unchanged one. Retention and the cap use the
+    /// clock, so a result that expired or capped anything always counts as a change.
+    static func changesPersistedState(
+        _ result: ApplyResult,
+        items: [ClipboardItem],
+        tombstones: [UUID: Date]
+    ) -> Bool {
+        if !result.blobReferencesToDelete.isEmpty
+            || result.expiredVisibleCount > 0
+            || result.cappedVisibleCount > 0
+            || result.tombstones != tombstones
+            || result.visibleItems.count != items.count {
+            return true
+        }
+        return zip(result.visibleItems, items).contains { !$0.hasSamePersistedFields(as: $1) }
+    }
+
     /// Materialise a tombstone map as soft-deleted items, so deletions ride the same
     /// canonical channel as live clips.
     static func tombstoneItems(_ tombstones: [UUID: Date]) -> [ClipboardItem] {

@@ -22,6 +22,9 @@ struct StatusMenuView: View {
     let onIgnoreNextCopy: () -> Void
     let onFixShortcut: () -> Void
     let onSettings: () -> Void
+    let sync: HubSyncSummary
+    let onSyncNow: () -> Void
+    let onSyncOpenSettings: () -> Void
     let onUpdateAction: (UpdateMenuActionID) -> Void
     let onClear: () -> Void
     let onRestart: () -> Void
@@ -35,10 +38,13 @@ struct StatusMenuView: View {
     enum Row: Int, CaseIterable, Hashable {
         case openQuickPicker, openHistory, pasteSequence, repeatPasteSequence
         case togglePause, ignoreNextCopy
-        case fixShortcut, settings, update, restart, quit, clear
+        case fixShortcut, syncAction, syncNow, settings, update, restart, quit, clear
     }
 
     @FocusState private var focused: Row?
+    /// True while the pointer, not the keyboard, last drove the menu. The focus ring is hidden
+    /// then, so the hovered row is the only cue and the initially focused row stays quiet.
+    @State private var pointerIsLastInput = false
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
@@ -52,54 +58,84 @@ struct StatusMenuView: View {
             }
             .padding(.horizontal, Space.lg)
             .padding(.top, Space.lg)
-            .padding(.bottom, Space.md)
+            .padding(.bottom, sync.isActive ? Space.xs : Space.md)
+
+            if sync.isActive {
+                syncStatusLine
+                    .padding(.horizontal, Space.lg)
+                    .padding(.bottom, Space.md)
+            }
 
             hairline
             MenuRow(icon: "list.bullet.rectangle.portrait", title: "Quick picker",
                     trailing: shortcutOpenTarget == .quickPicker ? shortcut : "",
-                    row: .openQuickPicker, focused: $focused, action: onOpenQuickPicker)
+                    row: .openQuickPicker, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onOpenQuickPicker)
             MenuRow(icon: "tray.full", title: "Full history",
                     trailing: shortcutOpenTarget == .fullHistory ? shortcut : "",
-                    row: .openHistory, focused: $focused, action: onOpenHistory)
+                    row: .openHistory, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onOpenHistory)
             MenuRow(icon: isPasteSequenceActive ? "xmark.circle" : "list.number",
                     title: isPasteSequenceActive ? "Cancel Paste Sequence" : "Start Paste Sequence",
                     trailing: isPasteSequenceActive ? "\(pasteSequenceItemCount)" : "",
                     active: isPasteSequenceActive,
-                    row: .pasteSequence, focused: $focused, action: onTogglePasteSequence)
+                    row: .pasteSequence, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onTogglePasteSequence)
             if isPasteSequenceActive && canRepeatPasteSequence {
                 MenuRow(
                     icon: "arrow.counterclockwise",
                     title: "Repeat Previous",
                     row: .repeatPasteSequence,
                     focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput,
                     action: onRepeatPasteSequence
                 )
             }
             MenuRow(icon: isPaused ? "play.circle" : "pause.circle",
                     title: isPaused ? "Resume capture" : "Pause capture",
-                    row: .togglePause, focused: $focused, action: onTogglePause)
+                    row: .togglePause, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onTogglePause)
             MenuRow(icon: ignoreNextCopyArmed ? "eye.slash.fill" : "eye.slash",
                     title: ignoreNextCopyArmed ? "Ignoring next copy" : "Ignore next copy",
                     trailing: ignoreNextCopyArmed ? "✓" : "", active: ignoreNextCopyArmed,
-                    row: .ignoreNextCopy, focused: $focused, action: onIgnoreNextCopy)
+                    row: .ignoreNextCopy, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onIgnoreNextCopy)
             if hotkeyUnavailable {
                 MenuRow(icon: "exclamationmark.triangle.fill",
                         title: "Keyboard shortcut unavailable — set a new one in Settings",
                         destructive: true,
-                        row: .fixShortcut, focused: $focused, action: onFixShortcut)
+                        row: .fixShortcut, focused: $focused,
+                        pointerIsLastInput: $pointerIsLastInput, action: onFixShortcut)
+            }
+            if sync.isActive {
+                if sync.offersOpenSettings {
+                    MenuRow(icon: "gearshape", title: SyncCopy.openSettingsTitle,
+                            row: .syncAction, focused: $focused,
+                            pointerIsLastInput: $pointerIsLastInput, action: onSyncOpenSettings)
+                }
+                MenuRow(icon: SyncCopy.Symbol.syncing,
+                        title: syncNowTitle,
+                        disabled: sync.isSyncing,
+                        working: sync.isSyncing,
+                        row: .syncNow, focused: $focused,
+                        pointerIsLastInput: $pointerIsLastInput, action: onSyncNow)
             }
             hairline
             MenuRow(icon: "slider.horizontal.3", title: "Settings",
-                    row: .settings, focused: $focused, action: onSettings)
+                    row: .settings, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onSettings)
             updateRow
             hairline
             MenuRow(icon: "arrow.clockwise", title: "Restart Yank",
-                    row: .restart, focused: $focused, action: onRestart)
+                    row: .restart, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onRestart)
             MenuRow(icon: "power", title: "Quit Yank", trailing: "⌘Q",
-                    row: .quit, focused: $focused, action: onQuit)
+                    row: .quit, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onQuit)
             hairline
             MenuRow(icon: "trash", title: "Permanently clear all history", destructive: true,
-                    row: .clear, focused: $focused, action: onClear)
+                    row: .clear, focused: $focused,
+                    pointerIsLastInput: $pointerIsLastInput, action: onClear)
         }
         .padding(.bottom, Space.sm)
         .frame(width: Layout.panelWidth)
@@ -107,12 +143,15 @@ struct StatusMenuView: View {
         .tint(AppTheme.active.foreground)
         // The popover is the key window, so onMoveCommand's responder-chain routing reaches the focused row.
         .onMoveCommand { direction in
+            pointerIsLastInput = false
             switch direction {
             case .up:   focused = step(from: focused, by: -1)
             case .down: focused = step(from: focused, by: +1)
             default:    break
             }
         }
+        // Tab (Full Keyboard Access) moves focus without a move command; keyboard focus shows the ring.
+        .onChange(of: focused) { pointerIsLastInput = false }
         // Land focus on the first row so ↑↓/Return work the moment the menu opens.
         .onAppear { focused = orderedRows.first ?? .openHistory }
     }
@@ -139,14 +178,18 @@ struct StatusMenuView: View {
         Self.orderedRows(
             canRepeatPasteSequence: isPasteSequenceActive && canRepeatPasteSequence,
             hotkeyUnavailable: hotkeyUnavailable,
-            updateAction: updateMenu.action
+            updateAction: updateMenu.action,
+            syncAction: sync.isActive && sync.offersOpenSettings,
+            syncNow: sync.isActive && !sync.isSyncing
         )
     }
 
     static func orderedRows(
         canRepeatPasteSequence: Bool = false,
         hotkeyUnavailable: Bool,
-        updateAction: UpdateMenuActionID?
+        updateAction: UpdateMenuActionID?,
+        syncAction: Bool = false,
+        syncNow: Bool = false
     ) -> [Row] {
         var rows: [Row] = [.openQuickPicker, .openHistory, .pasteSequence]
         if canRepeatPasteSequence {
@@ -154,11 +197,60 @@ struct StatusMenuView: View {
         }
         rows.append(contentsOf: [.togglePause, .ignoreNextCopy])
         if hotkeyUnavailable { rows.append(.fixShortcut) }
+        if syncAction { rows.append(.syncAction) }
+        if syncNow { rows.append(.syncNow) }
         rows.append(.settings)
         if updateAction != nil { rows.append(.update) }
         rows.append(contentsOf: [.restart, .quit, .clear])
         return rows
     }
+
+    private var syncNowTitle: String {
+        sync.isFailed ? SyncCopy.tryAgain : SyncCopy.syncNow
+    }
+
+    /// The state in plain words, with the time kept live while the menu stays open.
+    private var syncStatusLine: some View {
+        TimelineView(.periodic(from: .now, by: Self.syncClockInterval)) { context in
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                switch sync.status {
+                case .syncing:
+                    Label(sync.clipsReceived.map(SyncCopy.syncingWithCount) ?? SyncCopy.syncingHeadline,
+                          systemImage: SyncCopy.Symbol.syncing)
+                        .foregroundColor(.secondary)
+                case .healthy(let lastSynced):
+                    Label(SyncCopy.syncedText(lastSynced: lastSynced, now: context.date),
+                          systemImage: SyncCopy.Symbol.synced)
+                        .foregroundColor(.yankSuccess)
+                case .failed(let message):
+                    Label(SyncCopy.problemHeadline, systemImage: SyncCopy.Symbol.problem)
+                        .foregroundColor(.yankDanger)
+                    Text(message)
+                        .font(.system(size: TypeScale.micro))
+                        .foregroundColor(.yankTextTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let hint = SyncCopy.pathHint(for: sync.failureKind) {
+                        Text(hint)
+                            .font(.system(size: TypeScale.micro))
+                            .foregroundColor(.yankTextTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                case .localOnly:
+                    EmptyView()
+                }
+                if sync.waitingCount > 0 {
+                    Label(SyncCopy.waitingCount(sync.waitingCount), systemImage: SyncCopy.Symbol.problem)
+                        .foregroundColor(.yankDanger)
+                }
+            }
+            .font(.system(size: TypeScale.caption))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// How often the "Synced 5 minutes ago" text is recomputed while the menu is open.
+    private static let syncClockInterval: TimeInterval = 30
 
     private func performUpdateAction() {
         guard let action = updateMenu.action else { return }
@@ -176,6 +268,7 @@ struct StatusMenuView: View {
                 accessibilityHint: updateMenu.accessibilityHint,
                 row: .update,
                 focused: $focused,
+                pointerIsLastInput: $pointerIsLastInput,
                 action: performUpdateAction)
     }
 
@@ -200,6 +293,7 @@ private struct MenuRow: View {
     var accessibilityHint: String = ""
     let row: StatusMenuView.Row
     @FocusState.Binding var focused: StatusMenuView.Row?
+    @Binding var pointerIsLastInput: Bool
     let action: () -> Void
 
     @State private var isHovered = false
@@ -250,8 +344,13 @@ private struct MenuRow: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .focusable(!disabled)
+        // The row draws its own focus ring (`rowFill`); the system ring would double it.
+        .focusEffectDisabled()
         .focused($focused, equals: row)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering { pointerIsLastInput = true }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityHint(accessibilityHint)
         // A pressed state for pointer taps, since `.plain` gives no built-in press cue.
@@ -276,11 +375,12 @@ private struct MenuRow: View {
     @ViewBuilder private var rowFill: some View {
         if disabled {
             Color.clear
-        } else if focused == row {
-            // Keyboard focus needs its own visual cue, distinct from hover, for non-pointer users.
+        } else if focused == row && !pointerIsLastInput {
+            // Keyboard focus needs its own visual cue, distinct from hover, for non-pointer users:
+            // a full-strength accent ring (WCAG 1.4.11 asks 3:1) that hover does not have.
             AppTheme.active.selectionFill
-                .overlay(Rectangle().strokeBorder(AppTheme.active.foreground.opacity(0.5),
-                                                  lineWidth: Hairline.width))
+                .overlay(Rectangle().strokeBorder(AppTheme.active.foreground,
+                                                  lineWidth: Stroke.focusRing))
         } else if isHovered {
             AppTheme.active.selectionFill
         } else {

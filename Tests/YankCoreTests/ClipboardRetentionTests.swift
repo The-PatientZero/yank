@@ -153,7 +153,7 @@ import Testing
         #expect(capped.count == sample.count)
     }
 
-    @Test func enforceExpiresOldUnprotectedAndTombstonesAtNow() {
+    @Test func enforceExpiresOldUnprotectedAndDatesTombstonesFromTheExpiredClip() {
         let old = item(50, ageDays: 40)
         let fresh = item(51, ageDays: 2)
 
@@ -166,7 +166,7 @@ import Testing
         )
 
         #expect(result.items == [fresh])
-        #expect(result.tombstones == [old.id: now])
+        #expect(result.tombstones == [old.id: ClipboardRetention.expiryTombstoneDate(for: old)])
         #expect(result.expiredItems == [old])
         #expect(result.cappedItems.isEmpty)
         #expect(result.didChange)
@@ -220,7 +220,7 @@ import Testing
         )
 
         #expect(result.items == [kept])
-        #expect(result.tombstones == [expired.id: now])
+        #expect(result.tombstones == [expired.id: ClipboardRetention.expiryTombstoneDate(for: expired)])
         #expect(result.expiredItems == [expired])
         #expect(result.cappedItems == [capped])
         #expect(Set(result.blobReferencesToDelete) == [
@@ -229,7 +229,7 @@ import Testing
         ])
     }
 
-    @Test func enforcePrunesOldTombstones() {
+    @Test func enforceKeepsOldTombstonesUntilAcknowledged() {
         let stale = now.addingTimeInterval(-121 * 86_400)
         let fresh = now.addingTimeInterval(-1 * 86_400)
 
@@ -241,9 +241,8 @@ import Testing
             now: now
         )
 
-        #expect(result.tombstones == [clipID(81): fresh])
-        #expect(result.prunedTombstoneCount == 1)
-        #expect(result.didChange)
+        #expect(result.tombstones == [clipID(80): stale, clipID(81): fresh])
+        #expect(!result.didChange)
     }
 
     @Test func enforceZeroLimitAndZeroRetentionAreDisabled() {

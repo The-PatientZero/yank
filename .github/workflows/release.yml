@@ -115,8 +115,11 @@ jobs:
           case "$RECOVERY_BLOB" in
             *[!0-9a-f]*|"") echo "Recovery script blob SHA is invalid." >&2; exit 1 ;;
           esac
-          gh api "repos/$GITHUB_REPOSITORY/contents/scripts/build_dmg.sh?ref=$DEFAULT_BRANCH" \
+          # Fetch by blob SHA so the recorded SHA always names the script that is used.
+          gh api "repos/$GITHUB_REPOSITORY/git/blobs/$RECOVERY_BLOB" \
             --jq .content | base64 --decode > "$RUNNER_TEMP/build_dmg.sh"
+          [ "$(git hash-object "$RUNNER_TEMP/build_dmg.sh")" = "$RECOVERY_BLOB" ] \
+            || { echo "Recovery script does not match blob $RECOVERY_BLOB." >&2; exit 1; }
           install -m 755 "$RUNNER_TEMP/build_dmg.sh" scripts/build_dmg.sh
           {
             echo "## Release tooling substitution"

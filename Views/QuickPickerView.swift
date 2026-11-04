@@ -2,8 +2,17 @@ import SwiftUI
 import Cocoa
 import Observation
 
+/// Footer key hints that give way, first to last, when the picker is too narrow. "↵ paste",
+/// "⌘↵ copy", "⌥↵ as text", "⌘1–9 quick" and "esc close" never drop.
+private enum QuickPickerHint {
+    case history, search
+
+    static let dropOrder: [QuickPickerHint] = [.search, .history]
+}
+
 struct QuickPickerView: View {
     let store: ClipboardStore
+    let settings: SettingsManager
     @Bindable var presentationState: QuickPickerPresentationState
     let onPaste: (ClipboardItem) -> Void
     let onPasteAsText: (ClipboardItem) -> Void
@@ -12,16 +21,20 @@ struct QuickPickerView: View {
     let onDismiss: () -> Void
     let onOpenFullHistory: () -> Void
     let onStartPasteSequence: () -> Void
+    let onResumeCapture: () -> Void
     let onSmartSearch: QuickPickerSmartSearchState.Search
 
     @State private var searchText = ""
+    /// The query the list is filtered by: `searchText` once typing has paused.
+    @State private var debouncedQuery = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var selection = ClipSelectionState()
     @State private var smartSearchState = QuickPickerSmartSearchState()
     @FocusState private var searchFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var items: [ClipboardItem] {
-        smartSearchState.results ?? store.filteredItems(search: searchText, activeTag: nil)
+        smartSearchState.results ?? store.filteredItems(search: debouncedQuery, activeTag: nil)
     }
 
     private var selectedItem: ClipboardItem? {
@@ -50,9 +63,9 @@ struct QuickPickerView: View {
         .onChange(of: presentationState.searchFocusRequest) { _, request in
             requestSearchFocus(for: request)
         }
-        .onChange(of: searchText) { _, _ in
+        .onChange(of: searchText) { _, newValue in
             smartSearchState.queryDidChange()
-            reconcileSelection(preferFirst: true)
+            scheduleSearch(for: newValue)
         }
         .onChange(of: store.changeToken) { _, _ in reconcileSelection(preferFirst: false) }
         .onChange(of: smartSearchState.resultRevision) { _, _ in
@@ -64,6 +77,17 @@ struct QuickPickerView: View {
     }
 
     private var header: some View {
+        // Below the search field's minimum width the sequence button keeps only its icon.
+        ViewThatFits(in: .horizontal) {
+            headerRow(showsSequenceLabel: true)
+            headerRow(showsSequenceLabel: false)
+        }
+        .padding(.horizontal, Space.lg)
+        .padding(.top, Space.lg)
+        .padding(.bottom, Space.md)
+    }
+
+    private func headerRow(showsSequenceLabel: Bool) -> some View {
         HStack(spacing: Space.sm) {
             HStack(spacing: Space.sm) {
                 Image(systemName: "magnifyingglass")
@@ -78,6 +102,7 @@ struct QuickPickerView: View {
             }
             .padding(.horizontal, Space.md)
             .padding(.vertical, Space.sm)
+            .frame(minWidth: QuickPickerLayout.minSearchFieldWidth)
             .background(Color.yankRaised.opacity(0.65), in: RoundedRectangle(cornerRadius: Radius.md))
             .overlay(
                 RoundedRectangle(cornerRadius: Radius.md)
@@ -97,9 +122,13 @@ struct QuickPickerView: View {
                                      action: interpretSearch)
                 }
             }
-            PickerIconButton(systemName: "list.number",
-                             label: "Start Paste Sequence",
-                             action: onStartPasteSequence)
+            // Starting does nothing while a sequence runs, so the button is not offered then.
+            if !presentationState.isPasteSequenceActive {
+                PickerIconButton(systemName: "list.number",
+                                 label: "Paste Sequence",
+                                 title: showsSequenceLabel ? "Paste Sequence" : nil,
+                                 action: onStartPasteSequence)
+            }
             PickerIconButton(systemName: "arrow.up.left.and.arrow.down.right",
                              label: "Full history",
                              action: onOpenFullHistory)
@@ -107,9 +136,6 @@ struct QuickPickerView: View {
                              label: "Close",
                              action: onDismiss)
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.top, Space.lg)
-        .padding(.bottom, Space.md)
     }
 
     private var list: some View {
@@ -169,6 +195,8 @@ struct QuickPickerView: View {
     /// Starts every open from the same place: empty search, newest unpinned clip selected and in view.
     private func resetForOpen(scrollingWith proxy: ScrollViewProxy) {
         searchText = ""
+        searchDebounceTask?.cancel()
+        debouncedQuery = ""
         smartSearchState.queryDidChange()
         selection.selectDefault(in: items)
         guard let id = HistoryOpeningPosition.selectionID(in: items) else { return }
@@ -180,10 +208,10 @@ struct QuickPickerView: View {
 
     private var emptyState: some View {
         VStack(spacing: Space.sm) {
-            Image(systemName: searchText.isEmpty ? "tray" : "magnifyingglass")
+            Image(systemName: debouncedQuery.isEmpty ? "tray" : "magnifyingglass")
                 .font(.system(size: IconSize.emptyState, weight: .medium))
                 .foregroundColor(.yankTextTertiary)
-            Text(searchText.isEmpty ? "No clips" : "No matches")
+            Text(debouncedQuery.isEmpty ? "No clips" : "No matches")
                 .font(.system(size: TypeScale.body, weight: .semibold))
                 .foregroundColor(.primary)
         }
@@ -192,22 +220,113 @@ struct QuickPickerView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text(
-                smartSearchState.results != nil
-                    ? "Smart results · \(items.count)"
-                    : "\(items.count) \(items.count == 1 ? "clip" : "clips")"
-            )
-                .font(.system(size: TypeScale.micro))
-                .foregroundColor(.yankTextTertiary)
-            Spacer()
-            if let selectedItem {
-                ClipStatusBadge(item: selectedItem)
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text(
+                    smartSearchState.results != nil
+                        ? "Smart results · \(items.count)"
+                        : "\(items.count) \(items.count == 1 ? "clip" : "clips")"
+                )
+                    .font(.system(size: TypeScale.micro))
+                    .foregroundColor(.yankTextTertiary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if settings.capturePaused {
+                    pausedNotice
+                }
+                Spacer()
+                if let selectedItem {
+                    ClipStatusBadge(item: selectedItem)
+                }
             }
+            hintsRow
         }
         .padding(.horizontal, Space.lg)
         .padding(.vertical, Space.sm)
         .background(Color.yankRaised.opacity(0.78))
+    }
+
+    /// The key hints, or a notice in their place. The hints stay in the layout (invisible) while
+    /// a notice shows, so the row keeps its height and the list does not move.
+    private var hintsRow: some View {
+        let notice = presentationState.notice
+        return ZStack(alignment: .leading) {
+            keyHints
+                .opacity(notice == nil ? 1 : 0)
+                .accessibilityHidden(notice != nil)
+            if let notice {
+                Text(notice)
+                    .font(.system(size: TypeScale.micro, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Narrow pickers drop whole hints in `QuickPickerHint.dropOrder`; the first tier that fits wins.
+    private var keyHints: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(0...QuickPickerHint.dropOrder.count, id: \.self) { dropped in
+                keyHintTier(dropping: dropped)
+            }
+        }
+        .font(.system(size: TypeScale.micro))
+        .foregroundColor(.yankTextTertiary)
+        .accessibilityElement()
+        .accessibilityLabel(keyHintsAccessibilityLabel)
+    }
+
+    private func keyHintTier(dropping count: Int) -> some View {
+        let dropped = QuickPickerHint.dropOrder.prefix(count)
+        return HStack(spacing: Space.lg) {
+            KeyHint(key: "↵", label: "paste")
+            KeyHint(key: "⌘↵", label: "copy")
+            if selectedItem?.canPasteAsText == true {
+                KeyHint(key: "⌥↵", label: "as text")
+            }
+            KeyHint(key: "⌘1–9", label: "quick")
+            KeyHint(key: "esc", label: "close")
+            if !dropped.contains(.history) {
+                KeyHint(key: "⌘O", label: "history")
+            }
+            if !dropped.contains(.search) {
+                KeyHint(key: "⌘F", label: "search")
+            }
+        }
+    }
+
+    /// Every key, whether or not the strip had room to draw its hint.
+    private var keyHintsAccessibilityLabel: String {
+        var parts = [
+            "Return pastes",
+            "Command Return copies"
+        ]
+        if selectedItem?.canPasteAsText == true { parts.append("Option Return pastes as text") }
+        parts.append("Command 1 through 9 for quick paste")
+        parts.append("Escape closes")
+        parts.append("Command O opens full history")
+        parts.append("Command F searches")
+        return parts.joined(separator: ". ")
+    }
+
+    /// The saved pause and the way to end it. It keeps its layout priority, so the selected
+    /// clip's badge gives way first at the picker's width.
+    private var pausedNotice: some View {
+        HStack(spacing: Space.sm) {
+            Text("Capture paused")
+                .font(.system(size: TypeScale.micro, weight: .semibold))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+            Button("Resume", action: onResumeCapture)
+                .buttonStyle(.plain)
+                .font(.system(size: TypeScale.micro, weight: .semibold))
+                .foregroundStyle(.tint)
+                .lineLimit(1)
+                .accessibilityLabel("Resume capture")
+                .accessibilityHint("Starts saving copied items to history again.")
+        }
+        .layoutPriority(1)
     }
 
     private var keyMonitor: some View {
@@ -243,6 +362,7 @@ struct QuickPickerView: View {
     private func rowMenu(for item: ClipboardItem) -> some View {
         Button("Paste") { onPaste(item) }
         Button("Copy") { onCopy(item) }
+        Button(item.isPinned ? "Unpin" : "Pin to top") { store.togglePin(for: item) }
         ForEach(item.aiTags.filter { !item.tags.contains($0) }, id: \.self) { tag in
             Button("Add “\(tag)” Tag") { store.addTag(tag, to: item) }
         }
@@ -259,6 +379,33 @@ struct QuickPickerView: View {
         }
     }
 
+    /// Filters at once for an empty or `#` query, otherwise after typing pauses; a newer keystroke
+    /// cancels the pending filter.
+    private func scheduleSearch(for text: String) {
+        searchDebounceTask?.cancel()
+        if ClipQuery.appliesWithoutDebounce(text) {
+            debouncedQuery = text
+            reconcileSelection(preferFirst: true)
+            return
+        }
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: ClipQuery.searchDebounce)
+            guard !Task.isCancelled else { return }
+            debouncedQuery = text
+            reconcileSelection(preferFirst: true)
+        }
+    }
+
+    /// Return, the arrow keys, copy and paste act on the list for the text typed so far, never on
+    /// the previous result list: any pending filter is applied before the selection is read.
+    private func applyPendingSearch() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        guard debouncedQuery != searchText else { return }
+        debouncedQuery = searchText
+        reconcileSelection(preferFirst: true)
+    }
+
     private func reconcileSelection(preferFirst: Bool) {
         if preferFirst {
             selection.selectDefault(in: items)
@@ -273,25 +420,30 @@ struct QuickPickerView: View {
 
 private extension QuickPickerView {
     private func moveSelection(by delta: Int) {
+        applyPendingSearch()
         selection.move(by: delta, in: items)
     }
 
     private func pasteSelected() {
+        applyPendingSearch()
         guard let selectedItem else { return }
         onPaste(selectedItem)
     }
 
     private func copySelected() {
+        applyPendingSearch()
         guard let selectedItem else { return }
         onCopy(selectedItem)
     }
 
     private func pasteSelectedAsText() {
+        applyPendingSearch()
         guard let selectedItem else { return }
         onPasteAsText(selectedItem)
     }
 
     private func pasteItem(atQuickIndex index: Int) {
+        applyPendingSearch()
         let itemIndex = index - 1
         guard items.indices.contains(itemIndex) else { return }
         onPaste(items[itemIndex])
@@ -326,13 +478,13 @@ private struct QuickPickerRow: View {
                     Text(item.relativeAge)
                 }
                 .font(.system(size: TypeScale.micro))
-                .foregroundColor(.yankTextTertiary)
+                .foregroundColor(isSelected ? .yankTextTertiarySelected : .yankTextTertiary)
 
                 let suggested = item.aiTags.filter { !item.tags.contains($0) }.prefix(2)
                 if !suggested.isEmpty {
                     HStack(spacing: Space.xs) {
                         ForEach(Array(suggested), id: \.self) { tag in
-                            AITagChip(label: tag)
+                            AITagChip(label: tag, onSelection: isSelected)
                         }
                     }
                 }

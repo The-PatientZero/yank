@@ -66,12 +66,13 @@ struct ClipBlobStoreTests {
     // MARK: - Writes
 
     @Test("An image blob is written owner-only under images/")
-    func imageBlobIsPrivate() throws {
+    func imageBlobIsPrivate() async throws {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(store.ensureDirectoriesExist())
 
-        let filename = try #require(store.saveImage(Data("png-bytes".utf8)))
+        let persisted = await store.persistCaptureBlobs(primary: .image(Data("png-bytes".utf8)), richArchive: nil)
+        let filename = try #require(persisted?.primaryFilename)
 
         #expect(filename.hasSuffix(".png"))
         #expect(UUID(uuidString: String(filename.dropLast(4))) != nil)
@@ -87,7 +88,8 @@ struct ClipBlobStoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(store.ensureDirectoriesExist())
 
-        let filename = try #require(await store.saveTextAsync("secret clipboard body"))
+        let persisted = await store.persistCaptureBlobs(primary: .text("secret clipboard body"), richArchive: nil)
+        let filename = try #require(persisted?.primaryFilename)
 
         #expect(filename.hasSuffix(".txt"))
         let url = root.appendingPathComponent("texts").appendingPathComponent(filename)
@@ -96,7 +98,7 @@ struct ClipBlobStoreTests {
     }
 
     @Test("A rich archive is written owner-only under rich/")
-    func richArchiveIsPrivate() throws {
+    func richArchiveIsPrivate() async throws {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(store.ensureDirectoriesExist())
@@ -104,7 +106,8 @@ struct ClipBlobStoreTests {
             .init(uti: "public.utf8-plain-text", data: Data("hello".utf8))
         ])
 
-        let filename = try #require(store.saveRichArchive(archive))
+        let persisted = await store.persistCaptureBlobs(primary: nil, richArchive: archive)
+        let filename = try #require(persisted?.richFilename)
 
         #expect(filename.hasSuffix(".plist"))
         let url = root.appendingPathComponent("rich").appendingPathComponent(filename)
@@ -112,21 +115,24 @@ struct ClipBlobStoreTests {
     }
 
     @Test("A write into a tree that was never created fails without trapping")
-    func writeWithoutTreeFails() throws {
+    func writeWithoutTreeFails() async throws {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        #expect(store.saveImage(Data("png-bytes".utf8)) == nil)
+        let persisted = await store.persistCaptureBlobs(primary: .image(Data("png-bytes".utf8)), richArchive: nil)
+
+        #expect(persisted == nil)
     }
 
     // MARK: - Deletion and containment
 
     @Test("Deleting a blob reference removes the file")
-    func deletingBlobReferenceRemovesFile() throws {
+    func deletingBlobReferenceRemovesFile() async throws {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(store.ensureDirectoriesExist())
-        let filename = try #require(store.saveImage(Data("png-bytes".utf8)))
+        let persisted = await store.persistCaptureBlobs(primary: .image(Data("png-bytes".utf8)), richArchive: nil)
+        let filename = try #require(persisted?.primaryFilename)
         let url = root.appendingPathComponent("images").appendingPathComponent(filename)
 
         store.deleteBlobReferences([ClipboardBlobReference(kind: .image, filename: filename)])

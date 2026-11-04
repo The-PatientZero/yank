@@ -8,6 +8,52 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Added
+
+- Include History in Device Backups on iPhone and iPad, off by default. Yank asks iOS to keep history, the deletion log, attachments, keyboard copy and share inbox out of device backups, as it does on the Mac, so existing installs stop including history in new backups unless you turn it on. A device restored without history refills from iCloud sync, up to your history limit. iOS treats the request as guidance, not a guarantee.
+- iCloud sync status on Mac and iPhone: the Mac menu-bar menu shows whether sync works and has a Sync now row, and the icon shows a dot when sync has a problem. Failures are explained in plain words with a button for the next step.
+- Clips that cannot be uploaded are listed in Settings, where you can keep them on the device or delete them.
+- The Mac menu-bar icon shows a dot while an update is available, downloading or waiting for a relaunch, and a pause mark while capture is paused. Tooltips and VoiceOver name each state.
+- An Updates row in Settings > About shows the update status and the next step, so you can update with the menu-bar icon hidden. Yank re-checks about once a day while it runs.
+- The Quick Picker footer shows "Capture paused" with a Resume button. With the menu-bar icon hidden, the shortcut opens the Quick Picker instead of the full history while capture is paused.
+- A Cancel button on the Paste Sequence panel and a Cancel Paste Sequence row in the menu-bar menu on the Mac. Cancelling leaves your clipboard and history as they are.
+- A Copy button on clip rows and tiles on iPhone.
+- Tapping a clip in Spotlight search opens it in Yank.
+- The first sync on a new device shows how many clips have arrived, and files the device already has are not downloaded again.
+- iPhone and iPad cover the app with a plain screen when you leave Yank, so the app switcher does not show your clips.
+- A right-click menu for clips in the Mac history window, and keyboard shortcuts for layouts, Settings, pasting the first nine clips, peeking and undoing a delete. The README lists them.
+- The iPhone and iPad first-run screen is one screen for clipboard access, the ways to save and paste, and the iCloud choice. The Mac welcome window has an iCloud Sync switch.
+
+### Changed
+
+- Save Clipboard from Shortcuts on iPhone puts the text in history and the keyboard straight away, even if Yank is closed, and sends it to your other devices when sync is on. The result says whether it was saved, saved with syncing still to finish, or only queued until Yank next opens.
+- Save Clipboard takes an optional Text input that is saved instead of the clipboard, and a missing text says "No text was received" instead of claiming the clipboard is empty.
+- Text shared from the Share Sheet shows in the keyboard right away; history and iCloud follow the next time Yank opens.
+- The iPhone Share Sheet saves up to ten shared items, and Yank accepts up to ten photos at once. Rich text is saved as readable text, a web page saves its address once, and files are refused with a clear message.
+- A share that fails or only partly works stays on screen until you tap Done and says which items were not saved. Text of only spaces is reported as empty instead of as a storage problem.
+- The iPhone keyboard narrows your clips with filter chips (All, Pinned, Bookmarked and the kinds of clip you have) instead of a search box, because a custom keyboard cannot type into its own text field. VoiceOver reads each row's pin, bookmark and tags, and the switch-keyboard key stays in a fixed footer.
+- On the Mac, pausing capture survives quitting, restarts and update relaunches until you resume. The setting stays on this Mac and is not synced. An older version captures again, and updating again brings the pause back.
+- Clip text, tags, recognized text and the source app are stored in an end-to-end encrypted iCloud field that Apple cannot read. While your devices update, Yank keeps a readable copy too. After at least 14 days, and once no older version has been active for 60 days, it stops writing readable copies and erases the ones in iCloud. Settings shows the progress. An older Yank on the same iCloud account shows clips without their text, so update every device. See PRIVACY.md.
+- Shortening auto-delete asks you to confirm on Mac and iPhone, because it deletes older clips on every synced device.
+- The history window and the Quick Picker open with the newest clip selected and the search cleared.
+- Paste on the Mac copies the clip and tells you to press Command-V when Accessibility access is off, instead of prompting for it.
+- The updater refuses an update archive larger than 128 MB and accepts update files only from the expected GitHub release location.
+- Command-B is no longer offered as a global shortcut preset, because it bookmarks a clip in the history window. A shortcut you already set stays.
+
+### Fixed
+
+- Edits to the same clip on two devices before they sync are merged. A pin on one device and a tag on another both survive, and reopening a clip no longer undoes a pin or tag set elsewhere. Per-field merging needs both devices on this version; with an older version, one of two simultaneous edits can still be lost.
+- An edit other than a pin, bookmark or tag no longer brings back a clip that another device deleted. A pin, bookmark or tag added after the delete, or copying the clip again, still does.
+- The same text copied on a Mac and an iPhone before they sync ends up as one clip that keeps the pins, bookmarks and tags of both. Duplicates already in your history are left as they are.
+- iCloud sync resumes by itself on Mac and iPhone after the network returns, after you switch or sign out of iCloud and back in, and after a background update.
+- A Mac that started offline sets up push delivery once it is online, two syncs no longer run at once, an iPhone refresh requested during another sync is no longer dropped, and an iPhone started before its first unlock recovers once unlocked.
+- Copies carrying the older concealed and transient markers used by 1Password and some text expanders are no longer recorded on Mac and iPhone. Clips an earlier version stored stay in history.
+- On the Mac, a copy made in an excluded app is not recorded when you switch to another app within half a second, and a copy whose source hint names an excluded app is skipped. iPhone cannot exclude by app.
+- Auto-delete on a Mac or iPhone that was off, asleep or offline no longer deletes a clip that you copied again, pinned, bookmarked or tagged on another device in the meantime.
+- Auto-delete runs once iCloud has delivered your synced settings, so a window changed on another device is used, and clips deleted long after their last use are also removed from iCloud.
+- Re-saving a shared clip that is older than its last use no longer moves it down in history.
+- Moving the history window or the Quick Picker no longer switches "Open at" to Last position by itself. An install that already has Last position shows a note under the setting with Restore default and Keep.
+
 ## [1.2.0] - 2026-08-21
 
 ### Added

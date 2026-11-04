@@ -75,10 +75,13 @@ final class SettingsManager {
     private let excludedBundleIDsKey = "excludedBundleIDs"
     private let minCaptureLengthKey = "minCaptureLength"
     private let showMenuBarIconKey = "showMenuBarIcon"
+    private let capturePausedKey = "capturePaused"
     private let keepHistoryWindowOpenKey = "keepHistoryWindowOpen"
     private let aiTaggingEnabledKey = "aiTaggingEnabled"
     private let historyWindowPlacementKey = "historyWindowPlacement"
     private let quickPickerPlacementKey = "quickPickerPlacement"
+    private let historyWindowPlacementNoticeDismissedKey = "historyWindowPlacementNoticeDismissed"
+    private let quickPickerPlacementNoticeDismissedKey = "quickPickerPlacementNoticeDismissed"
     private let shortcutOpenTargetKey = "shortcutOpenTarget"
     private let clickToPasteInQuickViewsKey = "clickToPasteInQuickViews"
     private let hapticFeedbackKey = "hapticFeedback"
@@ -114,15 +117,22 @@ final class SettingsManager {
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
     var showMenuBarIcon: Bool = true
 
+    /// Whether the user paused clipboard capture. Saved so a pause survives a relaunch; local to
+    /// this Mac and never synced. `ClipboardWatcher.isPaused` is the effect of this choice.
+    var capturePaused: Bool = false
+
     /// Whether outside clicks leave the history window visible.
     var keepHistoryWindowOpen: Bool = false
 
     /// On-device AI tag suggestions for new text clips. Off by default — opt-in.
     var aiTaggingEnabled: Bool = false
 
-    /// Where the history window opens before the user drags it somewhere custom.
+    /// Where the history window and the quick picker open.
     var historyWindowPlacement: HistoryWindowPlacement = .menuBarIcon
     var quickPickerPlacement: QuickPickerPlacement = .focusedInput
+    /// Set once the user has answered the "Last position" note under the matching placement control.
+    var historyWindowPlacementNoticeDismissed: Bool = false
+    var quickPickerPlacementNoticeDismissed: Bool = false
     var shortcutOpenTarget: ShortcutOpenTarget = .quickPicker
 
     var clickToPasteInQuickViews: Bool = true
@@ -202,6 +212,7 @@ final class SettingsManager {
         }
         self.minCaptureLength = defaults.integer(forKey: minCaptureLengthKey)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
+        self.capturePaused = defaults.bool(forKey: capturePausedKey)
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
         self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
         self.historyWindowPlacement = HistoryWindowPlacementDefaults.initialPlacement(
@@ -210,6 +221,8 @@ final class SettingsManager {
         self.quickPickerPlacement = QuickPickerPlacementDefaults.initialPlacement(
             storedRawValue: defaults.string(forKey: quickPickerPlacementKey)
         )
+        self.historyWindowPlacementNoticeDismissed = defaults.bool(forKey: historyWindowPlacementNoticeDismissedKey)
+        self.quickPickerPlacementNoticeDismissed = defaults.bool(forKey: quickPickerPlacementNoticeDismissedKey)
         self.shortcutOpenTarget = ShortcutOpenTargetDefaults.initialTarget(
             storedRawValue: defaults.string(forKey: shortcutOpenTargetKey)
         )
@@ -236,10 +249,13 @@ final class SettingsManager {
         defaults.set(minCaptureLength, forKey: minCaptureLengthKey)
         defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
         defaults.set(showMenuBarIcon, forKey: showMenuBarIconKey)
+        defaults.set(capturePaused, forKey: capturePausedKey)
         defaults.set(keepHistoryWindowOpen, forKey: keepHistoryWindowOpenKey)
         defaults.set(aiTaggingEnabled, forKey: aiTaggingEnabledKey)
         defaults.set(historyWindowPlacement.rawValue, forKey: historyWindowPlacementKey)
         defaults.set(quickPickerPlacement.rawValue, forKey: quickPickerPlacementKey)
+        defaults.set(historyWindowPlacementNoticeDismissed, forKey: historyWindowPlacementNoticeDismissedKey)
+        defaults.set(quickPickerPlacementNoticeDismissed, forKey: quickPickerPlacementNoticeDismissedKey)
         defaults.set(shortcutOpenTarget.rawValue, forKey: shortcutOpenTargetKey)
         defaults.set(clickToPasteInQuickViews, forKey: clickToPasteInQuickViewsKey)
         defaults.set(hapticFeedbackEnabled, forKey: hapticFeedbackKey)
@@ -262,6 +278,11 @@ final class SettingsManager {
         showMenuBarIcon = value
         save()
         NotificationCenter.default.post(name: .yankMenuBarVisibilityChanged, object: nil)
+    }
+
+    func setCapturePaused(_ value: Bool) {
+        capturePaused = value
+        save()
     }
 
     func setSpotlightIndexingEnabled(_ value: Bool) {
@@ -365,8 +386,8 @@ struct AppExclusionSuggestion: Identifiable {
     var id: String { bundleID }
 }
 
-/// Curated, opt-in exclusion suggestions. Users review before enabling and
-/// can add any other app from disk, so the list stays small and high-confidence.
+/// Known password managers. A first launch excludes all of them; users can remove
+/// any and add other apps from disk, so the list stays small and high-confidence.
 let suggestedExclusions: [AppExclusionSuggestion] = [
     AppExclusionSuggestion(bundleID: "com.apple.Passwords", name: "Passwords"),
     AppExclusionSuggestion(bundleID: "com.1password.1password", name: "1Password"),

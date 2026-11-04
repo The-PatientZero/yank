@@ -8,6 +8,8 @@ Paste from Other Apps permission; undecided and explicit-only modes do not inspe
 The Share extension and Save Clipboard App Intent capture only content the user explicitly sends.
 The keyboard is read-only: it inserts a bounded projection of clips already saved by the host app
 and never captures the current clipboard. Concealed and transient generations are not captured.
+When a scene resigns active the app draws a plain cover window above everything else, so the
+app-switcher snapshot holds no clip content.
 
 ## Build
 
@@ -36,8 +38,10 @@ Before a public iOS build or release candidate, run the physical-device matrix i
 | File | Role |
 |---|---|
 | `iOS/YankApp.swift` | App entry; starts sync and Spotlight indexing when available |
+| `iOS/IOSAppRuntime.swift` | Creates the store, settings and sync controller once per process, so a background push can sync without a window |
 | `iOS/HistoryView.swift` | Browse/search synced clips, tap to open details, batch actions |
 | `iOS/ClipStore.swift` | iOS store backed by App Group JSON, conforms to `SyncableStore` |
+| `iOS/WaitingClipsView.swift` | Lists clips that cannot upload yet, with keep-on-this-iPhone and delete |
 | `iOS/KeyboardViewController.swift` | Keyboard extension for inserting recent clips |
 | `iOS/ShareViewController.swift` | Share extension for capturing shared text, URLs, and images |
 | `iOS/CaptureClipIntent.swift` | App Intent for Shortcuts, Action Button, and Back Tap flows |
@@ -54,7 +58,7 @@ The iOS targets are declared in `project.yml`; `Yank.xcodeproj` is generated and
 | `YankShare` | App extension | `com.thepatientzero.yank.share` | Lean core, no CloudKit | Share controller | `iOS/Yank-iOS-Extension.entitlements` |
 
 The keyboard reads a bounded App Group projection, the share extension writes bounded handoff
-entries, and the container app alone owns canonical history, foreground clipboard authorization,
+entries and a bounded keyboard preview of short shared text, and the container app alone owns canonical history, foreground clipboard authorization,
 and CloudKit sync.
 
 ## External Gates

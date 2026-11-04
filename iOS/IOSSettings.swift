@@ -77,6 +77,10 @@ final class IOSSettings {
     }
     var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
     var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
+    /// Device-local and not part of `SyncedSettings`: it never reaches CloudKit or the Mac.
+    var includeHistoryInBackups: Bool {
+        didSet { defaults?.set(includeHistoryInBackups, forKey: SettingsKeys.includeHistoryInBackups) }
+    }
     private(set) var foregroundCaptureMode: IOSForegroundCaptureMode
     var confirmedCaptureMethods: Set<IOSCaptureMethod> {
         didSet {
@@ -99,36 +103,88 @@ final class IOSSettings {
 
     private let defaults: UserDefaults?
 
-    init(defaults: UserDefaults? = AppGroupContext.live()?.defaults) {
+    /// Everything `init` reads from the App Group defaults, so a later re-read gets the same answer.
+    @MainActor
+    private struct StoredValues {
+        let themeID: String
+        let viewMode: ClipViewMode
+        let density: ClipDensity
+        let syncedHistoryLimit: SyncedHistoryLimit
+        let syncEnabled: Bool
+        let spotlightIndexing: Bool
+        let includeHistoryInBackups: Bool
+        let foregroundCaptureMode: IOSForegroundCaptureMode
+        let confirmedCaptureMethods: Set<IOSCaptureMethod>
+        let captureSetupCompleted: Bool
+
+        init(defaults: UserDefaults?) {
+            themeID = defaults?.string(forKey: SettingsKeys.themeID) ?? SettingsDefaults.themeID
+            viewMode = ClipViewMode(
+                rawValue: defaults?.string(forKey: SettingsKeys.viewMode) ?? ""
+            ) ?? SettingsDefaults.viewMode
+            density = ClipDensity(
+                rawValue: defaults?.string(forKey: SettingsKeys.density) ?? ""
+            ) ?? SettingsDefaults.density
+            syncedHistoryLimit = SyncedHistoryLimit(
+                historyLimit: HistoryLimit(
+                    rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
+                ) ?? SettingsDefaults.historyLimit,
+                retentionDays: defaults?.integer(forKey: SettingsKeys.retentionDays)
+                    ?? SettingsDefaults.retentionDays,
+                updatedAt: defaults?.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
+                    ?? .distantPast
+            )
+            syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool
+                ?? SettingsDefaults.syncEnabled
+            spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
+            includeHistoryInBackups = defaults?.bool(forKey: SettingsKeys.includeHistoryInBackups) ?? false
+            foregroundCaptureMode = IOSForegroundCaptureMode(
+                rawValue: defaults?.string(forKey: IOSSettings.foregroundCaptureModeKey) ?? ""
+            ) ?? .undecided
+            confirmedCaptureMethods = Set(
+                defaults?.stringArray(forKey: IOSSettings.confirmedCaptureMethodsKey)?
+                    .compactMap(IOSCaptureMethod.init(rawValue:)) ?? []
+            )
+            captureSetupCompleted =
+                defaults?.object(forKey: IOSSettings.captureSetupCompletedKey) as? Bool ?? false
+        }
+    }
+
+    /// `defaultsMayBeUnreadable` is for a launch before the first unlock, when the defaults can
+    /// read as empty: nothing is seeded over the real values until `reloadAfterDefaultsReadable()`.
+    init(defaults: UserDefaults? = AppGroupContext.live()?.defaults, defaultsMayBeUnreadable: Bool = false) {
         self.defaults = defaults
         self.storageUnavailable = defaults == nil
-        self.themeID = defaults?.string(forKey: SettingsKeys.themeID) ?? SettingsDefaults.themeID
-        self.viewMode = ClipViewMode(
-            rawValue: defaults?.string(forKey: SettingsKeys.viewMode) ?? ""
-        ) ?? SettingsDefaults.viewMode
-        self.density = ClipDensity(
-            rawValue: defaults?.string(forKey: SettingsKeys.density) ?? ""
-        ) ?? SettingsDefaults.density
-        self.syncedHistoryLimit = SyncedHistoryLimit(
-            historyLimit: HistoryLimit(
-                rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
-            ) ?? SettingsDefaults.historyLimit,
-            retentionDays: defaults?.integer(forKey: SettingsKeys.retentionDays)
-                ?? SettingsDefaults.retentionDays,
-            updatedAt: defaults?.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
-                ?? .distantPast
-        )
-        self.syncEnabled = defaults?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
-        self.spotlightIndexing = defaults?.bool(forKey: SettingsKeys.spotlightIndexing) ?? false
-        self.foregroundCaptureMode = IOSForegroundCaptureMode(
-            rawValue: defaults?.string(forKey: Self.foregroundCaptureModeKey) ?? ""
-        ) ?? .undecided
-        self.confirmedCaptureMethods = Set(
-            defaults?.stringArray(forKey: Self.confirmedCaptureMethodsKey)?
-                .compactMap(IOSCaptureMethod.init(rawValue:)) ?? []
-        )
-        self.captureSetupCompleted =
-            defaults?.object(forKey: Self.captureSetupCompletedKey) as? Bool ?? false
+        let stored = StoredValues(defaults: defaults)
+        self.themeID = stored.themeID
+        self.viewMode = stored.viewMode
+        self.density = stored.density
+        self.syncedHistoryLimit = stored.syncedHistoryLimit
+        self.syncEnabled = stored.syncEnabled
+        self.spotlightIndexing = stored.spotlightIndexing
+        self.includeHistoryInBackups = stored.includeHistoryInBackups
+        self.foregroundCaptureMode = stored.foregroundCaptureMode
+        self.confirmedCaptureMethods = stored.confirmedCaptureMethods
+        self.captureSetupCompleted = stored.captureSetupCompleted
+        if !defaultsMayBeUnreadable {
+            seedDefaults()
+        }
+    }
+
+    /// Reads every setting again, then seeds the keys that are really absent. For a launch that
+    /// started before the first unlock, once the defaults can be read.
+    func reloadAfterDefaultsReadable() {
+        let stored = StoredValues(defaults: defaults)
+        themeID = stored.themeID
+        viewMode = stored.viewMode
+        density = stored.density
+        syncedHistoryLimit = stored.syncedHistoryLimit
+        syncEnabled = stored.syncEnabled
+        spotlightIndexing = stored.spotlightIndexing
+        includeHistoryInBackups = stored.includeHistoryInBackups
+        foregroundCaptureMode = stored.foregroundCaptureMode
+        confirmedCaptureMethods = stored.confirmedCaptureMethods
+        captureSetupCompleted = stored.captureSetupCompleted
         seedDefaults()
     }
 

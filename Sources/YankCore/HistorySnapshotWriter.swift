@@ -11,6 +11,7 @@ private enum HistorySnapshotWriterError: LocalizedError {
     }
 }
 
+// Every access to mutable state holds `lock`.
 private final class HistorySnapshotWriteCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var completedID: UInt64 = 0
@@ -35,6 +36,7 @@ private final class HistorySnapshotWriteCompletion: @unchecked Sendable {
 /// debounced when a newer one supersedes it, both receipts resolve from the coalesced
 /// write; once dispatched, a receipt remains tied to that specific write result.
 final class HistorySnapshotWriteReceipt: @unchecked Sendable {
+    // Every access to mutable state holds `lock`.
     private let lock = NSLock()
     private var result: Result<Void, any Error>?
     private var continuations: [CheckedContinuation<Result<Void, any Error>, Never>] = []
@@ -123,6 +125,7 @@ final class HistorySnapshotWriter {
     @discardableResult
     func scheduleSave(
         items: [ClipboardItem],
+        preservedElements: [HeldHistoryElement] = [],
         tombstones: [UUID: Date],
         keyboardProjectionURL: URL? = nil,
         afterSuccessfulWrite: (@Sendable () -> Void)? = nil,
@@ -136,6 +139,7 @@ final class HistorySnapshotWriter {
             id: writeID,
             operation: makeWriteOperation(
                 items: items,
+                preservedElements: preservedElements,
                 tombstones: tombstones,
                 keyboardProjectionURL: keyboardProjectionURL,
                 afterSuccessfulWrite: afterSuccessfulWrite,
@@ -163,7 +167,8 @@ final class HistorySnapshotWriter {
     func scheduleKeyboardProjection(
         items: [ClipboardItem],
         to url: URL,
-        onError: (@Sendable (Error) -> Void)? = nil
+        onError: (@Sendable (Error) -> Void)? = nil,
+        afterWrite: (@Sendable () -> Void)? = nil
     ) {
         queue.async {
             do {
@@ -171,11 +176,13 @@ final class HistorySnapshotWriter {
             } catch {
                 onError?(error)
             }
+            afterWrite?()
         }
     }
 
     private func makeWriteOperation(
         items: [ClipboardItem],
+        preservedElements: [HeldHistoryElement],
         tombstones: [UUID: Date],
         keyboardProjectionURL: URL?,
         afterSuccessfulWrite: (@Sendable () -> Void)?,
@@ -198,15 +205,16 @@ final class HistorySnapshotWriter {
                     tombstonesURL: tombstonesURL
                 )
 
-                let envelopeData = try HistorySnapshotTransaction.makeEnvelopeData(
+                let snapshot = try HistorySnapshotTransaction.encodeSnapshot(
                     items: items,
+                    preservedElements: preservedElements,
                     tombstones: tombstones,
                     writeOptions: writeOptions,
                     filePermissions: filePermissions,
                     fileProtection: fileProtection
                 )
                 try HistorySnapshotTransaction.stage(
-                    envelopeData,
+                    snapshot.envelopeData,
                     at: transactionURL,
                     writeOptions: writeOptions,
                     filePermissions: filePermissions,
@@ -214,9 +222,17 @@ final class HistorySnapshotWriter {
                 )
                 try failureInjector?(.transactionStaged)
 
-                try HistorySnapshotTransaction.replayIfPresent(
+                // The staged envelope is the crash-safe checkpoint; the bytes below are the ones
+                // just encoded for it, so they are written as they are instead of being read
+                // back and parsed again. An interrupted write still recovers from the envelope.
+                try HistorySnapshotTransaction.replace(
+                    historyData: snapshot.historyData,
+                    tombstonesData: snapshot.tombstonesData,
                     historyURL: historyURL,
                     tombstonesURL: tombstonesURL,
+                    writeOptions: writeOptions.union(.atomic),
+                    filePermissions: filePermissions,
+                    fileProtection: fileProtection,
                     afterCanonicalWrite: failureInjector
                 )
             } catch {
@@ -248,6 +264,33 @@ final class HistorySnapshotWriter {
         guard writeID > 0 else { return .success(()) }
         queue.sync {}   // barrier: wait for the serial queue to finish the write
         return completion.result(for: writeID) ?? .failure(HistorySnapshotWriterError.incompleteWrite)
+    }
+
+    /// Dispatch the pending write at once without waiting for the queue. Unlike `flush()` this
+    /// never blocks the caller, so it is what an async caller uses before awaiting a receipt.
+    func dispatchNow() {
+        debounceTask?.cancel()
+        dispatchPending()
+    }
+
+    /// Resolves once the in-memory state a sync pull just applied is on disk, or throws so the
+    /// caller's checkpoint stays where it was. `schedule` writes the current state and throws
+    /// when it cannot. When the pull changed nothing, no write is scheduled unless the newest
+    /// write failed: a pull that changed nothing must still not report success over a state that
+    /// never reached the disk, so it retries until one write succeeds.
+    func awaitDurableSnapshot(
+        stateChanged: Bool,
+        latestReceipt: HistorySnapshotWriteReceipt?,
+        schedule: () throws -> HistorySnapshotWriteReceipt
+    ) async throws {
+        if !stateChanged {
+            guard let latestReceipt else { return }
+            dispatchNow()
+            if case .success = await latestReceipt.value() { return }
+        }
+        let receipt = try schedule()
+        dispatchNow()
+        try await receipt.value().get()
     }
 
     private func dispatchPending() {

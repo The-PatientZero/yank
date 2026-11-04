@@ -91,6 +91,17 @@ enum MotionCurve {
     static let quartOut: (x1: Double, y1: Double, x2: Double, y2: Double) = (0.25, 1, 0.5, 1)
 }
 
+/// Seconds for each named animation, shared by macOS `YankMotion` and iOS `IOSMotion` so the
+/// same transition takes the same time on both. Constants only: this file is also compiled into
+/// the extensions.
+enum MotionDuration {
+    static let instant = 0.10
+    static let quick = 0.14
+    static let state = 0.20
+    static let present = 0.24
+    static let navigation = 0.28
+}
+
 // MARK: - Type scale (aligned to native macOS control metrics)
 
 enum TypeScale {

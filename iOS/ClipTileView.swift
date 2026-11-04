@@ -10,6 +10,9 @@ struct ClipTileView: View {
     let density: ClipDensity
     var isHighlighted = false
     var isSelected = false
+    /// Keeps a touch-sized slot free at the bottom-trailing corner for the Copy button that the
+    /// history list lays over the tile, so it never covers the footer.
+    var reservesCopySlot = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -27,13 +30,20 @@ struct ClipTileView: View {
     private var liftRole: ClipTileLiftRole { isHighlighted ? .raised : .none }
 
     private var previewLines: Int { metrics.previewLines }
+    private var contentInset: CGFloat { isGallery ? Space.lg : Space.md }
+
+    /// Where the history list places the Copy button over a tile: inside the tile's content inset.
+    static func copyButtonInsets(mode: ClipViewMode) -> EdgeInsets {
+        let inset = mode == .gallery ? Space.lg : Space.md
+        return EdgeInsets(top: 0, leading: 0, bottom: inset, trailing: inset)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             preview.frame(maxWidth: .infinity, alignment: .leading)
             footer
         }
-        .padding(isGallery ? Space.lg : Space.md)
+        .padding(contentInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         // `minHeight` (not a fixed height) so a tile keeps its even baseline at normal sizes
         // but can grow at the accessibility text sizes instead of clipping a glyph. `nil`
@@ -138,13 +148,21 @@ struct ClipTileView: View {
         }
     }
 
+    /// Metadata ink: the selected variant when a selection or highlight fill sits behind the text.
+    private var metadataColor: Color {
+        isSelected || isHighlighted ? .yankTextTertiarySelected : .yankTextTertiary
+    }
+
     private var footer: some View {
         HStack(spacing: Space.xs) {
-            Text(kind.label).font(.yank(.caption2, weight: .medium)).foregroundStyle(Color.yankTextTertiary)
+            Text(kind.label).font(.yank(.caption2, weight: .medium)).foregroundStyle(metadataColor)
             RichContentBadge(state: item.richContentState, font: .yank(.caption2))
             Spacer(minLength: 0)
             ClipStatusBadge(item: item)
-            Text(item.relativeAge).font(.yank(.caption2)).foregroundStyle(Color.yankTextTertiary)
+            Text(item.relativeAge).font(.yank(.caption2)).foregroundStyle(metadataColor)
+            if reservesCopySlot {
+                Color.clear.frame(width: ControlTarget.touch, height: ControlTarget.touch)
+            }
         }
     }
 }

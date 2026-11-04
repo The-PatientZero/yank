@@ -22,10 +22,17 @@ final class ClipboardWatcher {
     @ObservationIgnored private let captureQueue = SerialCaptureQueue<PreparedClipboardCapture>()
     private var changeSuppression = PasteboardChangeSuppression()
 
+    /// Apps that were in front since the previous poll. The excluded-app check reads this window
+    /// instead of only the app in front when the poll notices a change, so switching away from an
+    /// excluded app right after copying cannot attribute the copy to the next app.
+    @ObservationIgnored private var lastActivatedBundleID: String?
+    @ObservationIgnored private var recentFrontmostBundleIDs: Set<String> = []
+
     /// Some apps re-assert pasteboard ownership with byte-identical content (lazy-promise
     /// re-declares, activation rewrites), bumping `changeCount` without a user copy; durable
     /// dedup misses those for rich/image/file captures, so drop repeats of the last-applied content.
-    private var lastContentFingerprint: ClipboardContentFingerprint?
+    /// Plain text is dropped only inside a short window, so deliberate repeat copies still count.
+    private var repeatGuard = ClipboardRepeatGuard()
 
     /// Reports eligible text occurrences before durable-history deduplication.
     var onEligibleTextCopy: ((Int, String, Date) -> Void)?
@@ -37,8 +44,6 @@ final class ClipboardWatcher {
     private var sequenceCollectionActive = false
 
     // Size thresholds for text handling
-    private nonisolated static let inlineTextLimit = 50_000
-    private nonisolated static let previewLength = 500
     nonisolated static let maxImageInputBytes = 32 * 1024 * 1024
     nonisolated static let maxRasterPixels: Int64 = 40_000_000
 
@@ -62,10 +67,35 @@ final class ClipboardWatcher {
             name: .yankIgnoreNextChange,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleApplicationActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+        resetFrontmostWindow()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    @objc private func handleApplicationActivated(_ notification: Notification) {
+        guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication,
+              let bundleID = application.bundleIdentifier else {
+            return
+        }
+        lastActivatedBundleID = bundleID
+        recentFrontmostBundleIDs.insert(bundleID)
+    }
+
+    /// Restarts the window from the app in front now. Called when watching starts or resumes,
+    /// because the activation observer keeps running while stopped or paused.
+    private func resetFrontmostWindow() {
+        lastActivatedBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        recentFrontmostBundleIDs = lastActivatedBundleID.map { [$0] } ?? []
     }
 
     @objc private func handleIgnoreNextChange(_ notification: Notification) {
@@ -78,6 +108,7 @@ final class ClipboardWatcher {
 
     func startWatching() {
         wantsWatching = true
+        resetFrontmostWindow()
         installTimerIfNeeded()
     }
 
@@ -116,6 +147,7 @@ final class ClipboardWatcher {
     func resume() {
         isPaused = false
         lastChangeCount = pasteboard.changeCount
+        resetFrontmostWindow()
         installTimerIfNeeded()
     }
 
@@ -143,6 +175,11 @@ final class ClipboardWatcher {
     func checkClipboard() {
         guard !isPaused else { return }
 
+        // The window covers the time since the previous poll, so it restarts on every poll, even
+        // one that sees no change or returns early below. A skipped copy then cannot affect the next.
+        let windowBundleIDs = recentFrontmostBundleIDs
+        recentFrontmostBundleIDs = lastActivatedBundleID.map { [$0] } ?? []
+
         let currentChangeCount = pasteboard.changeCount
 
         guard currentChangeCount != lastChangeCount else { return }
@@ -167,7 +204,12 @@ final class ClipboardWatcher {
         // Privacy guard: never record concealed/secret copies or excluded apps.
         let settings = captureSettings
         let policy = CapturePolicy(excludedBundleIDs: settings.excludedBundleIDs)
-        guard policy.decide(frontmostBundleID: observedBundleID, pasteboardTypes: []) == .capture else {
+        var candidateBundleIDs = windowBundleIDs
+        if let observedBundleID { candidateBundleIDs.insert(observedBundleID) }
+        if let excludedBundleID = policy.excludedBundleID(among: candidateBundleIDs) {
+            Log.capture.info(
+                "Skipping copy made while an excluded app was in front: \(excludedBundleID, privacy: .public)"
+            )
             return
         }
 
@@ -178,7 +220,8 @@ final class ClipboardWatcher {
                 guard !Task.isCancelled,
                       let snapshot = PasteboardPayloadMaterializer.materialize(
                           pasteboardName: pasteboardName,
-                          expectedGeneration: currentChangeCount
+                          expectedGeneration: currentChangeCount,
+                          excludedSourceBundleIDs: settings.excludedBundleIDs
                       ),
                       !Task.isCancelled else {
                     return nil
@@ -288,12 +331,7 @@ private extension ClipboardWatcher {
             return .unsupported
         }
         return .text(
-            TextCapturePlan.make(
-                for: text,
-                inlineLimit: inlineTextLimit,
-                previewLength: previewLength,
-                maxStoredBytes: SyncBlobKind.text.maximumBytes
-            ),
+            TextCapturePlan.make(for: text),
             originalText: text,
             fingerprint: .text(text),
             richArchive: richArchive,
@@ -329,12 +367,27 @@ private extension ClipboardWatcher {
     private func apply(_ capture: PreparedClipboardCapture) async {
         guard !Task.isCancelled else { return }
 
+        let resetRevision = store.captureResetRevision
+
         switch capture {
         case .fileText(let summary, let fingerprint, let sourceApp, let observedAt):
-            guard markContentFingerprintIfNew(fingerprint) else { return }
-            store.add(
+            guard !isRepeat(
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision,
+                usesWindow: false
+            ) else { return }
+            let saved = store.add(
                 ClipboardItem.text(summary, sourceApp: sourceApp),
                 observedAt: observedAt
+            )
+            recordApplied(
+                saved,
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision
             )
 
         case .text(
@@ -346,24 +399,52 @@ private extension ClipboardWatcher {
             let generation,
             let observedAt
         ):
-            guard markContentFingerprintIfNew(fingerprint) else { return }
+            var isPlainInline = false
+            if case .inline = plan.storage { isPlainInline = archive == nil }
+            guard !isRepeat(
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision,
+                usesWindow: isPlainInline
+            ) else { return }
             onEligibleTextCopy?(generation, originalText, observedAt)
-            await applyTextCapture(
+            let saved = await applyTextCapture(
                 plan,
                 richArchive: archive,
                 sourceApp: sourceApp,
                 observedAt: observedAt
             )
+            recordApplied(
+                saved,
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision
+            )
 
         case .image(let pngData, let fingerprint, let archive, let sourceApp, let observedAt):
-            guard markContentFingerprintIfNew(fingerprint) else { return }
+            guard !isRepeat(
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision,
+                usesWindow: false
+            ) else { return }
             var item = ClipboardItem(type: .image, sourceApp: sourceApp)
             item.hasRichContent = archive != nil
-            await store.addCaptured(
+            let saved = await store.addCaptured(
                 item,
                 primaryBlob: .image(pngData),
                 richArchive: archive,
                 observedAt: observedAt
+            )
+            recordApplied(
+                saved,
+                fingerprint,
+                sourceApp: sourceApp,
+                observedAt: observedAt,
+                resetRevision: resetRevision
             )
 
         case .unsupported:
@@ -371,10 +452,37 @@ private extension ClipboardWatcher {
         }
     }
 
-    private func markContentFingerprintIfNew(_ fingerprint: ClipboardContentFingerprint) -> Bool {
-        guard fingerprint != lastContentFingerprint else { return false }
-        lastContentFingerprint = fingerprint
-        return true
+    private func isRepeat(
+        _ fingerprint: ClipboardContentFingerprint,
+        sourceApp: String?,
+        observedAt: Date,
+        resetRevision: Int,
+        usesWindow: Bool
+    ) -> Bool {
+        repeatGuard.isRepeat(
+            fingerprint,
+            sourceApp: sourceApp,
+            observedAt: observedAt,
+            resetRevision: resetRevision,
+            usesWindow: usesWindow
+        )
+    }
+
+    /// A capture that was not saved leaves nothing to suppress, so a retry is never dropped.
+    private func recordApplied(
+        _ saved: Bool,
+        _ fingerprint: ClipboardContentFingerprint,
+        sourceApp: String?,
+        observedAt: Date,
+        resetRevision: Int
+    ) {
+        guard saved else { return }
+        repeatGuard.recordApplied(
+            fingerprint,
+            sourceApp: sourceApp,
+            observedAt: observedAt,
+            resetRevision: resetRevision
+        )
     }
 
     private func applyTextCapture(
@@ -382,13 +490,13 @@ private extension ClipboardWatcher {
         richArchive: PasteboardArchive?,
         sourceApp: String?,
         observedAt: Date
-    ) async {
+    ) async -> Bool {
         let isRich = richArchive != nil
         switch plan.storage {
         case .inline(let content):
             var item = ClipboardItem.text(content, sourceApp: sourceApp)
             item.hasRichContent = isRich
-            await store.addCaptured(
+            return await store.addCaptured(
                 item,
                 primaryBlob: nil,
                 richArchive: richArchive,
@@ -403,7 +511,7 @@ private extension ClipboardWatcher {
                 searchIndex: searchIndex
             )
             item.hasRichContent = isRich
-            await store.addCaptured(
+            return await store.addCaptured(
                 item,
                 primaryBlob: .text(fullText),
                 richArchive: richArchive,
@@ -416,7 +524,7 @@ private extension ClipboardWatcher {
                 sourceApp: sourceApp
             )
             item.hasRichContent = isRich
-            await store.addCaptured(
+            return await store.addCaptured(
                 item,
                 primaryBlob: nil,
                 richArchive: richArchive,

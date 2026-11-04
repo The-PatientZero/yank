@@ -1,18 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Paged text-loading state for a single large clip.
-struct ChunkedTextState {
-    var visibleText: String = ""
-    var totalBytes: Int = 0
-    var loadedCharCount: Int = 0
-    var reachedEOF: Bool = true
-    var isLoadingMore: Bool = false
-    static let chunkSize = 2_000
-    static let initialChars = 2_000
-    var hasMore: Bool { !reachedEOF && loadedCharCount >= Self.initialChars }
-}
-
 /// Owns the focused clip's preview / OCR / tag-input state and the async loading
 /// that backs it. Keeping it here lets `ClipDetailView` stay a pure renderer while
 /// the coordinator drives detail actions (add tag, save image, OCR) from its key monitor.
@@ -20,40 +8,55 @@ struct ChunkedTextState {
 @Observable
 final class ClipDetailModel {
     var previewImage: NSImage?
-    var chunkedText = ChunkedTextState()
+    var chunkedText = ChunkedTextPaging()
     var isExtractingText = false
+    /// The clip whose last extraction found no usable text; cleared when focus moves or a new run starts.
+    private(set) var noTextFoundItemID: UUID?
     var itemSize: Int?
     var showTagInput = false
     var tagInputText = ""
 
     private let store: ClipboardStore
     private let previewMaxPixel = 1_200
+    /// Identifies the extraction run whose result may still update the UI; `reset()` invalidates it.
+    private var activeExtractionRun: UUID?
+
+    /// Shown (and announced) when text recognition returns nothing, including when it failed.
+    static let noTextFoundMessage = "Couldn't read any text from this image."
 
     init(store: ClipboardStore) { self.store = store }
 
     func reset() {
         previewImage = nil
-        chunkedText = ChunkedTextState()
+        chunkedText = ChunkedTextPaging()
         isExtractingText = false
+        noTextFoundItemID = nil
+        activeExtractionRun = nil
         itemSize = nil
         showTagInput = false
         tagInputText = ""
     }
 
     /// Load the preview for the newly focused item (resets transient state first).
-    func load(_ item: ClipboardItem?) async {
+    /// `beginTagInput` opens the tag field in the same step as the reset, before any await, so
+    /// the field exists on the first frame and a slow load can never open it for another clip.
+    func load(_ item: ClipboardItem?, beginTagInput: Bool = false) async {
         reset()
+        showTagInput = beginTagInput
         guard let item = item else { return }
+        chunkedText.begin(itemID: item.id)
         itemSize = store.itemSize(for: item)
         switch item.type {
         case .image:
-            previewImage = await loadImage(item)
+            let image = await loadImage(item)
+            // A late preview must not replace the newly focused clip's.
+            guard !Task.isCancelled, chunkedText.itemID == item.id else { return }
+            previewImage = image
         case .text:
             if item.isFileBacked {
                 await loadInitialChunk(item)
             } else {
-                chunkedText.visibleText = item.textContent ?? ""
-                chunkedText.reachedEOF = true
+                chunkedText.showInline(item.textContent ?? "")
             }
         }
     }
@@ -67,44 +70,52 @@ final class ClipDetailModel {
     }
 
     private func loadInitialChunk(_ item: ClipboardItem) async {
-        chunkedText.isLoadingMore = true
-        let textURL = store.blobURL(for: item)
-        let result = await Task.detached(priority: .userInitiated) {
-            ClipboardStore.textChunk(for: item, textURL: textURL, charCount: ChunkedTextState.initialChars)
-        }.value
-        if let result = result {
-            chunkedText.visibleText = result.text
-            chunkedText.totalBytes = result.totalBytes
-            chunkedText.loadedCharCount = result.text.count
-            chunkedText.reachedEOF = result.reachedEOF
-        }
-        chunkedText.isLoadingMore = false
+        guard let request = chunkedText.firstRequest() else { return }
+        await read(request, of: item)
     }
 
     func loadNextChunk(_ item: ClipboardItem) async {
-        guard !chunkedText.isLoadingMore && chunkedText.hasMore else { return }
-        chunkedText.isLoadingMore = true
-        let nextCharCount = chunkedText.loadedCharCount + ChunkedTextState.chunkSize
+        guard let request = chunkedText.nextRequest() else { return }
+        await read(request, of: item)
+    }
+
+    /// Reads one page off the main thread and hands it back; the paging state drops a page that
+    /// arrives after focus moved to another clip.
+    private func read(_ request: ChunkedTextPaging.Request, of item: ClipboardItem) async {
         let textURL = store.blobURL(for: item)
-        let result = await Task.detached(priority: .userInitiated) {
-            ClipboardStore.textChunk(for: item, textURL: textURL, charCount: nextCharCount)
+        let page = await Task.detached(priority: .userInitiated) {
+            ClipboardStore.textChunk(
+                for: item,
+                textURL: textURL,
+                charCount: request.charCount,
+                byteOffset: request.byteOffset
+            )
         }.value
-        if let result = result {
-            chunkedText.visibleText = result.text
-            chunkedText.totalBytes = result.totalBytes
-            chunkedText.loadedCharCount = result.text.count
-            chunkedText.reachedEOF = result.reachedEOF
-        }
-        chunkedText.isLoadingMore = false
+        chunkedText.apply(page, for: request.itemID, at: request.byteOffset)
     }
 
     func extractText(from item: ClipboardItem) async {
         // Convert on the main actor so only the Sendable CGImage crosses to the OCR task.
         guard let cgImage = previewImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        let run = UUID()
+        activeExtractionRun = run
         isExtractingText = true
-        let text = await OCRService.shared.recognizeText(from: cgImage) ?? "No text found in this image."
+        noTextFoundItemID = nil
+        let text = await OCRService.shared.recognizeText(from: cgImage)
+        // Usable text is stored for the clip it was read from even if focus has moved on.
         store.setOCRText(text, for: item)
+        // Focus moving to another clip reset this state already; a late result must not restore it.
+        guard activeExtractionRun == run else { return }
+        activeExtractionRun = nil
         isExtractingText = false
+        if text.map(ClipboardItem.isUsableOCRText) != true {
+            noTextFoundItemID = item.id
+            NSAccessibility.post(
+                element: NSApp as Any,
+                notification: .announcementRequested,
+                userInfo: [.announcement: Self.noTextFoundMessage, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+            )
+        }
     }
 
     func saveImageToDisk(_ item: ClipboardItem) {
@@ -125,7 +136,7 @@ final class ClipDetailModel {
     }
 
     func commitTag(to item: ClipboardItem) {
-        let normalized = TagChip.normalize(tagInputText)
+        let normalized = TagNormalization.normalize(tagInputText)
         if !normalized.isEmpty { store.addTag(normalized, to: item) }
         cancelTagInput()
     }
@@ -137,9 +148,7 @@ final class ClipDetailModel {
     }
 
     func suggestions(for item: ClipboardItem) -> [String] {
-        guard !tagInputText.isEmpty else { return [] }
-        return TagSuggestions.matching(searchText: "#" + tagInputText, in: store.allTags)
-            .filter { !item.tags.contains($0) }
+        TagSuggestions.suggestions(forInput: tagInputText, in: store.allTags, excluding: item.tags)
     }
 
     func formattedBytes(_ bytes: Int) -> String {

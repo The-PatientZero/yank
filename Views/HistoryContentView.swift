@@ -46,12 +46,23 @@ struct HistoryContentView: View {
     /// for the "shown" notification.
     @State var pendingOpenSteps: Set<OpenStep>
 
+    /// The clip this open should select and scroll to (a tapped Spotlight result), adopted from
+    /// `AppStatus` by the first open step that needs it and dropped once every step has run, so a
+    /// later view-mode change or plain open never jumps back to it.
+    @State var openFocusID: UUID?
+    /// While a focus request resets the search, the clip the search-reset selection must keep.
+    @State private var pendingFocusID: UUID?
+
     /// Each receiver of the key event consumes only its own step, so handler order never matters.
     enum OpenStep: Hashable {
         case selectDefault
         case scrollStream
         case scrollSplitRail
     }
+
+    /// The window opened while Settings was showing, so the history screen has open steps to run
+    /// once it is back.
+    @State private var openedOverSettings = false
 
     @State var selectedIDs: Set<UUID> = []
     @State var selectionAnchor: UUID?
@@ -64,6 +75,12 @@ struct HistoryContentView: View {
 
     // Space bar peeks the focused clip.
     @State var showQuickLook = false
+    /// The clip an Add Tag request is waiting to open the tag field for; consumed by the detail load.
+    @State var pendingTagInput: UUID?
+    /// Bumped on every Add Tag request so the detail load re-runs even when nothing else changed.
+    @State var tagRequestToken = 0
+    /// The peek was opened only to show the tag field, so it closes together with the field.
+    @State var tagPeekOwned = false
 
     @State var searchTextDebounced = ""
     @State private var searchDebounceTask: Task<Void, Never>?
@@ -125,7 +142,49 @@ struct HistoryContentView: View {
     }
 
     private var defaultSelectedItem: ClipboardItem? {
+        if let pendingFocusID, let focused = filteredItems.first(where: { $0.id == pendingFocusID }) {
+            return focused
+        }
         return filteredItems.first(where: { !$0.isPinned }) ?? filteredItems.first
+    }
+
+    /// Takes the requested clip from `AppStatus` once and keeps it for the open steps. Safe to call
+    /// from every step: the first caller adopts it, the rest see the same value.
+    func adoptOpenFocus() {
+        guard openFocusID == nil, let requested = appStatus?.historyFocusClipID else { return }
+        appStatus?.historyFocusClipID = nil
+        openFocusID = requested
+    }
+
+    /// The clip to select at the end of an open: the requested one when it is in the list,
+    /// otherwise the newest-clip rule.
+    private func openSelectionTarget() -> UUID? {
+        adoptOpenFocus()
+        if let openFocusID, filteredItems.contains(where: { $0.id == openFocusID }) { return openFocusID }
+        return HistoryOpeningPosition.selectionID(in: filteredItems)
+    }
+
+    /// A clip is requested while the window is already open and key: no open step follows, so
+    /// reset the search and filter, then select and scroll to it directly.
+    private func focusRequestedClip() {
+        guard let clipID = appStatus?.historyFocusClipID else { return }
+        appStatus?.historyFocusClipID = nil
+        // A changed search text runs the search-reset selection, which must land on this clip too.
+        pendingFocusID = searchText.isEmpty ? nil : clipID
+        searchDebounceTask?.cancel()
+        searchText = ""
+        searchTextDebounced = ""
+        activeTagFilter = nil
+        Task { @MainActor in
+            // Wait one turn so the cleared search has been applied to the list.
+            await Task.yield()
+            guard filteredItems.contains(where: { $0.id == clipID }) else {
+                pendingFocusID = nil
+                return
+            }
+            scrollTrigger = true
+            updateSelection { $0.selectDefault(in: filteredItems, preferredID: clipID) }
+        }
     }
 
     /// All selected items in filtered list order
@@ -158,6 +217,8 @@ struct HistoryContentView: View {
                     store: store,
                     axPermission: axPermission,
                     appStatus: appStatus,
+                    onDeleteClip: { deleteClipWithUndo($0) },
+                    onUndoDelete: { _ = undoPendingDelete() },
                     manager: settings
                 )
                     .transition(screenTransition(edge: .trailing))
@@ -172,10 +233,21 @@ struct HistoryContentView: View {
             if !newValue { keepWindowOpen = settings.keepHistoryWindowOpen }
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankOpenSettings)) { _ in setSettings(true) }
-        .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in showSettings = false }
+        // These live here, not on the history screen, which is gone while Settings is showing.
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
+            resetForNewShow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryFocusRequested)) { _ in
+            focusRequestedClip()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
+            guard showSettings else { return }
+            openedOverSettings = true
+            showSettings = false
+        }
     }
 
-    private func setSettings(_ on: Bool) {
+    func setSettings(_ on: Bool) {
         withAnimation(YankMotion.navigation(reduceMotion)) { showSettings = on }
     }
 
@@ -187,6 +259,9 @@ struct HistoryContentView: View {
         VStack(spacing: 0) {
             if store.storageUnavailable {
                 StorageUnavailableBanner()
+            }
+            if store.heldClipCount > 0 {
+                HeldClipsNotice(count: store.heldClipCount)
             }
 
             HistorySearchHeader(
@@ -220,16 +295,16 @@ struct HistoryContentView: View {
                 selectionCount: selectedIDs.count,
                 clickToPaste: singleClickPastesInCurrentLayout,
                 hasPendingUndo: store.pendingDeletion != nil,
-                focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.ocrText != nil,
+                focusedItemHasOCR: selectedItem?.type == .image && selectedItem?.recognizedText != nil,
                 quickLookAvailable: searchText.isEmpty && !detail.showTagInput && selectedItem != nil,
                 axUntrusted: axUntrusted,
-                onGrantAccess: { axPermission?.openSettingsAndAwaitGrant() }
+                onGrantAccess: { axPermission?.grantAccess() }
             )
 
             if let pending = store.pendingDeletion {
                 UndoDeleteBanner(
                     message: undoMessage(count: pending.items.count),
-                    onUndo: undoPendingDelete
+                    onUndo: { undoPendingDelete() }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -269,15 +344,26 @@ struct HistoryContentView: View {
 
     private var historyScreen: some View {
         historyScreenBody
+        .onAppear {
+            // The open notification went out while this screen was not on screen, so its open
+            // steps (select and scroll to the newest clip) run now that it can hear it again.
+            guard openedOverSettings else { return }
+            openedOverSettings = false
+            Task { @MainActor in
+                await Task.yield()
+                NotificationCenter.default.post(name: .yankWindowDidOpen, object: nil)
+            }
+        }
         .onChange(of: searchText) { _, newValue in
             showTagAutocomplete = newValue.hasPrefix("#")
             searchDebounceTask?.cancel()
-            if newValue.hasPrefix("#") || newValue.isEmpty {
+            if ClipQuery.appliesWithoutDebounce(newValue) {
                 searchTextDebounced = newValue
                 updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
+                pendingFocusID = nil
             } else {
                 searchDebounceTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(120))
+                    do { try await Task.sleep(for: ClipQuery.searchDebounce) } catch { return }
                     searchTextDebounced = newValue
                     updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
                 }
@@ -296,31 +382,22 @@ struct HistoryContentView: View {
             }
         }
         .onChange(of: masonryKey) { _, _ in rebuildMasonryIfNeeded() }
-        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
-            searchText = ""
-            searchTextDebounced = ""
-            activeTagFilter = nil
-            pendingOpenSteps = Self.openSteps(for: viewMode)
+        .onChange(of: pendingOpenSteps.isEmpty) { _, allRun in
+            if allRun { openFocusID = nil }
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
-            axPermission?.refresh()
-            keepWindowOpen = settings.keepHistoryWindowOpen
-            store.commitPendingDeleteIfNeeded()
-            showTagAutocomplete = false
-            showQuickLook = false
-            detail.cancelTagInput()
-            if pendingOpenSteps.remove(.selectDefault) != nil {
-                let targetID = HistoryOpeningPosition.selectionID(in: filteredItems)
-                scrollTrigger = false
-                updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
-            }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(50))
+            prepareOpenedWindow()
+        }
+        .task(id: detailLoadKey) { await loadDetail() }
+        .onChange(of: detail.showTagInput) { _, isOpen in
+            // Every way of closing the field (Return, Esc, Cancel, a suggestion) ends here, so a
+            // peek opened only for tagging goes with it and focus always returns to the search field.
+            guard !isOpen else { return }
+            if tagPeekOwned {
+                dismissQuickLook()
+            } else {
                 isSearchFocused = true
             }
-        }
-        .task(id: detailLoadKey) {
-            if showQuickLook || viewMode == .split { await detail.load(selectedItem) }
         }
         .background(GlobalKeyMonitor(handlers: keyboardHandlers))
         .tint(AppTheme.from(id: themeID).foreground)
@@ -335,11 +412,49 @@ struct HistoryContentView: View {
         }
     }
 
+    private func resetForNewShow() {
+        searchText = ""
+        searchTextDebounced = ""
+        activeTagFilter = nil
+        openFocusID = nil
+        pendingFocusID = nil
+        pendingOpenSteps = Self.openSteps(for: viewMode)
+    }
+
+    private func prepareOpenedWindow() {
+        axPermission?.refresh()
+        keepWindowOpen = settings.keepHistoryWindowOpen
+        store.commitPendingDeleteIfNeeded()
+        showTagAutocomplete = false
+        showQuickLook = false
+        tagPeekOwned = false
+        pendingTagInput = nil
+        detail.cancelTagInput()
+        if pendingOpenSteps.remove(.selectDefault) != nil {
+            let targetID = openSelectionTarget()
+            scrollTrigger = false
+            updateSelection { $0.selectDefault(in: filteredItems, preferredID: targetID) }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            isSearchFocused = true
+        }
+    }
+
+    private func loadDetail() async {
+        let tagRequest = pendingTagInput
+        pendingTagInput = nil
+        guard showQuickLook || viewMode == .split else { return }
+        let item = selectedItem
+        let beginsTagInput = tagRequest != nil && tagRequest == item?.id
+        await detail.load(item, beginTagInput: beginsTagInput)
+    }
+
     private var detailLoadKey: String {
         let quickLook = showQuickLook ? "1" : "0"
         let mode = viewMode.rawValue
         let selection = selectedItem?.id.uuidString ?? ""
-        return quickLook + "-" + mode + "-" + selection
+        return quickLook + "-" + mode + "-" + selection + "-" + String(tagRequestToken)
     }
 
     private var quickLookTransition: AnyTransition {
@@ -350,7 +465,13 @@ struct HistoryContentView: View {
         reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity)
     }
 
+    /// The single way the peek closes: the scrim, the close button, Esc and the tag flow all
+    /// come through here, so the tag field never outlives the peek and search regains focus.
     func dismissQuickLook() {
+        detail.cancelTagInput()
+        pendingTagInput = nil
+        tagPeekOwned = false
+        isSearchFocused = true
         withAnimation(YankMotion.present(reduceMotion)) { showQuickLook = false }
     }
 

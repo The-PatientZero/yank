@@ -8,7 +8,9 @@ import YankCore
 /// Outcome of `CloudKitSyncService.start()`: sync came up, or it failed with a
 /// user-presentable message.
 public enum CloudKitSyncStartResult: Equatable, Sendable {
+    /// Sync came up.
     case started
+    /// Sync did not come up; `message` is safe to show to a person.
     case failed(message: String)
 }
 
@@ -23,6 +25,9 @@ struct CloudKitZoneChanges {
     var failedRecords: [CloudKitRecordFailure] = []
     var changeToken: CKServerChangeToken?
     var moreComing: Bool
+    /// The page was requested without the file field, so its records carry no `CKAsset` whether
+    /// or not iCloud holds a file for them.
+    var assetsOmitted = false
 }
 
 struct CloudKitRecordFailure {
@@ -41,8 +46,13 @@ struct CloudKitFetchedRecords {
 
 struct CloudKitRecordSaveResult {
     var failedRecordNames: [String] = []
+    /// Records a conditional save rejected because the server's copy moved on. Not part of
+    /// `failedRecordNames`: the caller decides whether to retry them.
+    var conflictedRecordNames: [String] = []
     /// At least one record failed because the user reset their encrypted-data key.
     var encryptedDataKeyWasReset = false
+    /// The most actionable cause among the failed records, when CloudKit reported one.
+    var failure: SyncFailure?
 }
 
 /// CloudKit reports a reset of the user's encrypted-data key as a `zoneNotFound` error whose
@@ -73,6 +83,14 @@ enum CloudKitConditionalSaveOutcome: Equatable {
     case conflict
 }
 
+/// How a batch save treats the server's copy of each record.
+enum CloudKitSavePolicy: Equatable {
+    /// Last writer wins, sending only the keys that changed on the record.
+    case changedKeys
+    /// A record whose server copy changed since it was fetched is rejected and reported.
+    case ifServerRecordUnchanged
+}
+
 struct CloudKitRecordPresence {
     var presentRecordNames: Set<String> = []
     var missingRecordNames: Set<String> = []
@@ -85,9 +103,13 @@ struct CloudKitRecordPresence {
 protocol CloudKitDatabase {
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws
     func ensureSubscription(id subscriptionID: String) async throws
+    /// `desiredKeys` limits the downloaded fields (nil downloads all, assets included);
+    /// `resultsLimit` caps the records in one page.
     func fetchZoneChanges(
         _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
+        since token: CKServerChangeToken?,
+        desiredKeys: [CKRecord.FieldKey]?,
+        resultsLimit: Int?
     ) async throws -> CloudKitZoneChanges
     func fetchRecordPresence(
         for recordNames: [String],
@@ -95,13 +117,37 @@ protocol CloudKitDatabase {
     ) async throws -> CloudKitRecordPresence
     func fetchRecords(
         for recordNames: [String],
-        in zoneID: CKRecordZone.ID
+        in zoneID: CKRecordZone.ID,
+        desiredKeys: [CKRecord.FieldKey]?
     ) async throws -> CloudKitFetchedRecords
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult
+    func saveRecords(
+        _ records: [CKRecord],
+        savePolicy: CloudKitSavePolicy
+    ) async throws -> CloudKitRecordSaveResult
     /// Save one record only while the server's copy still matches the change tag it carries.
     /// Separate from `saveRecords` because the clip path deliberately uses `.changedKeys`
     /// last-writer-wins, while the singleton settings record must never clobber a newer remote.
     func saveRecordIfUnchanged(_ record: CKRecord) async throws -> CloudKitConditionalSaveOutcome
+}
+
+extension CloudKitDatabase {
+    func fetchZoneChanges(
+        _ zoneID: CKRecordZone.ID,
+        since token: CKServerChangeToken?
+    ) async throws -> CloudKitZoneChanges {
+        try await fetchZoneChanges(zoneID, since: token, desiredKeys: nil, resultsLimit: nil)
+    }
+
+    func fetchRecords(
+        for recordNames: [String],
+        in zoneID: CKRecordZone.ID
+    ) async throws -> CloudKitFetchedRecords {
+        try await fetchRecords(for: recordNames, in: zoneID, desiredKeys: nil)
+    }
+
+    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
+        try await saveRecords(records, savePolicy: .changedKeys)
+    }
 }
 
 /// Live CloudKit conformance. The idempotent "subscription already exists" handling and the
@@ -134,9 +180,16 @@ extension CKDatabase: CloudKitDatabase {
 
     func fetchZoneChanges(
         _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
+        since token: CKServerChangeToken?,
+        desiredKeys: [CKRecord.FieldKey]?,
+        resultsLimit: Int?
     ) async throws -> CloudKitZoneChanges {
-        let changes = try await recordZoneChanges(inZoneWith: zoneID, since: token)
+        let changes = try await recordZoneChanges(
+            inZoneWith: zoneID,
+            since: token,
+            desiredKeys: desiredKeys,
+            resultsLimit: resultsLimit
+        )
         var changedRecords: [CKRecord] = []
         var failedRecords: [CloudKitRecordFailure] = []
         changedRecords.reserveCapacity(changes.modificationResultsByID.count)
@@ -156,16 +209,18 @@ extension CKDatabase: CloudKitDatabase {
             deletedRecordNames: changes.deletions.map { $0.recordID.recordName },
             failedRecords: failedRecords.sorted { $0.recordName < $1.recordName },
             changeToken: changes.changeToken,
-            moreComing: changes.moreComing
+            moreComing: changes.moreComing,
+            assetsOmitted: desiredKeys.map { !$0.contains(ClipboardCloudMapping.Key.blob) } ?? false
         )
     }
 
     func fetchRecords(
         for recordNames: [String],
-        in zoneID: CKRecordZone.ID
+        in zoneID: CKRecordZone.ID,
+        desiredKeys: [CKRecord.FieldKey]?
     ) async throws -> CloudKitFetchedRecords {
         let recordIDs = recordNames.map { CKRecord.ID(recordName: $0, zoneID: zoneID) }
-        let results = try await records(for: recordIDs)
+        let results = try await records(for: recordIDs, desiredKeys: desiredKeys)
         var fetched = CloudKitFetchedRecords()
         fetched.records.reserveCapacity(results.count)
         for (recordID, result) in results {
@@ -212,12 +267,27 @@ extension CKDatabase: CloudKitDatabase {
         return presence
     }
 
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
-        let results = try await modifyRecords(saving: records, deleting: [], savePolicy: .changedKeys)
-        var failedRecordNames = Set(results.saveResults.compactMap { recordID, result in
-            if case .failure = result { return recordID.recordName }
-            return nil
-        })
+    func saveRecords(
+        _ records: [CKRecord],
+        savePolicy: CloudKitSavePolicy
+    ) async throws -> CloudKitRecordSaveResult {
+        let results = try await modifyRecords(
+            saving: records,
+            deleting: [],
+            savePolicy: savePolicy == .changedKeys ? .changedKeys : .ifServerRecordUnchanged
+        )
+        var failedRecordNames = Set<String>()
+        var conflictedRecordNames = Set<String>()
+        var failureErrors: [any Error] = []
+        for (recordID, result) in results.saveResults {
+            guard case .failure(let error) = result else { continue }
+            if savePolicy == .ifServerRecordUnchanged, Self.isServerRecordChangedError(error) {
+                conflictedRecordNames.insert(recordID.recordName)
+            } else {
+                failedRecordNames.insert(recordID.recordName)
+                failureErrors.append(error)
+            }
+        }
         let encryptedDataKeyWasReset = results.saveResults.values.contains { result in
             if case .failure(let error) = result { return CloudKitEncryptedDataKeyReset.isReset(error) }
             return false
@@ -227,7 +297,9 @@ extension CKDatabase: CloudKitDatabase {
         failedRecordNames.formUnion(requestedRecordNames.subtracting(returnedRecordNames))
         return CloudKitRecordSaveResult(
             failedRecordNames: failedRecordNames.sorted(),
-            encryptedDataKeyWasReset: encryptedDataKeyWasReset
+            conflictedRecordNames: conflictedRecordNames.sorted(),
+            encryptedDataKeyWasReset: encryptedDataKeyWasReset,
+            failure: CloudKitSyncFailureClassifier.classify(itemErrors: failureErrors)
         )
     }
 

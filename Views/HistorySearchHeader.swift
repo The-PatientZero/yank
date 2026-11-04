@@ -31,7 +31,7 @@ struct HistorySearchHeader: View {
                         .accessibilityLabel("Window stays open")
                         .help("Window stays open — outside clicks won't close it. Change in Settings.")
                 }
-                IconButton(systemName: "gearshape", label: "Settings",
+                IconButton(systemName: "gearshape", label: "Settings", help: "Settings (⌘,)",
                            size: TypeScale.input, weight: .medium, action: onSettings)
             }
 

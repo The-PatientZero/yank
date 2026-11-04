@@ -1,6 +1,8 @@
 import SwiftUI
 import CloudKit
+import CoreSpotlight
 import UIKit
+import UniformTypeIdentifiers
 
 /// Coordinates the two foreground-only freshness jobs iOS permits: importing the current
 /// plain-text pasteboard generation and pulling CloudKit. In-process generation tracking plus
@@ -8,6 +10,8 @@ import UIKit
 enum IOSForegroundCaptureOutcome: Equatable {
     case durable
     case terminalPolicyRejection
+    /// The pasteboard declares no text type, so it was acknowledged without being read.
+    case noText
     case retryableFailure
 }
 
@@ -19,15 +23,25 @@ final class IOSForegroundRefreshCoordinator {
         let task: Task<IOSForegroundCaptureOutcome, Never>
     }
 
-    static let shared = IOSForegroundRefreshCoordinator()
+    static let shared = IOSForegroundRefreshCoordinator(
+        acknowledgementStore: PasteboardAcknowledgementStore.live()
+    )
 
     private var lastHandledPasteboardChangeCount: Int?
     private var latestObservedPasteboardChangeCount: Int?
     private var inFlightCapture: InFlightCapture?
+    private let acknowledgementStore: PasteboardAcknowledgementStore?
+
+    /// `acknowledgementStore` persists the handled generation across process death. Without
+    /// one, the handled generation lives in memory only.
+    init(acknowledgementStore: PasteboardAcknowledgementStore? = nil) {
+        self.acknowledgementStore = acknowledgementStore
+    }
 
     func markPasteboardChangeHandled(_ changeCount: Int) {
         latestObservedPasteboardChangeCount = changeCount
         lastHandledPasteboardChangeCount = changeCount
+        persistAcknowledgement(changeCount)
     }
 
     @discardableResult
@@ -68,6 +82,11 @@ final class IOSForegroundRefreshCoordinator {
         latestObservedPasteboardChangeCount = pasteboardChangeCount
         let currentPasteboardChangeCount = currentPasteboardChangeCount ?? {
             pasteboardChangeCount
+        }
+        // Cold launch: the in-memory marker is empty, so consult the persisted acknowledgement.
+        if lastHandledPasteboardChangeCount == nil,
+           acknowledgementStore?.isAcknowledged(changeCount: pasteboardChangeCount) == true {
+            lastHandledPasteboardChangeCount = pasteboardChangeCount
         }
         guard pasteboardChangeCount != lastHandledPasteboardChangeCount else {
             return false
@@ -148,6 +167,14 @@ final class IOSForegroundRefreshCoordinator {
             return .terminalPolicyRejection
         case .capture:
             guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            guard PasteboardAcknowledgement.hasTextRepresentation(in: pasteboardTypes) else {
+                // Nothing to read: acknowledge the generation so it is never read (and never
+                // prompts for paste permission) again.
+                guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+                updateLatestObserved(using: currentPasteboardChangeCount)
+                markCurrentGenerationHandled(pasteboardChangeCount)
+                return .noText
+            }
             let hasRichContent = PasteboardArchive.isRich(utis: pasteboardTypes)
             guard let text = readText() else { return .retryableFailure }
             guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
@@ -180,6 +207,15 @@ final class IOSForegroundRefreshCoordinator {
     private func markCurrentGenerationHandled(_ changeCount: Int) {
         guard latestObservedPasteboardChangeCount == changeCount else { return }
         lastHandledPasteboardChangeCount = changeCount
+        persistAcknowledgement(changeCount)
+    }
+
+    private func persistAcknowledgement(_ changeCount: Int) {
+        do {
+            try acknowledgementStore?.record(changeCount: changeCount)
+        } catch {
+            clipStoreLog.error("Could not persist the pasteboard acknowledgement: \(error.localizedDescription)")
+        }
     }
 }
 
@@ -222,6 +258,9 @@ enum IOSForegroundCaptureDisclosurePresentation: Equatable {
 
 struct IOSForegroundCaptureDisclosureSession: Equatable {
     private(set) var deferredForCurrentSession = false
+    /// The parts of the first-run screen being shown; nil while the screen is closed. Fixed when
+    /// the screen opens, so nothing that happens in the background can close it or change it.
+    private(set) var activeSections: FirstRunSections?
 
     func presentation(
         for mode: IOSForegroundCaptureMode
@@ -232,15 +271,96 @@ struct IOSForegroundCaptureDisclosureSession: Equatable {
     mutating func deferForCurrentSession() {
         deferredForCurrentSession = true
     }
+
+    /// Opens the screen on a cold launch while the clipboard mode is undecided. Clipboard access
+    /// is always shown; the capture methods and the sync choice only while set-up is unfinished,
+    /// and the sync choice only when sync is off and this build can sync at all.
+    mutating func beginAutomatically(
+        mode: IOSForegroundCaptureMode,
+        captureSetupCompleted: Bool,
+        syncEnabled: Bool,
+        syncAvailable: Bool
+    ) {
+        guard presentation(for: mode) == .prompt else { return }
+        var sections: FirstRunSections = .clipboard
+        if !captureSetupCompleted {
+            sections.insert(.methods)
+            if !syncEnabled && syncAvailable {
+                sections.insert(.sync)
+            }
+        }
+        activeSections = sections
+    }
+
+    /// Reopens the screen on the capture methods, plus clipboard access while still undecided.
+    /// Never includes the sync choice, so a review cannot change sync by accident.
+    mutating func beginReview(mode: IOSForegroundCaptureMode) {
+        activeSections = mode == .undecided ? [.clipboard, .methods] : .methods
+    }
+
+    mutating func end() {
+        activeSections = nil
+    }
+}
+
+/// Notices when automatic capture keeps finding nothing to read although the clipboard holds
+/// plain text, which is how a denied "Paste from Other Apps" setting looks to the app: iOS gives
+/// no way to ask. It counts visits that failed, not reads, and lives in memory only.
+@MainActor
+@Observable
+final class PasteAccessMonitor {
+    /// Failed visits in a row before the banner appears.
+    private static let failedVisitsBeforeBanner = 2
+
+    private var failedVisits = 0
+    private var currentVisitFailed = false
+
+    var isDenied: Bool { failedVisits >= Self.failedVisitsBeforeBanner }
+
+    /// Called once at launch and once per return from the background.
+    func beginVisit() {
+        currentVisitFailed = false
+    }
+
+    /// Records a read that came back empty. Only a clipboard that declares plain text counts, so
+    /// HTML-only or RTF-only content never raises the banner.
+    func recordEmptyRead(declaredTypes: [String]) {
+        guard !currentVisitFailed, Self.declaresPlainText(declaredTypes) else { return }
+        currentVisitFailed = true
+        failedVisits += 1
+    }
+
+    func recordSuccessfulRead() {
+        reset()
+    }
+
+    func reset() {
+        failedVisits = 0
+    }
+
+    private static func declaresPlainText(_ types: [String]) -> Bool {
+        types.contains { UTType($0)?.conforms(to: .plainText) == true }
+    }
 }
 
 /// What one CloudKit account probe means for the sync lifecycle. `.temporarilyUnavailable`/
 /// `.couldNotDetermine` are recoverable (maintenance, pre-unlock probe, network hiccup); treating
 /// them as sign-out would drop push delivery until relaunch — only absent/restricted accounts tear sync down.
+/// A restricted account is its own decision so the screen can say so instead of asking to sign in.
 enum IOSCloudAccountDecision: Equatable {
     case proceed
     case hardUnavailable(reason: SyncStatus.Reason)
-    case transient(message: String)
+    case restricted
+    case transient(SyncFailure)
+}
+
+/// What one sync run did, for the system's report after a background push.
+enum IOSSyncRunOutcome: Equatable, Sendable {
+    /// The run fetched changes from CloudKit.
+    case newData
+    /// The run succeeded and fetched nothing, or was held back until the phone is unlocked.
+    case noData
+    case failed
 }
 
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
@@ -261,12 +381,24 @@ final class IOSCloudSyncController {
         case remote
     }
 
-    private enum UnavailableStatus {
-        case unavailable(SyncStatus.Reason)
-        case failed(String)
+    /// A request that arrived while an operation was running and runs once it ends. A forced
+    /// start outranks a plain refresh, which a forced start also covers.
+    private enum PendingRequest: Int, Comparable {
+        case none
+        case remote
+        case forcedStart
+
+        static func < (lhs: PendingRequest, rhs: PendingRequest) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
     }
 
-    private static let containerID = "iCloud.com.thepatientzero.yank"
+    private enum UnavailableStatus {
+        case unavailable(SyncStatus.Reason)
+        case failed(SyncFailure)
+    }
+
+    static let containerID = "iCloud.com.thepatientzero.yank"
     /// How long a transient account status (`.temporarilyUnavailable`, `.couldNotDetermine`)
     /// waits before retrying once, instead of stalling until the next foreground/push.
     private static let transientRetryDelayNanoseconds: UInt64 = 10_000_000_000
@@ -277,6 +409,10 @@ final class IOSCloudSyncController {
     @ObservationIgnored private let makeContainer: @MainActor () -> ContainerHandle?
     @ObservationIgnored private let makeService:
         @MainActor (any CloudKitDatabase, ClipStore, any SyncedSettingsStore) -> CloudKitSyncService
+    @ObservationIgnored private let makeRecoveryTriggers: @MainActor (
+        _ onNetworkRestored: @escaping @MainActor () -> Void,
+        _ onAccountChanged: @escaping @MainActor () -> Void
+    ) -> SyncRecoveryTriggers?
     @ObservationIgnored private let registerForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let unregisterForRemoteNotifications: @MainActor () -> Void
     @ObservationIgnored private let transientRetryDelayNanoseconds: UInt64
@@ -290,11 +426,15 @@ final class IOSCloudSyncController {
     /// assigned before `start()` runs so a retry reuses the same instance, but a failed
     /// bring-up must not let later requests bypass straight to pull/push.
     @ObservationIgnored private var syncStarted = false
-    @ObservationIgnored private var operation: (id: UUID, task: Task<Bool, Never>)?
+    @ObservationIgnored private var operation: (id: UUID, task: Task<IOSSyncRunOutcome, Never>)?
     /// Bumped every time `run` starts a new operation, so a scheduled transient retry can
     /// tell whether some other request already ran in the meantime and skip itself.
     @ObservationIgnored private var operationSequence: UInt64 = 0
-    @ObservationIgnored private var pendingRemoteTrigger = false
+    @ObservationIgnored private var pendingRequest = PendingRequest.none
+    /// Watches the network and the iCloud account while sync is enabled. Kept through a
+    /// sign-out, so signing back in resumes sync without a relaunch.
+    @ObservationIgnored private var recoveryTriggers: SyncRecoveryTriggers?
+    @ObservationIgnored private var accountChangeTask: Task<Void, Never>?
     @ObservationIgnored private var transientRetryTask: Task<Void, Never>?
     /// The iCloud account identity resolved this controller lifecycle, so routine foregrounds
     /// don't re-probe it. Cleared in `stop()`.
@@ -315,13 +455,19 @@ final class IOSCloudSyncController {
             ClipStore,
             any SyncedSettingsStore
         ) -> CloudKitSyncService = { database, store, settingsStore in
-            CloudKitSyncService(
+            let service = CloudKitSyncService(
                 containerIdentifier: IOSCloudSyncController.containerID,
                 store: store,
                 database: database,
                 settingsStore: settingsStore
             )
+            service.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: store)
+            return service
         },
+        makeRecoveryTriggers: @escaping @MainActor (
+            _ onNetworkRestored: @escaping @MainActor () -> Void,
+            _ onAccountChanged: @escaping @MainActor () -> Void
+        ) -> SyncRecoveryTriggers? = IOSCloudSyncController.makeLiveRecoveryTriggers,
         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.registerForRemoteNotifications()
         },
@@ -335,6 +481,7 @@ final class IOSCloudSyncController {
         self.settings = settings
         self.makeContainer = makeContainer
         self.makeService = makeService
+        self.makeRecoveryTriggers = makeRecoveryTriggers
         self.registerForRemoteNotifications = registerForRemoteNotifications
         self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
         self.transientRetryDelayNanoseconds = transientRetryDelayNanoseconds
@@ -342,16 +489,28 @@ final class IOSCloudSyncController {
         self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 
-    func refreshForeground() async {
-        _ = await run(.foreground(refreshExisting: true))
+    // Sync waits for the saved history: a pull applied over an unloaded store would lose the
+    // remote clips, and the pull-position restart reads a marker the load may still be writing.
+    @discardableResult
+    func refreshForeground() async -> IOSSyncRunOutcome {
+        await store.hydrate()
+        return await run(.foreground(refreshExisting: true))
     }
 
     func start(force: Bool = false) async {
+        await store.hydrate()
         _ = await run(.start(force: force))
     }
 
-    func handleRemoteChange() async -> Bool {
-        await run(.remote)
+    func handleRemoteChange() async -> IOSSyncRunOutcome {
+        await store.hydrate()
+        return await run(.remote)
+    }
+
+    /// Stops waiting for these clips; they stay on this iPhone until edited. Only reachable
+    /// while a service exists, because the waiting list is cleared when it is torn down.
+    func keepLocalOnly(clipIDs: [UUID]) {
+        sync?.keepLocalOnly(clipIDs: clipIDs)
     }
 
     func stop() {
@@ -360,59 +519,168 @@ final class IOSCloudSyncController {
         syncStarted = false
         transientRetryTask?.cancel()
         transientRetryTask = nil
-        pendingRemoteTrigger = false
+        accountChangeTask?.cancel()
+        accountChangeTask = nil
+        recoveryTriggers?.stop()
+        recoveryTriggers = nil
+        pendingRequest = .none
         cachedAccountIdentity = nil
         operation?.task.cancel()
         operation = nil
         sync = nil
         container = nil
         unregisterForRemoteNotifications()
+        iCloudSignedOut = false
         store.markSyncUnavailable(reason: .disabled)
     }
 
-    private func run(_ request: Request, isTransientRetryAttempt: Bool = false) async -> Bool {
+    /// Runs `request`, or, when an operation is already running, remembers what it adds and
+    /// answers with the outcome of the run that serves it. The operation task runs the
+    /// remembered request after its own, so a caller never sees an earlier run's result for
+    /// work that arrived later.
+    private func run(
+        _ request: Request,
+        isTransientRetryAttempt: Bool = false
+    ) async -> IOSSyncRunOutcome {
         if let operation {
-            if case .remote = request {
-                pendingRemoteTrigger = true
-            }
+            remember(request)
             return await operation.task.value
         }
         guard settings.syncEnabled else {
             stop()
-            return false
+            return .failed
         }
+        startRecoveryTriggers()
 
         let generation = lifecycleGeneration
         let operationID = UUID()
         operationSequence &+= 1
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return false }
-            return await self.perform(
+        let task = Task { @MainActor [weak self] () -> IOSSyncRunOutcome in
+            guard let self else { return .failed }
+            var outcome = await self.perform(
                 request,
                 generation: generation,
                 isTransientRetryAttempt: isTransientRetryAttempt
             )
+            while let next = self.takePendingRequest(generation: generation) {
+                self.operationSequence &+= 1
+                outcome = await self.perform(next, generation: generation)
+            }
+            // No suspension since the last check for a remembered request, so one arriving
+            // after this point starts a new operation instead of waiting on a finished one.
+            if self.operation?.id == operationID {
+                self.operation = nil
+            }
+            return outcome
         }
         operation = (operationID, task)
-        let result = await task.value
-        if operation?.id == operationID {
-            operation = nil
+        return await task.value
+    }
+
+    private func remember(_ request: Request) {
+        switch request {
+        case .remote, .foreground(refreshExisting: true):
+            pendingRequest = max(pendingRequest, .remote)
+        case .start(force: true):
+            pendingRequest = .forcedStart
+            clipStoreLog.notice("Forced sync start queued behind running operation")
+        case .foreground(refreshExisting: false), .start(force: false):
+            break
         }
-        if pendingRemoteTrigger {
-            pendingRemoteTrigger = false
-            if settings.syncEnabled {
-                _ = await run(.remote)
+    }
+
+    private func takePendingRequest(generation: UInt64) -> Request? {
+        let pending = pendingRequest
+        pendingRequest = .none
+        guard isActive(generation) else { return nil }
+        switch pending {
+        case .none:
+            return nil
+        case .remote:
+            return .remote
+        case .forcedStart:
+            clipStoreLog.notice("Forced sync start running after the earlier operation")
+            return .start(force: true)
+        }
+    }
+
+    private func startRecoveryTriggers() {
+        guard recoveryTriggers == nil else { return }
+        let triggers = makeRecoveryTriggers(
+            { [weak self] in self?.networkDidReturn() },
+            { [weak self] in self?.accountDidChange() }
+        )
+        triggers?.start()
+        recoveryTriggers = triggers
+    }
+
+    /// Repeats setup if it never completed, otherwise pulls and pushes.
+    private func networkDidReturn() {
+        guard settings.syncEnabled else { return }
+        Task { @MainActor [weak self] in
+            _ = await self?.run(.remote)
+        }
+    }
+
+    /// The account notification also fires for events that are not a switch, so the running
+    /// service is replaced only when the account is gone or its identity differs from the one
+    /// the service was built for. A failed probe (offline) leaves everything as it is.
+    private func accountDidChange() {
+        guard settings.syncEnabled else { return }
+        accountChangeTask?.cancel()
+        let generation = lifecycleGeneration
+        accountChangeTask = Task { @MainActor [weak self] in
+            guard let self, await self.accountChangeRequiresNewService(),
+                  self.isActive(generation) else { return }
+            self.dropServiceForAccountChange()
+            _ = await self.run(.start(force: false))
+        }
+    }
+
+    private func accountChangeRequiresNewService() async -> Bool {
+        guard let probe = makeContainer() else { return false }
+        do {
+            switch Self.accountDecision(for: try await probe.accountStatus()) {
+            case .hardUnavailable, .restricted: return true
+            case .transient: return false
+            case .proceed: break
             }
+            let identity = try await probe.userRecordID().recordName
+            guard sync != nil, syncStarted,
+                  let known = cachedAccountIdentity ?? syncDefaults.string(forKey: Self.accountIdentityDefaultsKey)
+            else { return true }
+            return identity != known
+        } catch {
+            clipStoreLog.info("Could not check the iCloud account after a change: \(error.localizedDescription, privacy: .public)")
+            return false
         }
-        return result
+    }
+
+    /// Drops the service, the container and the cached identity so the next run builds them for
+    /// the account that is signed in now. Unlike `stop()` it keeps push registration and the
+    /// recovery triggers, and it replaces a running operation, which belongs to the old account.
+    private func dropServiceForAccountChange() {
+        lifecycleGeneration &+= 1
+        container = nil
+        cachedAccountIdentity = nil
+        sync?.stop()
+        sync = nil
+        syncStarted = false
+        transientRetryTask?.cancel()
+        transientRetryTask = nil
+        pendingRequest = .none
+        operation?.task.cancel()
+        operation = nil
     }
 
     private func perform(
         _ request: Request,
         generation: UInt64,
         isTransientRetryAttempt: Bool = false
-    ) async -> Bool {
-        guard isActive(generation) else { return false }
+    ) async -> IOSSyncRunOutcome {
+        guard isActive(generation) else { return .failed }
+        // Until the files can be read, the history and settings here are not the user's real ones.
+        guard !store.isAwaitingFirstUnlock else { return .noData }
         if case .remote = request, syncStarted, let sync {
             return await performRemoteChange(using: sync, generation: generation)
         }
@@ -420,67 +688,84 @@ final class IOSCloudSyncController {
         if container == nil {
             container = makeContainer()
         }
-        guard isActive(generation) else { return false }
+        guard isActive(generation) else { return .failed }
         guard let container else {
             tearDownService(
                 status: .unavailable(.notProvisioned),
                 generation: generation
             )
-            return false
+            return .failed
         }
 
         do {
             let status = try await container.accountStatus()
-            guard isActive(generation) else { return false }
+            guard isActive(generation) else { return .failed }
             switch Self.accountDecision(for: status) {
             case .proceed:
                 iCloudSignedOut = false
                 registerForRemoteNotifications()
                 await reconcileAccountIdentity(container: container, generation: generation)
-                guard isActive(generation) else { return false }
+                guard isActive(generation) else { return .failed }
+                restartPullPositionIfHistoryWasMissing()
             case .hardUnavailable(let reason):
                 iCloudSignedOut = true
                 tearDownService(
                     status: .unavailable(reason),
                     generation: generation
                 )
-                return false
-            case .transient(let message):
+                return .failed
+            case .restricted:
+                // The account screen stays up, but says "restricted" rather than "sign in".
+                iCloudSignedOut = true
+                tearDownService(
+                    status: .failed(SyncFailure(kind: .accountRestricted)),
+                    generation: generation
+                )
+                return .failed
+            case .transient(let failure):
                 // Keep the service and its push registration: the account is expected back, and
                 // the next foreground refresh or silent push resumes sync without a relaunch.
                 iCloudSignedOut = false
-                store.markSyncFailed(message)
+                store.markSyncFailure(failure)
                 // Only the original observation schedules a retry — if the retry itself lands on
                 // another transient result, the next real foreground/push is the fallback, not a
                 // chained timer, so an unreachable account can't be polled forever.
                 if !isTransientRetryAttempt {
                     scheduleTransientRetry(request: request, generation: generation)
                 }
-                return false
+                return .failed
             }
         } catch {
-            guard isActive(generation) else { return false }
+            guard isActive(generation) else { return .failed }
+            clipStoreLog.error("iCloud account lookup failed: \(error.localizedDescription, privacy: .public)")
             tearDownService(
-                status: .failed(error.localizedDescription),
+                status: .failed(CloudKitSyncFailureClassifier.classify(error)),
                 generation: generation
             )
-            return false
+            return .failed
         }
 
-        guard isActive(generation) else { return false }
+        guard isActive(generation) else { return .failed }
         switch request {
         case .foreground(let refreshExisting):
             if refreshExisting, syncStarted, let sync {
                 return await performRemoteChange(using: sync, generation: generation)
             }
             return await performStart(force: false, container: container, generation: generation)
+                ? .noData : .failed
         case .start(let force):
             return await performStart(force: force, container: container, generation: generation)
+                ? .noData : .failed
         case .remote:
+            let existing = sync
+            let fetchedBefore = existing?.fetchedChangesTotal ?? 0
             guard await performStart(force: false, container: container, generation: generation),
                   isActive(generation),
-                  let sync else { return false }
-            return await performRemoteChange(using: sync, generation: generation)
+                  let sync else { return .failed }
+            // A service built or restarted by this run pulled before the remote change below.
+            let fetchedByStart = sync.fetchedChangesTotal - (sync === existing ? fetchedBefore : 0)
+            let outcome = await performRemoteChange(using: sync, generation: generation)
+            return outcome == .noData && fetchedByStart > 0 ? .newData : outcome
         }
     }
 
@@ -506,9 +791,29 @@ final class IOSCloudSyncController {
                 containerIdentifier: Self.containerID,
                 defaults: syncDefaults
             )
+            clipStoreLog.info("iCloud account changed; reset CloudKit sync checkpoints.")
         }
         syncDefaults.set(identity, forKey: Self.accountIdentityDefaultsKey)
         cachedAccountIdentity = identity
+    }
+
+    /// A launch that found the history file missing (a fresh device, or one restored from a
+    /// backup that left history out) left a marker. The change token in the always-backed-up
+    /// preferences may claim the history was already downloaded, so drop only that token and the
+    /// next pull refills from iCloud. Push receipts, the upload watermark, the quarantine and the
+    /// encryption rollout state stay. The marker survives until this runs, so a clip captured
+    /// meanwhile cannot defeat it. A service is stopped first because it holds the token in memory.
+    private func restartPullPositionIfHistoryWasMissing() {
+        guard syncDefaults.bool(forKey: ClipStore.pullPositionRestartPendingKey) else { return }
+        sync?.stop()
+        sync = nil
+        syncStarted = false
+        CloudKitSyncService.resetPullPosition(
+            containerIdentifier: Self.containerID,
+            defaults: syncDefaults
+        )
+        syncDefaults.removeObject(forKey: ClipStore.pullPositionRestartPendingKey)
+        clipStoreLog.info("Restarting iCloud download position: history file was missing at launch")
     }
 
     private func performStart(
@@ -521,15 +826,18 @@ final class IOSCloudSyncController {
         let service = sync ?? makeService(container.database, store, settingsBridge)
         guard isActive(generation) else { return false }
         sync = service
+        // Bring-up reads the synced settings; until it has, this device's own retention window
+        // may be stale, also when sync is switched on or signs back in mid-run.
+        store.holdRetentionForSettings()
         let result = await service.start()
         guard isActive(generation), sync === service else { return false }
         switch result {
         case .started:
             syncStarted = true
             return true
-        case .failed(let message):
+        case .failed:
+            // `start()` already reported the typed failure on the store.
             syncStarted = false
-            store.markSyncFailed(message)
             return false
         }
     }
@@ -554,11 +862,15 @@ final class IOSCloudSyncController {
     private func performRemoteChange(
         using service: CloudKitSyncService,
         generation: UInt64
-    ) async -> Bool {
-        guard isActive(generation), sync === service else { return false }
-        let changed = await service.handleRemoteChange()
-        guard isActive(generation), sync === service else { return false }
-        return changed
+    ) async -> IOSSyncRunOutcome {
+        guard isActive(generation), sync === service else { return .failed }
+        let outcome = await service.handleRemoteChangeOutcome()
+        guard isActive(generation), sync === service else { return .failed }
+        switch outcome {
+        case .newData: return .newData
+        case .noData: return .noData
+        case .failed: return .failed
+        }
     }
 
     private func isActive(_ generation: UInt64) -> Bool {
@@ -571,12 +883,12 @@ final class IOSCloudSyncController {
         switch status {
         case .available:
             .proceed
-        case .noAccount, .restricted:
+        case .noAccount:
             .hardUnavailable(reason: .notAuthenticated)
-        case .temporarilyUnavailable:
-            .transient(message: "iCloud is temporarily unavailable. Sync will retry.")
-        case .couldNotDetermine:
-            .transient(message: "Could not determine iCloud account status")
+        case .restricted:
+            .restricted
+        case .temporarilyUnavailable, .couldNotDetermine:
+            .transient(SyncFailure(kind: .accountUnavailable))
         @unknown default:
             .proceed
         }
@@ -594,9 +906,22 @@ final class IOSCloudSyncController {
         switch status {
         case .unavailable(let reason):
             store.markSyncUnavailable(reason: reason)
-        case .failed(let message):
-            store.markSyncFailed(message)
+        case .failed(let failure):
+            store.markClipsWaiting([])
+            store.markSyncFailure(failure)
         }
+    }
+
+    private static func makeLiveRecoveryTriggers(
+        onNetworkRestored: @escaping @MainActor () -> Void,
+        onAccountChanged: @escaping @MainActor () -> Void
+    ) -> SyncRecoveryTriggers? {
+        guard CloudContainerProvisioning.isProvisioned(for: containerID) else { return nil }
+        return SyncRecoveryTriggers(
+            container: CKContainer(identifier: containerID),
+            onNetworkRestored: onNetworkRestored,
+            onAccountChanged: onAccountChanged
+        )
     }
 
     private static func makeLiveContainer() -> ContainerHandle? {
@@ -616,26 +941,23 @@ struct YankApp: App {
     @State private var store: ClipStore
     @State private var settings: IOSSettings
     @State private var syncController: IOSCloudSyncController
-    @State private var foregroundCaptureDisclosureSession =
-        IOSForegroundCaptureDisclosureSession()
+    @State private var foregroundCaptureDisclosureSession: IOSForegroundCaptureDisclosureSession
+    @State private var pasteAccess: PasteAccessMonitor
     @State private var historyOpenRequest = 0
+    /// The clip a tapped Spotlight result asked for; the history list opens it once readable.
+    @State private var requestedClipID: UUID?
     /// SwiftUI reports a return from the background as `.background`, `.inactive`, `.active`,
     /// so the handler remembers the visit instead of comparing with the previous phase.
     @State private var wasInBackground = false
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        let appGroup = AppGroupContext.live()
-        let store = ClipStore(context: appGroup)
-        let settings = IOSSettings(defaults: appGroup?.defaults)
-        if !store.items.isEmpty {
-            settings.completeCaptureSetup()
-        }
-        _store = State(initialValue: store)
-        _settings = State(initialValue: settings)
-        _syncController = State(
-            initialValue: IOSCloudSyncController(store: store, settings: settings)
-        )
+        let runtime = IOSAppRuntime.shared
+        _foregroundCaptureDisclosureSession = State(initialValue: IOSForegroundCaptureDisclosureSession())
+        _pasteAccess = State(initialValue: PasteAccessMonitor())
+        _store = State(initialValue: runtime.store)
+        _settings = State(initialValue: runtime.settings)
+        _syncController = State(initialValue: runtime.syncController)
     }
 
     private var spotlightEnabled: Bool {
@@ -649,39 +971,49 @@ struct YankApp: App {
                 settings: settings,
                 iCloudSignedOut: syncController.iCloudSignedOut,
                 onRetrySync: { await syncController.start(force: true) },
-                openRequest: historyOpenRequest
+                onKeepLocalOnly: { syncController.keepLocalOnly(clipIDs: $0) },
+                onReviewCaptureMethods: {
+                    foregroundCaptureDisclosureSession.beginReview(mode: settings.foregroundCaptureMode)
+                },
+                pasteAccess: pasteAccess,
+                openRequest: historyOpenRequest,
+                requestedClipID: $requestedClipID
             )
-                .sheet(isPresented: Binding(
-                    get: {
-                        foregroundCaptureDisclosureSession.presentation(
-                            for: settings.foregroundCaptureMode
-                        ) == .prompt
-                    },
-                    set: { isPresented in
-                        if !isPresented {
-                            foregroundCaptureDisclosureSession.deferForCurrentSession()
-                        }
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard let clipID = SpotlightActivity.clipID(from: activity) else { return }
+                    // The first-run screen sits above the list; the clip opens behind it otherwise.
+                    if foregroundCaptureDisclosureSession.activeSections != nil { closeFirstRunScreen() }
+                    requestedClipID = clipID
+                }
+                .sheet(item: Binding(
+                    get: { foregroundCaptureDisclosureSession.activeSections },
+                    set: { sections in
+                        if sections == nil { closeFirstRunScreen() }
                     }
-                )) {
-                    ForegroundCaptureDecisionView(
-                        onChoose: { mode in
-                            settings.setForegroundCaptureMode(mode)
-                        },
-                        onNotNow: {
-                            foregroundCaptureDisclosureSession.deferForCurrentSession()
-                        },
-                        choicesDisabled: settings.storageUnavailable
+                )) { sections in
+                    FirstRunSetupView(
+                        sections: sections,
+                        settings: settings,
+                        onFinish: { finishedSetup in
+                            if finishedSetup { settings.completeCaptureSetup() }
+                            closeFirstRunScreen()
+                        }
                     )
                 }
                 .tint(settings.theme.foreground)
                 .task {
-                    let syncController = syncController
-                    appDelegate.remoteChangeHandler = { [weak syncController] in
-                        await syncController?.handleRemoteChange() ?? false
-                    }
-                    store.enforceRetentionAndLimit()
+                    pasteAccess.beginVisit()
+                    // The list shows a loading state until the saved history has been read.
+                    await IOSAppRuntime.shared.hydrate()
+                    // Needs the history read: set-up counts as finished when clips already exist.
+                    foregroundCaptureDisclosureSession.beginAutomatically(
+                        mode: settings.foregroundCaptureMode,
+                        captureSetupCompleted: settings.captureSetupCompleted,
+                        syncEnabled: settings.syncEnabled,
+                        syncAvailable: CloudContainerProvisioning.isProvisioned(for: IOSCloudSyncController.containerID)
+                    )
                     await refreshForeground()
-                    refreshSpotlightIndex()
+                    await refreshSpotlightIndex()
                 }
                 .onChange(of: scenePhase) { oldPhase, newPhase in
                     if oldPhase == .active && newPhase != .active {
@@ -695,9 +1027,12 @@ struct YankApp: App {
                     if newPhase == .active {
                         let returnedFromBackground = wasInBackground
                         wasInBackground = false
+                        if returnedFromBackground { pasteAccess.beginVisit() }
+                        // Folders an extension created while the app was away are not marked yet.
+                        store.reconcileBackupExclusionInBackground()
                         Task {
                             await refreshForeground()
-                            refreshSpotlightIndex()
+                            await refreshSpotlightIndex()
                             if returnedFromBackground {
                                 historyOpenRequest &+= 1
                             }
@@ -712,10 +1047,14 @@ struct YankApp: App {
                         appDelegate.disableRemoteChanges()
                     }
                 }
+                .onChange(of: settings.includeHistoryInBackups) {
+                    store.reconcileBackupExclusionInBackground()
+                }
                 .onChange(of: settings.foregroundCaptureMode) { oldMode, newMode in
                     if newMode == .undecided {
                         foregroundCaptureDisclosureSession.deferForCurrentSession()
                     }
+                    pasteAccess.reset()
                     Task {
                         await IOSForegroundRefreshPipeline.refreshAfterModeChange(
                             from: oldMode,
@@ -733,7 +1072,17 @@ struct YankApp: App {
         }
     }
 
+    private func closeFirstRunScreen() {
+        foregroundCaptureDisclosureSession.end()
+        foregroundCaptureDisclosureSession.deferForCurrentSession()
+    }
+
     private func refreshForeground() async {
+        // A launch before the first unlock leaves the history unread; the files are readable now.
+        IOSAppRuntime.shared.recoverProtectedStorage()
+        // Nothing runs in the background, so a clip that aged past the window while the app was
+        // away is only removed when it returns. Before the drain: clips captured now are new.
+        store.enforceRetentionAndLimit()
         await IOSForegroundRefreshPipeline.refresh(
             currentMode: { settings.foregroundCaptureMode },
             drainExplicitCaptures: { await store.drainShareInbox() },
@@ -764,7 +1113,15 @@ struct YankApp: App {
                     readData: { pasteboard.data(forPasteboardType: $0) }
                 )
             },
-            readText: { pasteboard.string },
+            readText: {
+                let text = pasteboard.string
+                if text == nil {
+                    pasteAccess.recordEmptyRead(declaredTypes: pasteboardTypes)
+                } else {
+                    pasteAccess.recordSuccessfulRead()
+                }
+                return text
+            },
             capture: { text, generation, hasRichContent in
                 await store.captureForegroundText(
                     text,
@@ -775,7 +1132,10 @@ struct YankApp: App {
         )
     }
 
-    private func refreshSpotlightIndex() {
+    /// Waits for the saved history: reconciling against an unloaded store would clear the whole
+    /// Yank Spotlight domain.
+    private func refreshSpotlightIndex() async {
+        await store.hydrate()
         if spotlightEnabled {
             SpotlightIndexer.index(store.items)
         } else {

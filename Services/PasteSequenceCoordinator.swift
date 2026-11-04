@@ -61,7 +61,7 @@ private final class LivePasteSequenceRuntime: PasteSequenceRuntime {
     }
 
     func requestAccessibilityPermission() {
-        AccessibilityPermission.requestPrompt()
+        dependencies.axPermission.promptIfFirstTime()
     }
 
     func setSequenceCollectionActive(_ active: Bool) {
@@ -241,6 +241,13 @@ final class PasteSequenceCoordinator {
         onActivityChanged()
     }
 
+    /// The HUD's Cancel button. A press that arrives after the sequence has ended, or a second
+    /// press, finds no active session and does nothing.
+    private func cancelFromHUD() {
+        guard session.isActive else { return }
+        cancel()
+    }
+
     func discard() {
         tearDown()
         onActivityChanged()
@@ -258,6 +265,7 @@ final class PasteSequenceCoordinator {
         graceTask = nil
         session.cancel()
         runtime.setSequenceCollectionActive(false)
+        hud?.state.canCancel = false
         hud?.close()
     }
 
@@ -433,6 +441,7 @@ private extension PasteSequenceCoordinator {
         graceTask?.cancel()
         let hud = ensureHUD()
         hud.state.phase = .blocked(problem)
+        hud.state.canCancel = false
         hud.state.itemCount = 0
         hud.state.nextIndex = 0
         hud.state.shortcut = shortcutLabel
@@ -444,6 +453,7 @@ private extension PasteSequenceCoordinator {
     func presentHUD(phase: PasteSequenceHUDPhase? = nil) {
         let hud = ensureHUD()
         hud.state.phase = phase ?? hudPhase(for: session.phase)
+        hud.state.canCancel = session.isActive
         hud.state.itemCount = session.occurrences.count
         hud.state.nextIndex = session.nextIndex
         hud.state.shortcut = shortcutLabel
@@ -453,6 +463,7 @@ private extension PasteSequenceCoordinator {
     func ensureHUD() -> any PasteSequenceHUDPresenting {
         if let hud { return hud }
         let created = hudFactory.makeHUD()
+        created.state.onCancel = { [weak self] in self?.cancelFromHUD() }
         hud = created
         return created
     }

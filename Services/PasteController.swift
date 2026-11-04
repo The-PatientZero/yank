@@ -87,9 +87,9 @@ enum PasteController {
             }
             store.moveToTop(item)
 
+            axPermission?.refresh()
             if let axPermission, !axPermission.isTrusted {
-                AccessibilityPermission.requestPrompt()
-                showAccessibilityHUD()
+                showAccessibilityHUD(axPermission, previousApp: previousApp)
                 return
             }
 
@@ -106,10 +106,10 @@ enum PasteController {
                           previousApp: NSRunningApplication? = nil) {
         // Without Accessibility permission, text still lands on the clipboard for manual ⌘V
         // (Paste Sequence preflights permission and calls the result-bearing API directly instead).
+        axPermission?.refresh()
         if let axPermission, !axPermission.isTrusted {
             guard copyTextToClipboard(text) != nil else { return }
-            AccessibilityPermission.requestPrompt()
-            showAccessibilityHUD()
+            showAccessibilityHUD(axPermission, previousApp: previousApp)
             return
         }
 
@@ -191,14 +191,14 @@ enum PasteController {
         Task { @MainActor in
             guard let original = await store.fullTextAsync(for: item), !original.isEmpty else { return }
             let result = await transformer.transform(original, as: transform) ?? original
+            axPermission?.refresh()
             if let axPermission, !axPermission.isTrusted {
                 guard deferredWriteCoordinator.claim(intent, for: pasteboard),
                       copyTextToClipboard(result, pasteboard: pasteboard) != nil else {
                     return
                 }
                 store.moveToTop(item)
-                AccessibilityPermission.requestPrompt()
-                showAccessibilityHUD()
+                showAccessibilityHUD(axPermission, previousApp: previousApp)
                 return
             }
 

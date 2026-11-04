@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/macOS-14.0+-black?style=for-the-badge&logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6-orange?style=for-the-badge&logo=swift" alt="Swift 6">
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/The-PatientZero/yank"><img src="https://img.shields.io/ossf-scorecard/github.com/The-PatientZero/yank?style=for-the-badge&label=OpenSSF%20Scorecard" alt="OpenSSF Scorecard"></a>
 </p>
 
 > **Status: Yank is publicly available for macOS, iPhone, and iPad.** Yank started as a
@@ -44,7 +45,7 @@ For help or to report a problem, see [Yank Support](SUPPORT.md).
 
 | Shortcut | Action |
 |----------|--------|
-| `⇧⌘V` | Open clipboard history |
+| `⇧⌘V` | Open the Quick Picker (Settings → General → "Shortcut opens" can open Full history instead) |
 | `↑` / `↓` | Navigate items |
 | `⇧↑` / `⇧↓` | Expand selection (multi‑select) |
 | `↵` Enter | Paste selected item |
@@ -54,7 +55,46 @@ For help or to report a problem, see [Yank Support](SUPPORT.md).
 | `⌘T` | Add tag to selected item |
 | `⌘S` | Save image to disk (image items) |
 | `⌘⌫` | Delete selected item |
-| `⎋` Esc | Close history window |
+| `⌘,` | Open Settings from the history window |
+| `⌥⌘1`–`⌥⌘5` | Switch layout: List, Grid, Masonry, Gallery, Split |
+| `⎋` Esc | Clear the search text; press again to close the history window |
+| `⌘Z` | Undo a delete within 10 seconds (otherwise undoes typing in the search field) |
+| `⌘F` | Focus the search field |
+| `⌘1`–`⌘9` | Paste the first nine clips directly |
+| `⌥↵` | Paste as text |
+| `Space` | Peek at the selected clip (when the search field is empty) |
+| `Tab` | Complete a tag (in the tag field or a `#tag` search) |
+| `←` / `→` | Move between tiles in Grid, Masonry and Gallery |
+| `⌫` | In an empty search field, remove the active tag filter |
+
+Except for the first row, these keys work in the Full history window. The Quick Picker has its own keys.
+
+### Quick Picker
+
+The Quick Picker is the compact chooser the shortcut opens. Its footer lists the main keys.
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move the selection |
+| `↵` Enter | Paste the selected clip |
+| `⌥↵` | Paste the selected clip as text (the text of a text clip, or the text recognized in an image) |
+| `⌘↵` | Copy the selected clip without pasting; a "Copied." note confirms it |
+| `⌘1`–`⌘9` | Paste the first nine clips directly |
+| `⌘F` | Focus the search field |
+| `⌘O` | Open Full history |
+| `⎋` Esc | Close the picker |
+
+Right-click a clip for Paste, Copy, Pin to top (or Unpin) and, where available, Smart Paste.
+
+### Paste Sequence
+
+A Paste Sequence collects text as you copy it and pastes it back one item at a time. Start one with
+the "Paste Sequence" button in the Quick Picker or "Start Paste Sequence" in the menu-bar menu.
+While it runs, the shortcut (`⇧⌘V` by default) pastes the next item instead of opening the picker,
+and a small panel at the top of the screen shows the status. To cancel, click "Cancel" on that
+panel, choose "Cancel Paste Sequence" in the menu-bar menu (right-click or Control-click the icon),
+or let it expire after 10 minutes without activity. Cancelling leaves your clipboard and history as
+they are. Paste Sequence needs Accessibility access to send the paste.
 
 ## Install
 

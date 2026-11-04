@@ -44,6 +44,10 @@ struct ClipDetailView: View {
                 tagSection(for: item)
             }
         }
+        .onAppear {
+            // A tag request can set the flag before this view exists, so `onChange` never sees it.
+            if model.showTagInput { Task { @MainActor in isTagInputFocused = true } }
+        }
         .onChange(of: model.showTagInput) { _, newValue in
             if newValue {
                 Task { @MainActor in isTagInputFocused = true }
@@ -121,7 +125,7 @@ struct ClipDetailView: View {
 
                     Text(model.itemSize.map { model.formattedBytes($0) } ?? "—")
                         .font(.system(size: TypeScale.micro))
-                        .foregroundColor(.yankTextTertiary)
+                        .foregroundColor(.yankTextTertiarySelected)
                 }
                 .font(.system(size: TypeScale.caption, weight: .medium))
                 .padding(.horizontal, Space.md)
@@ -144,7 +148,7 @@ struct ClipDetailView: View {
                         }
                     }
 
-                    if primary?.type == .image && model.previewImage != nil && primary?.ocrText == nil {
+                    if primary?.type == .image && model.previewImage != nil && primary?.recognizedText == nil {
                         IconButton(systemName: model.isExtractingText ? "ellipsis.circle" : "text.viewfinder",
                                    label: "Extract text from image", help: "Extract Text from Image") {
                             if let item = primary { Task { await model.extractText(from: item) } }
@@ -153,15 +157,15 @@ struct ClipDetailView: View {
                     }
 
                     IconButton(systemName: primary?.isPinned == true ? "pin.fill" : "pin",
-                               label: primary?.isPinned == true ? "Unpin" : "Pin to top",
-                               help: primary?.isPinned == true ? "Unpin (⌘P)" : "Pin to top (⌘P)",
+                               label: ClipActionCopy.pin(isPinned: primary?.isPinned == true),
+                               help: "\(ClipActionCopy.pin(isPinned: primary?.isPinned == true)) (⌘P)",
                                tint: primary?.isPinned == true ? AppTheme.active.foreground : .secondary) {
                         if let item = primary { store.togglePin(for: item) }
                     }
 
                     IconButton(systemName: primary?.isBookmarked == true ? "bookmark.fill" : "bookmark",
-                               label: primary?.isBookmarked == true ? "Remove bookmark" : "Bookmark",
-                               help: primary?.isBookmarked == true ? "Remove bookmark (⌘B)" : "Bookmark — protect from deletion (⌘B)",
+                               label: ClipActionCopy.bookmark(isBookmarked: primary?.isBookmarked == true),
+                               help: "\(ClipActionCopy.bookmarkHelp(isBookmarked: primary?.isBookmarked == true)) (⌘B)",
                                tint: primary?.isBookmarked == true ? Color.yankBookmark : .secondary) {
                         if let item = primary { store.toggleBookmark(for: item) }
                     }
@@ -247,7 +251,7 @@ struct ClipDetailView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    Label("Content was too large to store (\(model.formattedBytes(item.originalSizeBytes ?? 0))). Showing first 500 characters.", systemImage: "exclamationmark.triangle")
+                    Label(ClipActionCopy.tooLargeNote(sizeText: model.formattedBytes(item.originalSizeBytes ?? 0)), systemImage: "exclamationmark.triangle")
                         .font(.system(size: TypeScale.caption))
                         .foregroundColor(.secondary)
                         .padding(.top, Space.xs)
@@ -284,7 +288,7 @@ struct ClipDetailView: View {
                         .controlSize(.small)
                         .padding(.vertical, Space.lg)
                         .accessibilityLabel("Extracting text from image")
-                } else if let ocrText = item.ocrText {
+                } else if let ocrText = item.recognizedText {
                     VStack(alignment: .leading, spacing: 0) {
                         Rectangle()
                             .fill(Color.yankSubtleFill)
@@ -304,6 +308,12 @@ struct ClipDetailView: View {
                         }
                         .padding(.top, Space.lg)
                     }
+                } else if model.noTextFoundItemID == item.id {
+                    Text(ClipDetailModel.noTextFoundMessage)
+                        .font(.system(size: TypeScale.caption))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, Space.lg)
                 }
             }
         }
@@ -418,7 +428,7 @@ struct ClipDetailView: View {
 
             if model.showTagInput {
                 if inputSuggestions.isEmpty && !model.tagInputText.isEmpty {
-                    Text("No matching tags — ↵ creates “\(TagChip.normalize(model.tagInputText))”.")
+                    Text("No matching tags — ↵ creates “\(TagNormalization.normalize(model.tagInputText))”.")
                         .font(.system(size: TypeScale.micro))
                         .foregroundColor(.yankTextTertiary)
                 } else {

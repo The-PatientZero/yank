@@ -226,44 +226,22 @@ struct IOSSettingsTests {
         #expect(settings.captureSetupCompleted)
     }
 
-    @Test("Empty-history presentation advances independently of clip count")
-    func emptyHistoryPresentationUsesCaptureSetupCompletion() {
-        let setup = HistoryEmptyPresentation.resolve(
-            iCloudSignedOut: false,
-            syncFailureMessage: nil,
-            isAwaitingFirstSync: false,
-            captureSetupCompleted: false
-        )
-        let ready = HistoryEmptyPresentation.resolve(
-            iCloudSignedOut: false,
-            syncFailureMessage: nil,
-            isAwaitingFirstSync: false,
-            captureSetupCompleted: true
-        )
-
-        #expect(setup == .captureSetup)
-        #expect(ready == .ready)
-    }
-
-    @Test("Sync and account failures keep precedence over capture setup")
+    @Test("Account state and sync failures decide the empty history")
     func emptyHistoryPresentationPreservesSyncPrecedence() {
         #expect(HistoryEmptyPresentation.resolve(
             iCloudSignedOut: true,
             syncFailureMessage: "failed",
-            isAwaitingFirstSync: true,
-            captureSetupCompleted: true
-        ) == .iCloudSignedOut)
+            isAwaitingFirstSync: true
+        ) == .ready)
         #expect(HistoryEmptyPresentation.resolve(
             iCloudSignedOut: false,
             syncFailureMessage: "failed",
-            isAwaitingFirstSync: true,
-            captureSetupCompleted: true
+            isAwaitingFirstSync: true
         ) == .syncFailed("failed"))
         #expect(HistoryEmptyPresentation.resolve(
             iCloudSignedOut: false,
             syncFailureMessage: nil,
-            isAwaitingFirstSync: true,
-            captureSetupCompleted: true
+            isAwaitingFirstSync: true
         ) == .syncing)
     }
 }
