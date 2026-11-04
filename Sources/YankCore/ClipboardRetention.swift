@@ -117,9 +117,8 @@ enum ClipboardRetention {
                     now: now
                 )
                 nextItems = result.items
-                let cutoff = retentionCutoff(days: retentionDays, now: now)
                 for item in expired {
-                    nextTombstones[item.id] = expiryTombstoneDate(for: item, cutoff: cutoff)
+                    nextTombstones[item.id] = expiryTombstoneDate(for: item)
                 }
             }
         }
@@ -148,18 +147,17 @@ enum ClipboardRetention {
     /// expires clips from an old history, and a delete dated `now` would beat a copy another device
     /// used again meanwhile. Dated just past the newest time this device recorded for the clip
     /// (capture, edit, pin, bookmark, tags), a later use elsewhere outranks it and the clip stays,
-    /// while an unchanged copy elsewhere is still deleted. A clip far older than the window is
-    /// dated at the window's edge instead, so the delete is not already past the tombstone horizon.
-    /// Every copy that survives the policy is newer than the edge, so it still outranks the delete.
-    static func expiryTombstoneDate(for item: ClipboardItem, cutoff: Date) -> Date {
+    /// while an unchanged copy elsewhere is still deleted. The date is never moved up to the
+    /// retention window's edge: a pin, bookmark or tag made elsewhere before the edge must still
+    /// outrank it. For a very old clip it may already be past the tombstone horizon and be pruned
+    /// at once. That is fine, because every device expires the clip itself with the same date.
+    static func expiryTombstoneDate(for item: ClipboardItem) -> Date {
         var clocks = [item.timestamp, item.modifiedAt]
         if let annotation = item.annotationClocks {
             clocks += [annotation.pinnedAt, annotation.bookmarkedAt, annotation.tagsAt]
         }
         let newestClock = clocks.max() ?? item.modifiedAt
-        let past = newestClock.addingTimeInterval(ClipboardMerge.mergeBumpInterval)
-        let windowEdge = cutoff.addingTimeInterval(-ClipboardMerge.mergeBumpInterval)
-        return max(past, windowEdge)
+        return newestClock.addingTimeInterval(ClipboardMerge.mergeBumpInterval)
     }
 
     // MARK: - Tombstone Age-Out

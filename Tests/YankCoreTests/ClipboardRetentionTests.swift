@@ -17,11 +17,6 @@ import Testing
         )
     }
 
-    /// Where the delete of a clip far older than the window is dated: just before the window starts.
-    private func windowEdge(days: Double) -> Date {
-        now.addingTimeInterval(-days * 86_400 - ClipboardMerge.mergeBumpInterval)
-    }
-
     private var sample: [ClipboardItem] {
         [
             item(1, ageDays: 40),
@@ -158,7 +153,7 @@ import Testing
         #expect(capped.count == sample.count)
     }
 
-    @Test func enforceExpiresOldUnprotectedAndDatesTombstonesAtTheWindowEdge() {
+    @Test func enforceExpiresOldUnprotectedAndDatesTombstonesFromTheExpiredClip() {
         let old = item(50, ageDays: 40)
         let fresh = item(51, ageDays: 2)
 
@@ -171,7 +166,7 @@ import Testing
         )
 
         #expect(result.items == [fresh])
-        #expect(result.tombstones == [old.id: windowEdge(days: 30)])
+        #expect(result.tombstones == [old.id: ClipboardRetention.expiryTombstoneDate(for: old)])
         #expect(result.expiredItems == [old])
         #expect(result.cappedItems.isEmpty)
         #expect(result.didChange)
@@ -225,7 +220,7 @@ import Testing
         )
 
         #expect(result.items == [kept])
-        #expect(result.tombstones == [expired.id: windowEdge(days: 30)])
+        #expect(result.tombstones == [expired.id: ClipboardRetention.expiryTombstoneDate(for: expired)])
         #expect(result.expiredItems == [expired])
         #expect(result.cappedItems == [capped])
         #expect(Set(result.blobReferencesToDelete) == [
