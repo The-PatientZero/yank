@@ -150,6 +150,7 @@ enum UpdateInstaller {
         let targetAppURL = URL(fileURLWithPath: staged.targetAppPath)
         let stageDirectory = stagedAppURL.deletingLastPathComponent().deletingLastPathComponent()
         let scriptURL = stageDirectory.appendingPathComponent("install.sh")
+        let logURL = stagingRootDirectory(fileManager: fileManager).appendingPathComponent("install.log")
         let backupURL = URL(fileURLWithPath: "\(targetAppURL.path).previous-update")
 
         try validateTargetAppURL(targetAppURL)
@@ -167,7 +168,10 @@ enum UpdateInstaller {
         backup_app=\(ShellQuoting.quoted(backupURL.path))
 
         restore_backup() {
-            if [ -d "$backup_app" ] && [ ! -d "$target_app" ]; then
+            if [ -d "$backup_app" ]; then
+                if [ -e "$target_app" ]; then
+                    /bin/rm -R "$target_app"
+                fi
                 /bin/mv "$backup_app" "$target_app"
             fi
         }
@@ -199,7 +203,7 @@ enum UpdateInstaller {
         try runner.run(
             "installer launcher",
             "/bin/sh",
-            ["-c", "nohup /bin/bash \(ShellQuoting.quoted(scriptURL.path)) >/dev/null 2>&1 &"]
+            ["-c", "nohup /bin/bash \(ShellQuoting.quoted(scriptURL.path)) >\(ShellQuoting.quoted(logURL.path)) 2>&1 &"]
         )
     }
 
