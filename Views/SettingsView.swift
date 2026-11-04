@@ -170,6 +170,7 @@ struct SettingsView: View {
                         .foregroundColor(.yankTextTertiary)
                 }
             }
+            SettingsUpdatesRow()
             HStack(spacing: Space.lg) {
                 Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
                 Link("Privacy Policy", destination: YankLinks.privacyPolicy)
