@@ -8,6 +8,11 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopped recording copies that carry the older concealed and transient markers used by 1Password and some text expanders, on Mac and iPhone. Clips an earlier version already stored stay in history.
+- On the Mac, a copy made in an excluded app is no longer recorded when you switch to another app within half a second. A copy is also skipped when the app named in its source hint is excluded; the hint can only add exclusions. iPhone still cannot exclude by app.
+
 ## [1.2.0] - 2026-08-21
 
 ### Added

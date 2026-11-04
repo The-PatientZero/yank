@@ -8,6 +8,8 @@ import UIKit
 enum IOSForegroundCaptureOutcome: Equatable {
     case durable
     case terminalPolicyRejection
+    /// The pasteboard declares no text type, so it was acknowledged without being read.
+    case noText
     case retryableFailure
 }
 
@@ -19,15 +21,25 @@ final class IOSForegroundRefreshCoordinator {
         let task: Task<IOSForegroundCaptureOutcome, Never>
     }
 
-    static let shared = IOSForegroundRefreshCoordinator()
+    static let shared = IOSForegroundRefreshCoordinator(
+        acknowledgementStore: PasteboardAcknowledgementStore.live()
+    )
 
     private var lastHandledPasteboardChangeCount: Int?
     private var latestObservedPasteboardChangeCount: Int?
     private var inFlightCapture: InFlightCapture?
+    private let acknowledgementStore: PasteboardAcknowledgementStore?
+
+    /// `acknowledgementStore` persists the handled generation across process death. Without
+    /// one, the handled generation lives in memory only.
+    init(acknowledgementStore: PasteboardAcknowledgementStore? = nil) {
+        self.acknowledgementStore = acknowledgementStore
+    }
 
     func markPasteboardChangeHandled(_ changeCount: Int) {
         latestObservedPasteboardChangeCount = changeCount
         lastHandledPasteboardChangeCount = changeCount
+        persistAcknowledgement(changeCount)
     }
 
     @discardableResult
@@ -68,6 +80,11 @@ final class IOSForegroundRefreshCoordinator {
         latestObservedPasteboardChangeCount = pasteboardChangeCount
         let currentPasteboardChangeCount = currentPasteboardChangeCount ?? {
             pasteboardChangeCount
+        }
+        // Cold launch: the in-memory marker is empty, so consult the persisted acknowledgement.
+        if lastHandledPasteboardChangeCount == nil,
+           acknowledgementStore?.isAcknowledged(changeCount: pasteboardChangeCount) == true {
+            lastHandledPasteboardChangeCount = pasteboardChangeCount
         }
         guard pasteboardChangeCount != lastHandledPasteboardChangeCount else {
             return false
@@ -148,6 +165,14 @@ final class IOSForegroundRefreshCoordinator {
             return .terminalPolicyRejection
         case .capture:
             guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            guard PasteboardAcknowledgement.hasTextRepresentation(in: pasteboardTypes) else {
+                // Nothing to read: acknowledge the generation so it is never read (and never
+                // prompts for paste permission) again.
+                guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+                updateLatestObserved(using: currentPasteboardChangeCount)
+                markCurrentGenerationHandled(pasteboardChangeCount)
+                return .noText
+            }
             let hasRichContent = PasteboardArchive.isRich(utis: pasteboardTypes)
             guard let text = readText() else { return .retryableFailure }
             guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
@@ -180,6 +205,15 @@ final class IOSForegroundRefreshCoordinator {
     private func markCurrentGenerationHandled(_ changeCount: Int) {
         guard latestObservedPasteboardChangeCount == changeCount else { return }
         lastHandledPasteboardChangeCount = changeCount
+        persistAcknowledgement(changeCount)
+    }
+
+    private func persistAcknowledgement(_ changeCount: Int) {
+        do {
+            try acknowledgementStore?.record(changeCount: changeCount)
+        } catch {
+            clipStoreLog.error("Could not persist the pasteboard acknowledgement: \(error.localizedDescription)")
+        }
     }
 }
 
@@ -315,12 +349,14 @@ final class IOSCloudSyncController {
             ClipStore,
             any SyncedSettingsStore
         ) -> CloudKitSyncService = { database, store, settingsStore in
-            CloudKitSyncService(
+            let service = CloudKitSyncService(
                 containerIdentifier: IOSCloudSyncController.containerID,
                 store: store,
                 database: database,
                 settingsStore: settingsStore
             )
+            service.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: store)
+            return service
         },
         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.registerForRemoteNotifications()

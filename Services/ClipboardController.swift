@@ -290,6 +290,7 @@ final class ClipboardController {
                 store: self.store,
                 settingsStore: self.settingsSyncBridge
             )
+            sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: self.store)
             self.cloudSync = sync
             NSApp.registerForRemoteNotifications()
             self.startCloudSync(sync)

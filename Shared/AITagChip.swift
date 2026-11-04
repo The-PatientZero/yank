@@ -5,6 +5,10 @@ import SwiftUI
 struct AITagChip: View {
     let label: String
     var onPromote: (() -> Void)? = nil
+    /// True when the chip sits on a selection fill, where the selected tertiary ink keeps it AA-legible.
+    var onSelection: Bool = false
+
+    private var inkColor: Color { onSelection ? .yankTextTertiarySelected : .yankTextTertiary }
 
     private var chipFont: Font {
         #if os(iOS)
@@ -31,11 +35,11 @@ struct AITagChip: View {
     private var chip: some View {
         HStack(spacing: Space.xs) {
             Circle()
-                .strokeBorder(Color.yankTextTertiary, lineWidth: Hairline.width)
+                .strokeBorder(inkColor, lineWidth: Hairline.width)
                 .frame(width: 6, height: 6)
             Text(label).font(chipFont)
         }
-        .foregroundColor(.yankTextTertiary)
+        .foregroundColor(inkColor)
         .padding(.horizontal, Space.sm)
         .padding(.vertical, Space.xxs)
         .overlay(

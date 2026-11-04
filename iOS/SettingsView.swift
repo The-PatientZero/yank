@@ -75,10 +75,25 @@ struct SettingsView: View {
                 Label("iCloud Sync", systemImage: "icloud")
             }
             syncStatusRow
+            encryptionStatusRow
         } header: {
             Text("Sync")
         } footer: {
             Text("\(SyncCopy.optInDescription) \(syncSectionDescription)")
+        }
+    }
+
+    @ViewBuilder private var encryptionStatusRow: some View {
+        if case .localOnly = store.syncStatus {
+            EmptyView()
+        } else if let status = store.encryptionStatus {
+            let text = SyncCopy.encryption(status)
+            let isWarning: Bool = if case .olderDeviceSeen = status { true } else { false }
+            Label(text, systemImage: isWarning ? "exclamationmark.icloud" : "lock.icloud")
+                .foregroundStyle(isWarning ? Color.yankDanger : Color.secondary)
+                .font(.yank(.caption))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(text)
         }
     }
 

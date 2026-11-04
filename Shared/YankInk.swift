@@ -25,17 +25,24 @@ enum YankInk {
     /// #FFCC4D is only 1.5:1, so this uses a darker goldenrod giving 5.38:1. Identical in
     /// both appearances — it's always drawn behind white, so it doesn't need to adapt.
     static let bookmarkFill = (light: 0x8A6400, dark: 0x8A6400)
-    /// Tertiary text — quiet metadata/hints, clears WCAG AA (~5:1) on paper/raised
-    /// without relying on stacked `.opacity`.
+    /// Tertiary text — quiet metadata/hints. Verified against WCAG AA on paper and raised
+    /// only, without relying on stacked `.opacity`. Text on a selection fill must use
+    /// `textTertiarySelected` instead: the tint pulls this ink below 4.5:1.
     static let textTertiary = (light: 0x6E665A, dark: 0x9C948A)
+    /// Tertiary text drawn on a selection fill (selected or highlighted row/tile, size
+    /// pill). Clears 4.5:1 on every accent selection fill and the neutral multi-select
+    /// fill — at least 5.02:1 light and 4.62:1 dark in the worst case.
+    static let textTertiarySelected = (light: 0x5C554B, dark: 0xBDB5AB)
     /// Code/preview body ink — a step above `textTertiary` since it carries full content,
     /// not metadata. Clears AA (~8:1 light, ~7:1 dark) as a solid colour; stacked
     /// `.primary.opacity()` can't guarantee that per appearance.
     static let codeText = (light: 0x4A453E, dark: 0xC4BCB2)
     /// Destructive / error semantics — a warm-leaning red, AA-legible as a foreground.
     static let danger = (light: 0xC2371F, dark: 0xFF6B5A)
-    /// Success semantics — used for positive status glyphs and confirmations.
-    static let success = (light: 0x2F855A, dark: 0x48BB78)
+    /// Success semantics — positive status glyphs, confirmations and small status text.
+    /// 5.39:1 on paper and 5.72:1 on raised in light appearance, 7.25:1 in dark, so it
+    /// is safe for 11 pt text as well as glyphs.
+    static let success = (light: 0x25704A, dark: 0x48BB78)
     /// Success as a badge fill. Its paired `onSuccess` ink clears WCAG AA for small text:
     /// 5.23:1 in light appearance and 7.25:1 in dark appearance.
     static let successFill = (light: 0x2C7A52, dark: 0x48BB78)

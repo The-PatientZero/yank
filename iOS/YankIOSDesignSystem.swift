@@ -61,9 +61,13 @@ extension Color {
     /// Bookmark as a swipe-action fill (white glyph on gold) — darker than the on-paper
     /// glyph so white clears AA (5.38:1) rather than the 1.5:1 the lighter glyph gold gives.
     static let yankBookmarkFill = yankDynamic(light: YankInk.bookmarkFill.light, dark: YankInk.bookmarkFill.dark)
-    /// Tertiary text — quiet metadata tuned to ~5:1, so small labels stay AA-legible
-    /// instead of using system `.tertiary` (which isn't contrast-verified on paper).
+    /// Tertiary text — quiet metadata verified AA-legible on paper and raised only, instead
+    /// of system `.tertiary` (which isn't contrast-verified on paper). Text on a selection
+    /// fill uses `yankTextTertiarySelected` instead.
     static let yankTextTertiary = yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
+    /// Tertiary text on a selection or highlight fill — keeps small labels AA-legible on the tint.
+    static let yankTextTertiarySelected = yankDynamic(
+        light: YankInk.textTertiarySelected.light, dark: YankInk.textTertiarySelected.dark)
     /// Code / preview body text — a softened but AA-legible ink for monospaced previews and
     /// long-text excerpts, replacing stacked `.primary.opacity(0.8x)` so dark mode stays semantic.
     static let yankCodeText = yankDynamic(light: YankInk.codeText.light, dark: YankInk.codeText.dark)

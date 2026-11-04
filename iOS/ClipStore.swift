@@ -12,7 +12,7 @@ let clipStoreLog = Logger(subsystem: "com.thepatientzero.yank", category: "store
 /// Group so the keyboard and share extensions read the same data.
 @MainActor
 @Observable
-final class ClipStore: SyncableStore {
+final class ClipStore: SyncableStore, SyncEncryptionStatusReporting {
     private struct PendingForegroundTextCapture {
         let pasteboardGeneration: Int
         let item: ClipboardItem
@@ -53,6 +53,9 @@ final class ClipStore: SyncableStore {
     private(set) var firstSyncState: FirstSyncState = .idle
 
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
+
+    /// How far the move to end-to-end encrypted clip content has come; nil until sync reports it.
+    private(set) var encryptionStatus: SyncEncryptionStatus?
 
     /// True when the blobs container or its at-rest protection class failed to set up — synced
     /// image/text blobs may be missing or weaker than `completeUntilFirstUserAuthentication`.
@@ -369,7 +372,13 @@ final class ClipStore: SyncableStore {
             for entry in entries {
                 do {
                     var didImport = false
-                    if !items.contains(where: { $0.id == entry.id }) {
+                    // The durable record also covers a handoff whose clip was merged by
+                    // deduplication or deleted, which leaves no item with the entry's ID.
+                    let entryID = entry.id
+                    let alreadyProcessed = try await Task.detached(priority: .utility) {
+                        try inbox.isProcessed(entryID)
+                    }.value
+                    if !alreadyProcessed, !items.contains(where: { $0.id == entry.id }) {
                         try await importShareCapture(entry, from: inbox)
                         didImport = true
                     }
@@ -378,6 +387,11 @@ final class ClipStore: SyncableStore {
                     // seeing the ID in memory alone is not proof that it reached disk.
                     persist(notify: didImport)
                     try flushPendingWrites()
+                    if !alreadyProcessed {
+                        try await Task.detached(priority: .utility) {
+                            try inbox.markProcessed(entryID)
+                        }.value
+                    }
                     try await Task.detached(priority: .utility) {
                         try inbox.remove(entry)
                     }.value
@@ -494,19 +508,19 @@ final class ClipStore: SyncableStore {
     /// Resolve a new local inline-text capture against existing eligible records. Sync itself
     /// remains UUID-based; this is invoked only from explicit local capture/ingestion paths.
     private func refreshDuplicateCapture(with incoming: ClipboardItem) -> UUID? {
-        let existing = items
-            .filter { TextCaptureIdentity.matches($0, incoming) }
-            .max { lhs, rhs in
-                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
-        guard let existing,
+        // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
+        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
+        guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
+            for: incoming,
+            in: items,
+            excluding: pendingIDs
+        ),
               ClipboardMutations.refreshDuplicateCapture(
-            existingID: existing.id,
-            with: incoming,
-            in: &items
+                  existingID: existingID,
+                  with: incoming,
+                  in: &items
               ) else { return nil }
-        return existing.id
+        return existingID
     }
 
     /// Mark an item most-recently-used (e.g. after copying it to the pasteboard).
@@ -613,6 +627,11 @@ final class ClipStore: SyncableStore {
 
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         syncStatus = .localOnly(reason: reason)
+        encryptionStatus = nil
+    }
+
+    func markEncryptionStatus(_ status: SyncEncryptionStatus?) {
+        encryptionStatus = status
     }
 
     func itemsForSync() -> [ClipboardItem] {

@@ -138,13 +138,18 @@ struct ClipTileView: View {
         }
     }
 
+    /// Metadata ink: the selected variant when a selection or highlight fill sits behind the text.
+    private var metadataColor: Color {
+        isSelected || isHighlighted ? .yankTextTertiarySelected : .yankTextTertiary
+    }
+
     private var footer: some View {
         HStack(spacing: Space.xs) {
-            Text(kind.label).font(.yank(.caption2, weight: .medium)).foregroundStyle(Color.yankTextTertiary)
+            Text(kind.label).font(.yank(.caption2, weight: .medium)).foregroundStyle(metadataColor)
             RichContentBadge(state: item.richContentState, font: .yank(.caption2))
             Spacer(minLength: 0)
             ClipStatusBadge(item: item)
-            Text(item.relativeAge).font(.yank(.caption2)).foregroundStyle(Color.yankTextTertiary)
+            Text(item.relativeAge).font(.yank(.caption2)).foregroundStyle(metadataColor)
         }
     }
 }

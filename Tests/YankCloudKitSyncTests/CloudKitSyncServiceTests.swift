@@ -3184,7 +3184,9 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
 
     func fetchZoneChanges(
         _ zoneID: CKRecordZone.ID,
-        since token: CKServerChangeToken?
+        since token: CKServerChangeToken?,
+        desiredKeys: [CKRecord.FieldKey]?,
+        resultsLimit: Int?
     ) async throws -> CloudKitZoneChanges {
         fetchCount += 1
         await onFetchZoneChanges?()
@@ -3213,7 +3215,8 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
 
     func fetchRecords(
         for recordNames: [String],
-        in zoneID: CKRecordZone.ID
+        in zoneID: CKRecordZone.ID,
+        desiredKeys: [CKRecord.FieldKey]?
     ) async throws -> CloudKitFetchedRecords {
         fetchedRecordNameBatches.append(recordNames)
         if let fetchRecordsError { throw fetchRecordsError }
@@ -3228,7 +3231,10 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
         return fetched
     }
 
-    func saveRecords(_ records: [CKRecord]) async throws -> CloudKitRecordSaveResult {
+    func saveRecords(
+        _ records: [CKRecord],
+        savePolicy: CloudKitSavePolicy
+    ) async throws -> CloudKitRecordSaveResult {
         if let saveError { throw saveError }
         let currentSaveCallIndex = saveCallIndex
         saveCallIndex += 1

@@ -27,9 +27,22 @@ struct ShareCaptureInbox: Sendable {
         let text: String?
     }
 
+    /// One handoff the host has already imported, kept so a replay is not imported again.
+    struct ProcessedRecord: Codable, Equatable, Sendable {
+        let id: UUID
+        let processedAt: Date
+    }
+
     static let currentVersion = 1
     static let entriesDirectoryName = "share-capture-inbox-v1"
     static let payloadsDirectoryName = "share-capture-payloads-v1"
+    /// Lives in the inbox root, not beside the entries, so every process that drains the inbox
+    /// reads and writes the same record.
+    static let processedFileName = "share-capture-processed-v1.json"
+    /// A replay can only happen while the entry file is still present after a crash or failed
+    /// remove, i.e. within a few launches, so a month and a few hundred IDs are ample.
+    static let maxProcessedRecords = 500
+    static let processedRetention: TimeInterval = 30 * 24 * 60 * 60
     static let defaultMaxPendingCaptures = 50
     static let defaultMaxPendingBytes = 64 * 1_024 * 1_024
 
@@ -44,6 +57,10 @@ struct ShareCaptureInbox: Sendable {
 
     var payloadsURL: URL {
         rootURL.appendingPathComponent(Self.payloadsDirectoryName, isDirectory: true)
+    }
+
+    var processedURL: URL {
+        rootURL.appendingPathComponent(Self.processedFileName, isDirectory: false)
     }
 
     init(
@@ -203,6 +220,36 @@ struct ShareCaptureInbox: Sendable {
         try removeIfPresent(entryURL(for: entry.id))
     }
 
+    /// Whether this handoff identifier was already imported, independent of whether its clip is
+    /// still in history (a deduplicated or deleted clip leaves no item with the entry's ID).
+    func isProcessed(_ id: UUID) throws -> Bool {
+        try processedRecords().contains { $0.id == id }
+    }
+
+    /// Records an imported handoff. Call after the import is durable and before `remove`, so a
+    /// crash in between replays the import onto the same item ID instead of losing a capture.
+    func markProcessed(_ id: UUID, at date: Date = Date()) throws {
+        var records = try processedRecords().filter { $0.id != id }
+        records.append(ProcessedRecord(id: id, processedAt: date))
+        let cutoff = date.addingTimeInterval(-Self.processedRetention)
+        records = records
+            .filter { $0.processedAt >= cutoff }
+            .sorted { $0.processedAt < $1.processedAt }
+            .suffix(Self.maxProcessedRecords)
+            .map { $0 }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try JSONEncoder.processedRecords.encode(records).write(to: processedURL, options: writeOptions)
+    }
+
+    /// A missing file is an empty record. A damaged file is also treated as empty and replaced by
+    /// the next `markProcessed`: it can only cost replay protection for old handoffs, and failing
+    /// here would block every later import.
+    private func processedRecords() throws -> [ProcessedRecord] {
+        guard FileManager.default.fileExists(atPath: processedURL.path) else { return [] }
+        let data = try Data(contentsOf: processedURL)
+        return (try? JSONDecoder.processedRecords.decode([ProcessedRecord].self, from: data)) ?? []
+    }
+
     private func prepareForEnqueue(addingBytes: Int) throws {
         try FileManager.default.createDirectory(at: entriesURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: payloadsURL, withIntermediateDirectories: true)
@@ -252,5 +299,21 @@ struct ShareCaptureInbox: Sendable {
     private func removeIfPresent(_ url: URL) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         try FileManager.default.removeItem(at: url)
+    }
+}
+
+private extension JSONEncoder {
+    static var processedRecords: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+}
+
+private extension JSONDecoder {
+    static var processedRecords: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }
