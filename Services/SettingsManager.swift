@@ -75,6 +75,7 @@ final class SettingsManager {
     private let excludedBundleIDsKey = "excludedBundleIDs"
     private let minCaptureLengthKey = "minCaptureLength"
     private let showMenuBarIconKey = "showMenuBarIcon"
+    private let capturePausedKey = "capturePaused"
     private let keepHistoryWindowOpenKey = "keepHistoryWindowOpen"
     private let aiTaggingEnabledKey = "aiTaggingEnabled"
     private let historyWindowPlacementKey = "historyWindowPlacement"
@@ -115,6 +116,10 @@ final class SettingsManager {
 
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
     var showMenuBarIcon: Bool = true
+
+    /// Whether the user paused clipboard capture. Saved so a pause survives a relaunch; local to
+    /// this Mac and never synced. `ClipboardWatcher.isPaused` is the effect of this choice.
+    var capturePaused: Bool = false
 
     /// Whether outside clicks leave the history window visible.
     var keepHistoryWindowOpen: Bool = false
@@ -207,6 +212,7 @@ final class SettingsManager {
         }
         self.minCaptureLength = defaults.integer(forKey: minCaptureLengthKey)
         self.showMenuBarIcon = defaults.object(forKey: showMenuBarIconKey) as? Bool ?? true
+        self.capturePaused = defaults.bool(forKey: capturePausedKey)
         self.keepHistoryWindowOpen = defaults.object(forKey: keepHistoryWindowOpenKey) as? Bool ?? false
         self.aiTaggingEnabled = defaults.bool(forKey: aiTaggingEnabledKey)
         self.historyWindowPlacement = HistoryWindowPlacementDefaults.initialPlacement(
@@ -243,6 +249,7 @@ final class SettingsManager {
         defaults.set(minCaptureLength, forKey: minCaptureLengthKey)
         defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
         defaults.set(showMenuBarIcon, forKey: showMenuBarIconKey)
+        defaults.set(capturePaused, forKey: capturePausedKey)
         defaults.set(keepHistoryWindowOpen, forKey: keepHistoryWindowOpenKey)
         defaults.set(aiTaggingEnabled, forKey: aiTaggingEnabledKey)
         defaults.set(historyWindowPlacement.rawValue, forKey: historyWindowPlacementKey)
@@ -271,6 +278,11 @@ final class SettingsManager {
         showMenuBarIcon = value
         save()
         NotificationCenter.default.post(name: .yankMenuBarVisibilityChanged, object: nil)
+    }
+
+    func setCapturePaused(_ value: Bool) {
+        capturePaused = value
+        save()
     }
 
     func setSpotlightIndexingEnabled(_ value: Bool) {

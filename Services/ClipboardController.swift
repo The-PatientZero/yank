@@ -83,6 +83,9 @@ final class ClipboardController {
     func start() {
         let watcher = ClipboardWatcher(store: store, settings: dependencies.settings.captureSettings)
         let pasteSequenceCoordinator = makePasteSequenceCoordinator(for: watcher)
+        // A saved pause is restored before the timer would start, so nothing is captured. Resume
+        // re-reads the change count, so what was copied during the pause is never captured later.
+        if dependencies.settings.capturePaused { watcher.pause() }
         watcher.startWatching()
         clipboardWatcher = watcher
 
@@ -176,7 +179,8 @@ final class ClipboardController {
             axPermission: dependencies.axPermission,
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
             onOpenFullHistory: { [weak self] in self?.showHistoryWindow() },
-            onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() }
+            onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() },
+            onResumeCapture: { [weak self] in self?.setCapturePaused(false) }
         )
 
         let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
@@ -193,7 +197,7 @@ final class ClipboardController {
         )
 
         dependencies.hub.setPrimaryPanelProvider { [weak self] in self?.makePrimaryPanel() ?? .empty }
-        dependencies.hub.setPrimaryIconDimmed(watcher.isPaused)
+        dependencies.hub.showCapturePaused(watcher.isPaused)
 
         registerHotkey()
         observerTokens.append(
@@ -240,7 +244,8 @@ final class ClipboardController {
         clipboardWatcher = nil
         dependencies.hotkeys.unregister()
         dependencies.hub.setPrimaryPanelProvider(nil)
-        dependencies.hub.setPrimaryIconDimmed(false)
+        // Visual reset only: quitting and the update relaunch keep the saved pause.
+        dependencies.hub.showCapturePaused(false)
         cancelDelayedQuickPickerOpen()
         quickPickerWindowController?.close()
         quickPickerWindowController = nil
@@ -444,7 +449,14 @@ final class ClipboardController {
         case .quickPicker:
             toggleQuickPickerWindow()
         case .fullHistory:
-            toggleHistoryWindow()
+            // The history window has no pause state. With the icon hidden and capture paused, the
+            // Quick Picker is the only place to see the pause and end it.
+            let settings = dependencies.settings
+            if settings.capturePaused && !settings.showMenuBarIcon {
+                toggleQuickPickerWindow()
+            } else {
+                toggleHistoryWindow()
+            }
         }
     }
 
@@ -537,7 +549,10 @@ final class ClipboardController {
             onRepeatPasteSequence: { [weak self] previousApp in
                 self?.pasteSequenceCoordinator?.repeatPrevious(previousApp: previousApp)
             },
-            onTogglePause: { [weak self] in self?.togglePause() },
+            onTogglePause: { [weak self] in
+                guard let self else { return }
+                setCapturePaused(!dependencies.settings.capturePaused)
+            },
             onIgnoreNextCopy: { [weak self] in self?.clipboardWatcher?.ignoreNextCopy() },
             onFixShortcut: { [weak self] in self?.openSettings() },
             onSettings: { [weak self] in self?.openSettings() },
@@ -547,16 +562,18 @@ final class ClipboardController {
         )
     }
 
-    private func togglePause() {
-        guard let watcher = clipboardWatcher else { return }
-        let nowPaused = !watcher.isPaused
-        if nowPaused {
-            if pasteSequenceCoordinator?.isActive == true { pasteSequenceCoordinator?.cancel() }
-            watcher.pause()
-        } else {
-            watcher.resume()
+    /// The only place the pause changes: saves the choice, applies it to the watcher and shows it.
+    private func setCapturePaused(_ paused: Bool) {
+        dependencies.settings.setCapturePaused(paused)
+        if let watcher = clipboardWatcher {
+            if paused {
+                if pasteSequenceCoordinator?.isActive == true { pasteSequenceCoordinator?.cancel() }
+                watcher.pause()
+            } else {
+                watcher.resume()
+            }
         }
-        dependencies.hub.setPrimaryIconDimmed(nowPaused)
+        dependencies.hub.showCapturePaused(paused)
     }
 
     private func clearHistory() {

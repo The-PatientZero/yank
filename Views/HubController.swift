@@ -20,10 +20,25 @@ final class HubController {
     private var syncAttentionShown = false
     private var syncAttentionTask: Task<Void, Never>?
     private var tooltipParts: (headline: String, syncProblem: String?, hint: String) = ("", nil, "")
+    private var capturePaused: Bool
+    private var renderedGlyphState: IconState?
+
+    /// Everything the menu-bar glyph shows. The image is rebuilt only when this changes.
+    private struct IconState: Equatable {
+        let paused: Bool
+        let updateText: String?
+        let syncProblem: Bool
+
+        var accessibilityDescription: String {
+            let states = [paused ? "capture paused" : nil, updateText, syncProblem ? "sync problem" : nil]
+            return (["Yank"] + states.compactMap { $0 }).joined(separator: ", ")
+        }
+    }
 
     init(footer: HubAppFooter, settings: SettingsManager = .shared) {
         self.footer = footer
         self.settings = settings
+        capturePaused = settings.capturePaused
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         setupButton()
         statusItem.isVisible = settings.showMenuBarIcon
@@ -35,25 +50,34 @@ final class HubController {
                                                name: .yankUpdateStateChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(syncStatusChanged),
                                                name: .yankSyncStatusChanged, object: nil)
+        refreshGlyph()
     }
 
     func setPrimaryPanelProvider(_ provider: (@MainActor () -> HubPrimaryPanel)?) {
         primaryPanelProvider = provider
     }
 
-    func setPrimaryIconDimmed(_ dimmed: Bool) {
-        statusItem.button?.alphaValue = dimmed ? 0.4 : 1.0
+    /// Visual only: shows or clears the pause state on the icon. It never changes the saved pause.
+    func showCapturePaused(_ paused: Bool) {
+        capturePaused = paused
+        refreshGlyph()
     }
 
-    /// The tooltip is the shortcut line, then the sync problem while the icon shows its dot, then
-    /// the hint, so the three never overwrite each other.
+    /// The tooltip is the shortcut line, then the pause and update lines the hub owns, then the
+    /// sync problem while the icon shows its dot, then the hint, so they never overwrite each other.
     func setTooltip(headline: String, syncProblem: String?, hint: String) {
         tooltipParts = (headline, syncProblem, hint)
         applyTooltip()
     }
 
     private func applyTooltip() {
-        let lines = [tooltipParts.headline, syncAttentionShown ? tooltipParts.syncProblem : nil, tooltipParts.hint]
+        let lines = [
+            tooltipParts.headline,
+            capturePaused ? Self.pausedTooltipLine : nil,
+            footer.updateAttention(),
+            syncAttentionShown ? tooltipParts.syncProblem : nil,
+            tooltipParts.hint
+        ]
         statusItem.button?.toolTip = lines.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
@@ -78,6 +102,7 @@ final class HubController {
 
     @objc private func updateStateChanged() {
         refreshMenu()
+        refreshGlyph()
     }
 
     @objc private func syncStatusChanged() {
@@ -116,10 +141,21 @@ final class HubController {
     }
 
     private func setSyncAttention(shown: Bool) {
-        let changed = shown != syncAttentionShown
         syncAttentionShown = shown
-        if changed {
-            statusItem.button?.image = shown ? Self.attentionGlyph : Self.brandGlyph
+        refreshGlyph()
+    }
+
+    /// Redraws the icon for the current pause, update and sync states, and refreshes the tooltip
+    /// so it never goes stale.
+    private func refreshGlyph() {
+        let state = IconState(
+            paused: capturePaused,
+            updateText: footer.updateAttention(),
+            syncProblem: syncAttentionShown
+        )
+        if state != renderedGlyphState {
+            renderedGlyphState = state
+            statusItem.button?.image = Self.glyph(for: state)
         }
         applyTooltip()
     }
@@ -155,7 +191,6 @@ final class HubController {
     private func setupButton() {
         guard let button = statusItem.button else { return }
 
-        button.image = Self.brandGlyph
         button.imageScaling = .scaleProportionallyDown
         button.wantsLayer = true   // layer-backed so the capture pulse can animate the glyph
 
@@ -175,30 +210,79 @@ final class HubController {
         return image
     }()
 
-    /// The brand glyph with a small dot in the top-right corner. The dot is the danger ink with a
-    /// thin ring in the menu-bar ground colour, so it separates from the amber arrow and clears
+    private static let pausedTooltipLine = "Capture is paused"
+
+    /// The brand glyph with the active marks, each in its own corner so none hides another: the
+    /// update dot top-left, the sync dot top-right and the pause mark bottom-right. Dots carry a
+    /// thin ring in the menu-bar ground colour, so they separate from the amber arrow and clear
     /// 3:1 against both a light and a dark menu bar. Drawn per appearance at render time.
-    private static let attentionGlyph: NSImage = {
-        let size = brandGlyph.size
-        let image = NSImage(size: size, flipped: false) { rect in
-            brandGlyph.draw(in: rect)
-            let dotRect = NSRect(
-                x: rect.maxX - AttentionDot.diameter - AttentionDot.inset,
-                y: rect.maxY - AttentionDot.diameter - AttentionDot.inset,
-                width: AttentionDot.diameter,
-                height: AttentionDot.diameter
+    private static func glyph(for state: IconState) -> NSImage {
+        let image = NSImage(size: brandGlyph.size, flipped: false) { rect in
+            brandGlyph.draw(
+                in: rect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: state.paused ? PauseMark.glyphOpacity : 1
             )
-            let ring = NSBezierPath(ovalIn: dotRect.insetBy(dx: -AttentionDot.ringWidth, dy: -AttentionDot.ringWidth))
-            AttentionDot.ringColor.setFill()
-            ring.fill()
-            NSColor.yankDanger.setFill()
-            NSBezierPath(ovalIn: dotRect).fill()
+            if state.updateText != nil {
+                drawDot(
+                    in: NSRect(
+                        x: rect.minX + UpdateDot.ringWidth,
+                        y: rect.maxY - UpdateDot.diameter - UpdateDot.ringWidth,
+                        width: UpdateDot.diameter,
+                        height: UpdateDot.diameter
+                    ),
+                    ringWidth: UpdateDot.ringWidth,
+                    color: .yankSuccess
+                )
+            }
+            if state.syncProblem {
+                drawDot(
+                    in: NSRect(
+                        x: rect.maxX - AttentionDot.diameter - AttentionDot.inset,
+                        y: rect.maxY - AttentionDot.diameter - AttentionDot.inset,
+                        width: AttentionDot.diameter,
+                        height: AttentionDot.diameter
+                    ),
+                    ringWidth: AttentionDot.ringWidth,
+                    color: .yankDanger
+                )
+            }
+            if state.paused {
+                drawPauseMark(in: rect)
+            }
             return true
         }
         image.isTemplate = false
-        image.accessibilityDescription = "Yank, sync problem"
+        image.accessibilityDescription = state.accessibilityDescription
         return image
-    }()
+    }
+
+    private static func drawDot(in dotRect: NSRect, ringWidth: CGFloat, color: NSColor) {
+        AttentionDot.ringColor.setFill()
+        NSBezierPath(ovalIn: dotRect.insetBy(dx: -ringWidth, dy: -ringWidth)).fill()
+        color.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+    }
+
+    /// Two short bars on a small pill in the menu-bar ground colour, bottom-right.
+    private static func drawPauseMark(in rect: NSRect) {
+        let pill = NSRect(x: rect.maxX - PauseMark.width, y: rect.minY, width: PauseMark.width, height: PauseMark.height)
+        AttentionDot.ringColor.setFill()
+        NSBezierPath(roundedRect: pill, xRadius: PauseMark.cornerRadius, yRadius: PauseMark.cornerRadius).fill()
+        let barsWidth = PauseMark.barWidth * 2 + PauseMark.barGap
+        let barsOriginX = pill.midX - barsWidth / 2
+        NSColor.labelColor.setFill()
+        for index in 0..<2 {
+            let bar = NSRect(
+                x: barsOriginX + CGFloat(index) * (PauseMark.barWidth + PauseMark.barGap),
+                y: pill.midY - PauseMark.barHeight / 2,
+                width: PauseMark.barWidth,
+                height: PauseMark.barHeight
+            )
+            NSBezierPath(roundedRect: bar, xRadius: PauseMark.barWidth / 2, yRadius: PauseMark.barWidth / 2).fill()
+        }
+    }
 
     private enum AttentionDot {
         static let diameter: CGFloat = 7
@@ -206,6 +290,23 @@ final class HubController {
         static let inset: CGFloat = 0
         /// Close to the menu-bar ground in each appearance.
         static let ringColor = NSColor.yankDynamic(light: 0xF2F2F2, dark: 0x1E1E1E)
+    }
+
+    /// Smaller than the sync dot and in the opposite corner, so the two differ by place and size.
+    private enum UpdateDot {
+        static let diameter: CGFloat = 5
+        static let ringWidth: CGFloat = 1
+    }
+
+    private enum PauseMark {
+        static let width: CGFloat = 7
+        static let height: CGFloat = 7
+        static let cornerRadius: CGFloat = 2.5
+        static let barWidth: CGFloat = 1.5
+        static let barHeight: CGFloat = 4
+        static let barGap: CGFloat = 1.5
+        /// The logo is dimmed while paused, in addition to the drawn mark.
+        static let glyphOpacity: CGFloat = 0.4
     }
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
@@ -325,6 +426,7 @@ final class HubController {
 @MainActor
 struct HubAppFooter {
     let updateMenu: @MainActor () -> UpdateMenuPresentation
+    let updateAttention: @MainActor () -> String?
     let onUpdateAction: @MainActor (UpdateMenuActionID) -> Void
     let onRestart: @MainActor () -> Void
     let onQuit: @MainActor () -> Void
