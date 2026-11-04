@@ -49,6 +49,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private let focusedInputFrameProvider: @MainActor (NSRunningApplication?) -> NSRect?
     private let onOpenFullHistory: @MainActor () -> Void
     private let onStartPasteSequence: @MainActor () -> Void
+    private let onResumeCapture: @MainActor () -> Void
     private let presentationState = QuickPickerPresentationState()
     private var previousApp: NSRunningApplication?
     /// True while Paste as Text loads a clip's full text, so a repeated key press pastes once.
@@ -66,7 +67,8 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             FocusedInputFrameProvider.frame(preferredApp: $0)
         },
         onOpenFullHistory: @escaping @MainActor () -> Void,
-        onStartPasteSequence: @escaping @MainActor () -> Void = {}
+        onStartPasteSequence: @escaping @MainActor () -> Void = {},
+        onResumeCapture: @escaping @MainActor () -> Void = {}
     ) {
         self.store = store
         self.settings = settings
@@ -75,6 +77,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         self.focusedInputFrameProvider = focusedInputFrameProvider
         self.onOpenFullHistory = onOpenFullHistory
         self.onStartPasteSequence = onStartPasteSequence
+        self.onResumeCapture = onResumeCapture
 
         let initialFrame = Self.savedFrame() ?? NSRect(origin: .zero, size: QuickPickerLayout.size)
         let initialContentRect = NSWindow.contentRect(
@@ -135,6 +138,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
     private func setupContent() {
         let view = QuickPickerView(
             store: store,
+            settings: settings,
             presentationState: presentationState,
             onPaste: { [weak self] item in self?.paste(item) },
             onPasteAsText: { [weak self] item in self?.pasteAsText(item) },
@@ -143,6 +147,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             onDismiss: { [weak self] in self?.close() },
             onOpenFullHistory: { [weak self] in self?.openFullHistory() },
             onStartPasteSequence: { [weak self] in self?.startPasteSequence() },
+            onResumeCapture: { [weak self] in self?.onResumeCapture() },
             onSmartSearch: { [weak self] phrase in await self?.smartSearch(phrase) ?? [] }
         )
         let host = NSHostingView(rootView: view)

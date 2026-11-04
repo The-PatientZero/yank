@@ -12,6 +12,11 @@ and passes that section to `gh release create --notes-file`.
 
 - Added Include History in Device Backups to Settings on iPhone and iPad. It is off by default: Yank asks iOS to leave your history, deletion log, attachments, keyboard copy and share inbox out of device backups, as it already does on the Mac. Existing iPhone and iPad installs stop putting history in new device backups unless you turn the setting on. A device restored from a backup without history gets recent clips back through iCloud sync, up to your history limit, when sync is on. iOS treats the request as guidance, not a guarantee.
 - Made iCloud sync state visible on Mac and iPhone. The Mac menu-bar menu now shows whether sync is working and has a Sync now row, and the menu-bar icon shows a small dot when sync has a problem. Failures are explained in plain words with a button for what to do next, such as free up iCloud storage, sign in or try again. Clips that cannot be uploaded (for example because their saved file is missing) are listed in Settings, where you can keep them on the device or delete them.
+- Made updates and paused capture visible on the Mac. The menu-bar icon shows a small dot while an update is available, downloading or waiting for a relaunch, and a pause mark while capture is paused; the tooltip and VoiceOver description name each state. Settings has an Updates row in the About card that shows the update status and the next step, so you can update with the menu-bar icon hidden. Yank now re-checks for updates about once a day while it keeps running, and at every launch while a known update is waiting. The Quick Picker footer shows "Capture paused" with a Resume button, and with the icon hidden the shortcut opens the Quick Picker instead of the full history while capture is paused, so you can always see and end a pause.
+
+### Changed
+
+- On the Mac, pausing clipboard capture now survives quitting and relaunching, including restarts and update relaunches, until you resume. Before, a relaunch cleared the pause. The setting stays on this Mac and is not synced. If you pause Yank and then go back to an older version, that version captures again, and updating again brings the pause back.
 
 ### Fixed
 

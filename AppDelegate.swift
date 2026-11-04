@@ -77,8 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
 
+        // First touch of the singleton restores a staged update and posts a state change, so it
+        // happens before the hub exists and registers its observers.
+        UpdateService.shared.checkIfJustUpdated()
+
         let hub = HubController(footer: HubAppFooter(
             updateMenu: { UpdateService.shared.menuPresentation },
+            updateAttention: { UpdateService.shared.state.attentionText },
             onUpdateAction: { UpdateService.shared.handleMenuAction($0) },
             onRestart: { [weak self] in self?.restartOrFinishUpdate() },
             onQuit: { NSApplication.shared.terminate(nil) }
@@ -105,11 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clipboard.start()
         }
 
-        UpdateService.shared.checkIfJustUpdated()
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
             UpdateService.shared.checkOnLaunchIfNeeded()
         }
+        UpdateService.shared.startPeriodicChecks()
 
         if !UserDefaults.standard.bool(forKey: "yankWelcomeSeen") {
             Task { @MainActor in
