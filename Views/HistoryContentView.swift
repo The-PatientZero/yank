@@ -368,7 +368,7 @@ struct HistoryContentView: View {
                 pendingFocusID = nil
             } else {
                 searchDebounceTask = Task { @MainActor in
-                    try? await Task.sleep(for: ClipQuery.searchDebounce)
+                    do { try await Task.sleep(for: ClipQuery.searchDebounce) } catch { return }
                     searchTextDebounced = newValue
                     updateSelection { $0.selectDefault(in: filteredItems, preferredID: defaultSelectedItem?.id) }
                 }
