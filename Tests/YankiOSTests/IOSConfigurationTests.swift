@@ -30,7 +30,7 @@ struct IOSConfigurationTests {
         #expect(attributes["RequestsOpenAccess"] as? Bool == false)
     }
 
-    @Test("Privacy manifests declare target-accurate UserDefaults reasons")
+    @Test("Privacy manifests declare target-accurate required-reason codes")
     func privacyManifestReasons() throws {
         let macReasons = try accessedAPIReasons(
             at: repositoryURL.appendingPathComponent("Privacy/Yank/PrivacyInfo.xcprivacy")
@@ -42,7 +42,7 @@ struct IOSConfigurationTests {
             at: repositoryURL.appendingPathComponent("Privacy/Extensions/PrivacyInfo.xcprivacy")
         )
 
-        #expect(macReasons == Set(["CA92.1"]))
+        #expect(macReasons == Set(["CA92.1", "C617.1"]))
         #expect(iosReasons == Set(["CA92.1", "1C8F.1"]))
         #expect(extensionReasons.isEmpty)
     }
