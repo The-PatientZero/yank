@@ -75,7 +75,10 @@ enum ClipboardCloudMapping {
     /// payload because the record would not fit, which readers take from the plain keys.
     /// `plainRemoved` says the record no longer carries plain content, so a blank plain field is
     /// not a removal. `omittedFields` lists derived fields left out of the payload because the
-    /// record would not fit; they exist nowhere in the record.
+    /// record would not fit; they exist nowhere in the record. `annotationClocks` says when pin,
+    /// bookmark and tags were each last changed, at full date precision; it is read only from a
+    /// current payload, so a record last written by a build that does not know it is merged as
+    /// a whole record.
     struct EncryptedContentPayload: Codable {
         static let currentVersion = 1
 
@@ -91,6 +94,7 @@ enum ClipboardCloudMapping {
         var plainFields: [String]
         var plainRemoved: Bool?
         var omittedFields: [String]?
+        var annotationClocks: AnnotationClocks?
     }
 
     /// Reads only the format version, so a payload from a newer build is recognised even when
@@ -108,6 +112,7 @@ enum ClipboardCloudMapping {
         var tags: [String]
         var aiTags: [String]
         var aiTitle: String?
+        var annotationClocks: AnnotationClocks?
 
         init(
             sourceApp: String?,
@@ -116,7 +121,8 @@ enum ClipboardCloudMapping {
             searchIndex: String?,
             tags: [String],
             aiTags: [String],
-            aiTitle: String?
+            aiTitle: String?,
+            annotationClocks: AnnotationClocks? = nil
         ) {
             self.sourceApp = sourceApp
             self.textContent = textContent
@@ -125,6 +131,7 @@ enum ClipboardCloudMapping {
             self.tags = tags
             self.aiTags = aiTags
             self.aiTitle = aiTitle
+            self.annotationClocks = annotationClocks
         }
 
         init(_ item: ClipboardItem) {
@@ -135,7 +142,8 @@ enum ClipboardCloudMapping {
                 searchIndex: item.searchIndex,
                 tags: item.tags,
                 aiTags: item.aiTags,
-                aiTitle: item.aiTitle
+                aiTitle: item.aiTitle,
+                annotationClocks: item.annotationClocks
             )
         }
     }
@@ -240,7 +248,8 @@ enum ClipboardCloudMapping {
             aiTitle: content.aiTitle,
             plainFields: [],
             plainRemoved: policy == .encryptedOnly ? true : nil,
-            omittedFields: omittedFields.isEmpty ? nil : omittedFields
+            omittedFields: omittedFields.isEmpty ? nil : omittedFields,
+            annotationClocks: content.annotationClocks
         )
         let plainBytes = policy == .dualWrite ? plainContentByteCount(of: content) : 0
         let encoder = JSONEncoder()
@@ -329,6 +338,7 @@ enum ClipboardCloudMapping {
             && lhs.deletedAt == rhs.deletedAt
             && lhs.deviceOrigin == rhs.deviceOrigin
             && lhs.hasRichContent == rhs.hasRichContent
+            && lhs.annotationClocks == rhs.annotationClocks
     }
 
     /// Rewrites a *server-fetched* record into a content-free tombstone: nil only marks a key
@@ -422,6 +432,7 @@ enum ClipboardCloudMapping {
             content.tags = payload.tags
             content.aiTags = payload.aiTags
             content.aiTitle = payload.aiTitle
+            content.annotationClocks = payload.annotationClocks
             if !payload.plainFields.contains(Key.textContent) { content.textContent = payload.textContent }
             if !payload.plainFields.contains(Key.ocrText) { content.ocrText = payload.ocrText }
             if !payload.plainFields.contains(Key.searchIndex) { content.searchIndex = payload.searchIndex }
@@ -535,7 +546,8 @@ enum ClipboardCloudMapping {
             aiEnrichedAt: record[Key.aiEnrichedAt] as? Date,
             modifiedAt: modifiedAt,
             deletedAt: deletedAt,
-            deviceOrigin: record[Key.deviceOrigin] as? String ?? ""
+            deviceOrigin: record[Key.deviceOrigin] as? String ?? "",
+            annotationClocks: content.annotationClocks
         )
     }
 
