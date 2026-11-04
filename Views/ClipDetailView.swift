@@ -157,15 +157,15 @@ struct ClipDetailView: View {
                     }
 
                     IconButton(systemName: primary?.isPinned == true ? "pin.fill" : "pin",
-                               label: primary?.isPinned == true ? "Unpin" : "Pin to top",
-                               help: primary?.isPinned == true ? "Unpin (⌘P)" : "Pin to top (⌘P)",
+                               label: ClipActionCopy.pin(isPinned: primary?.isPinned == true),
+                               help: "\(ClipActionCopy.pin(isPinned: primary?.isPinned == true)) (⌘P)",
                                tint: primary?.isPinned == true ? AppTheme.active.foreground : .secondary) {
                         if let item = primary { store.togglePin(for: item) }
                     }
 
                     IconButton(systemName: primary?.isBookmarked == true ? "bookmark.fill" : "bookmark",
-                               label: primary?.isBookmarked == true ? "Remove bookmark" : "Bookmark",
-                               help: primary?.isBookmarked == true ? "Remove bookmark (⌘B)" : "Bookmark — protect from deletion (⌘B)",
+                               label: ClipActionCopy.bookmark(isBookmarked: primary?.isBookmarked == true),
+                               help: "\(ClipActionCopy.bookmarkHelp(isBookmarked: primary?.isBookmarked == true)) (⌘B)",
                                tint: primary?.isBookmarked == true ? Color.yankBookmark : .secondary) {
                         if let item = primary { store.toggleBookmark(for: item) }
                     }
@@ -251,7 +251,7 @@ struct ClipDetailView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    Label("Content was too large to store (\(model.formattedBytes(item.originalSizeBytes ?? 0))). Showing first 500 characters.", systemImage: "exclamationmark.triangle")
+                    Label(ClipActionCopy.tooLargeNote(sizeText: model.formattedBytes(item.originalSizeBytes ?? 0)), systemImage: "exclamationmark.triangle")
                         .font(.system(size: TypeScale.caption))
                         .foregroundColor(.secondary)
                         .padding(.top, Space.xs)

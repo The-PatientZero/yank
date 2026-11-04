@@ -236,11 +236,11 @@ struct HistoryView: View {
 
     @ViewBuilder private var selectionActions: some View {
         Button { applyPin() } label: {
-            Label(selectedAllPinned ? "Unpin" : "Pin", systemImage: selectedAllPinned ? "pin.slash" : "pin")
+            Label(ClipActionCopy.pin(isPinned: selectedAllPinned), systemImage: selectedAllPinned ? "pin.slash" : "pin")
         }.disabled(selection.isEmpty)
         Spacer()
         Button { applyBookmark() } label: {
-            Label(selectedAllBookmarked ? "Remove Bookmark" : "Bookmark",
+            Label(ClipActionCopy.bookmark(isBookmarked: selectedAllBookmarked),
                   systemImage: selectedAllBookmarked ? "bookmark.slash" : "bookmark")
         }.disabled(selection.isEmpty)
         Spacer()
@@ -456,10 +456,10 @@ struct HistoryView: View {
                 .listRowBackground(Color.clear)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button { togglePin(item) } label: {
-                        Label(item.isPinned ? "Unpin" : "Pin", systemImage: item.isPinned ? "pin.slash" : "pin")
+                        Label(ClipActionCopy.pin(isPinned: item.isPinned), systemImage: item.isPinned ? "pin.slash" : "pin")
                     }.tint(settings.theme.foreground)
                     Button { toggleBookmark(item) } label: {
-                        Label(item.isBookmarked ? "Unbookmark" : "Bookmark",
+                        Label(ClipActionCopy.bookmark(isBookmarked: item.isBookmarked),
                               systemImage: item.isBookmarked ? "bookmark.slash" : "bookmark")
                     }.tint(Color.yankBookmarkFill)
                 }
@@ -497,10 +497,10 @@ struct HistoryView: View {
     @ViewBuilder private func itemMenu(_ item: ClipboardItem) -> some View {
         Button { copyClipWithFlash(item) } label: { Label("Copy", systemImage: "doc.on.doc") }
         Button { togglePin(item) } label: {
-            Label(item.isPinned ? "Unpin" : "Pin to top", systemImage: item.isPinned ? "pin.slash" : "pin")
+            Label(ClipActionCopy.pin(isPinned: item.isPinned), systemImage: item.isPinned ? "pin.slash" : "pin")
         }
         Button { toggleBookmark(item) } label: {
-            Label(item.isBookmarked ? "Remove Bookmark" : "Bookmark",
+            Label(ClipActionCopy.bookmark(isBookmarked: item.isBookmarked),
                   systemImage: item.isBookmarked ? "bookmark.slash" : "bookmark")
         }
         Button(role: .destructive) { deleteSingle(item) } label: { Label("Delete", systemImage: "trash") }

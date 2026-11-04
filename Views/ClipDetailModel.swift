@@ -179,9 +179,7 @@ final class ClipDetailModel {
     }
 
     func suggestions(for item: ClipboardItem) -> [String] {
-        guard !tagInputText.isEmpty else { return [] }
-        return TagSuggestions.matching(searchText: "#" + tagInputText, in: store.allTags)
-            .filter { !item.tags.contains($0) }
+        TagSuggestions.suggestions(forInput: tagInputText, in: store.allTags, excluding: item.tags)
     }
 
     func formattedBytes(_ bytes: Int) -> String {

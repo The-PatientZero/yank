@@ -222,10 +222,10 @@ extension HistoryContentView {
                 onCopyToClipboard(item)
             }
             // Hotkey-only otherwise; mirrored here for VoiceOver (see above).
-            .accessibilityAction(named: item.isPinned ? "Unpin" : "Pin") {
+            .accessibilityAction(named: ClipActionCopy.pin(isPinned: item.isPinned)) {
                 store.togglePin(for: item)
             }
-            .accessibilityAction(named: item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
+            .accessibilityAction(named: ClipActionCopy.bookmark(isBookmarked: item.isBookmarked)) {
                 store.toggleBookmark(for: item)
             }
             .accessibilityAction(named: "Add Tag") {

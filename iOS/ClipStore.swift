@@ -157,12 +157,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         .completeFileProtectionUntilFirstUserAuthentication
     ]
 
-    // Matches the macOS watcher's text-size policy: inline ≤ 50 KB, file-back up to the blob
-    // ceiling, truncate above it — keeps one huge clip from bloating in-memory history (critical
-    // for the memory-constrained keyboard extension) and the synced `textContent` field.
-    nonisolated private static let inlineTextLimit = 50_000
-    nonisolated private static let previewLength = 500
-
     private var historyURL: URL? { appGroupContext?.historyURL }
     private var tombstonesURL: URL? { appGroupContext?.tombstonesURL }
     /// All blob filesystem work lives here; the store keeps history, persistence, and sync.
@@ -304,7 +298,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     /// Capture text from the foreground clipboard, share extension, or App Intent; large text is
-    /// file-backed and oversized text truncated per the size policy at `inlineTextLimit`.
+    /// file-backed and oversized text truncated per the size policy in `TextCapturePlan`.
     func capture(text: String, sourceApp: String? = nil) async {
         _ = await captureText(
             text,
@@ -357,12 +351,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             )
         }
 
-        let plan = TextCapturePlan.make(
-            for: text,
-            inlineLimit: Self.inlineTextLimit,
-            previewLength: Self.previewLength,
-            maxStoredBytes: SyncBlobKind.text.maximumBytes
-        )
+        let plan = TextCapturePlan.make(for: text)
 
         var item: ClipboardItem
         switch plan.storage {
@@ -583,12 +572,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func importTextShareCapture(_ entry: ShareCaptureInbox.Entry) async throws {
         guard let text = entry.text else { throw PersistenceError.invalidShareCapture }
-        let plan = TextCapturePlan.make(
-            for: text,
-            inlineLimit: Self.inlineTextLimit,
-            previewLength: Self.previewLength,
-            maxStoredBytes: SyncBlobKind.text.maximumBytes
-        )
+        let plan = TextCapturePlan.make(for: text)
         var item = try await importedTextItem(for: entry, storage: plan.storage)
         item.deviceOrigin = DeviceIdentity.current
         if refreshDuplicateCapture(with: item) != nil { return }
