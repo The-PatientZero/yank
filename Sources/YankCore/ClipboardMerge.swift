@@ -2,8 +2,8 @@ import Foundation
 
 /// Pure conflict resolution for sync. Copies of one clip are merged field by field: pin, bookmark
 /// and tags each follow their own change time, the capture time is the latest seen, and a delete
-/// beats edits made after it. Tombstones are retained so deletions keep propagating.
-/// No I/O — exhaustively testable.
+/// beats edits made after it, except a pin, bookmark or tag set after the delete. Tombstones are
+/// retained so deletions keep propagating. No I/O — exhaustively testable.
 public enum ClipboardMerge {
     /// How far a merged result's `modifiedAt` is pushed past its newest input when the merge
     /// changed any synced field. Yank 1.2.x keeps its own copy on an exact `modifiedAt` tie and
@@ -26,10 +26,31 @@ public enum ClipboardMerge {
     }
 
     /// Whether a delete at `deletedAt` beats a live copy captured or reused at `liveTimestamp`.
-    /// An edit of pin, bookmark or tags after the delete does not move `timestamp`, so it loses;
-    /// capturing or reusing the clip again after the delete does, so it comes back.
+    /// Capturing or reusing the clip again after the delete moves `timestamp`, so it comes back.
+    /// This rule looks at the capture time only; `deleteOutranksLiveCopy(deletedAt:live:)` also
+    /// weighs a pin, bookmark or tag set after the delete.
     public static func deleteOutranksLiveCopy(deletedAt: Date, liveTimestamp: Date) -> Bool {
         liveTimestamp <= deletedAt
+    }
+
+    /// Whether a delete at `deletedAt` beats `live`. Like the timestamp rule, and a pinned,
+    /// bookmarked or tagged copy also survives when the change that protects it is newer than the
+    /// delete. Age retention dates its delete from the expired clip, so a copy another device
+    /// protected meanwhile must not be lost to a device that still held it unprotected. A copy
+    /// without per-field change times, from Yank 1.2.x, counts its protection as changed at
+    /// `modifiedAt`, which is how 1.2.x itself orders a delete against an edit.
+    public static func deleteOutranksLiveCopy(deletedAt: Date, live: ClipboardItem) -> Bool {
+        guard deleteOutranksLiveCopy(deletedAt: deletedAt, liveTimestamp: live.timestamp) else { return false }
+        return !(live.isProtected && protectionClock(of: live) > deletedAt)
+    }
+
+    /// When the newest of the pin, bookmark and tags that are set on `item` was changed.
+    private static func protectionClock(of item: ClipboardItem) -> Date {
+        var clocks: [Date] = []
+        if item.isPinned { clocks.append(effectiveClock(of: item, \.pinnedAt)) }
+        if item.isBookmarked { clocks.append(effectiveClock(of: item, \.bookmarkedAt)) }
+        if !item.tags.isEmpty { clocks.append(effectiveClock(of: item, \.tagsAt)) }
+        return clocks.max() ?? .distantPast
     }
 
     /// Collapses clips that arrived from another device into an identical clip already on this one
@@ -143,7 +164,7 @@ public enum ClipboardMerge {
 
         var tombstone = foldByWriteClock(dead)
         let deletedAt = dead.compactMap(\.deletedAt).max() ?? tombstone.modifiedAt
-        if live.contains(where: { !deleteOutranksLiveCopy(deletedAt: deletedAt, liveTimestamp: $0.timestamp) }) {
+        if live.contains(where: { !deleteOutranksLiveCopy(deletedAt: deletedAt, live: $0) }) {
             return mergeLive(live)
         }
         // The delete wins. Yank 1.2.x compares `modifiedAt` only, so lift the delete over any

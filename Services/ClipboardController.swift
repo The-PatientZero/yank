@@ -67,10 +67,6 @@ final class ClipboardController {
     private var periodicRemotePullTask: Task<Void, Never>?
     private var pasteSequenceCoordinator: PasteSequenceCoordinator?
 
-    /// Start failures that may mean the iCloud account is unusable. They are also what iCloud
-    /// reports for a short time after login, wake or boot, so the account is probed before the
-    /// retention hold is released.
-    private static let accountFailureKinds: Set<SyncFailureKind> = [.signedOut, .accountRestricted, .accountUnavailable]
     private static let cloudSyncStartRetryDelays: [Duration] = [.seconds(30), .seconds(120), .seconds(600)]
     /// Backstop re-pull while sync is up, covering a silent push dropped during sleep or
     /// throttled delivery — silent pushes are best-effort, never guaranteed.
@@ -308,7 +304,6 @@ final class ClipboardController {
         let succeeded = await pullAndPush(cloudSync)
         if succeeded {
             recoveryRetryAttempt = 0
-            if self.cloudSync === cloudSync { store.isRetentionHeldForSync = false }
         } else if self.cloudSync === cloudSync {
             let attempt = recoveryRetryAttempt
             recoveryRetryAttempt += 1
@@ -416,10 +411,6 @@ final class ClipboardController {
                 settingsStore: self.settingsSyncBridge
             )
             sync.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: self.store)
-            sync.onInitialPullCompleted = { [weak self, weak sync] in
-                guard let self, let sync, self.cloudSync === sync else { return }
-                self.store.isRetentionHeldForSync = false
-            }
             self.cloudSync = sync
             self.cloudSyncDidStart = false
             self.startCloudSync(sync)
@@ -442,7 +433,6 @@ final class ClipboardController {
             self.cloudSyncStartTask = nil
             if case .started = result {
                 self.cloudSyncDidStart = true
-                self.store.isRetentionHeldForSync = false
                 if self.followUpAfterSetup {
                     self.followUpAfterSetup = false
                     self.remoteChangeTrigger.trigger()
@@ -450,10 +440,6 @@ final class ClipboardController {
             }
             if case .failed(let message) = result {
                 Log.app.error("CloudKit sync failed to start: \(message, privacy: .public)")
-                if let kind = self.store.syncFailureKind, Self.accountFailureKinds.contains(kind) {
-                    await self.releaseRetentionHoldIfAccountIsGone(for: sync)
-                }
-                guard !Task.isCancelled, self.cloudSync === sync else { return }
                 self.cloudSyncStartRetry.scheduleNext(afterAttempt: retryAttempt) { [weak self, weak sync] in
                     // A retry is a no-op once the service is torn down or replaced.
                     guard let self, let sync, self.cloudSync === sync else { return }
@@ -462,15 +448,6 @@ final class ClipboardController {
             }
         }
         cloudSyncStartTask = (taskID, task)
-    }
-
-    /// No pull can happen without a usable account, so waiting for one would keep expired clips on
-    /// disk until sync is turned off. Only an account that is signed out or restricted counts: a
-    /// failure iCloud reports while the account is still coming up keeps the hold until a pull ran.
-    private func releaseRetentionHoldIfAccountIsGone(for sync: CloudKitSyncService) async {
-        let status = await probeAccountStatus()
-        guard cloudSync === sync, status == .noAccount || status == .restricted else { return }
-        store.isRetentionHeldForSync = false
     }
 
     /// Wake and periodic pulls cover what silent pushes miss: they're best-effort and dropped
@@ -482,10 +459,7 @@ final class ClipboardController {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
-                self?.holdRetentionUntilNextPull()
-                self?.handleRemoteChange()
-            }
+            Task { @MainActor in self?.handleRemoteChange() }
         }
         periodicRemotePullTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -494,14 +468,6 @@ final class ClipboardController {
                 self.handleRemoteChange()
             }
         }
-    }
-
-    /// A Mac that slept for days holds a history other devices have moved on from, the same as one
-    /// that was just launched. Age retention waits for the wake pull; a successful pull, or a
-    /// service that starts, releases the hold, and so does tearing sync down.
-    private func holdRetentionUntilNextPull() {
-        guard cloudSync != nil else { return }
-        store.isRetentionHeldForSync = true
     }
 
     private func stopCatchUpTriggers() {
@@ -596,8 +562,6 @@ final class ClipboardController {
         }
         cloudSync = nil
         cloudSyncDidStart = false
-        // Without a running sync there is no pull to wait for. A rebuild keeps waiting.
-        if stopRecoveryTriggers { store.isRetentionHeldForSync = false }
         NSApp.unregisterForRemoteNotifications()
         if let reason {
             store.markSyncUnavailable(reason: reason)

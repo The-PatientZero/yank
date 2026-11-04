@@ -128,22 +128,8 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// in-memory list must never replace the unloaded file.
     @ObservationIgnored private var isHistoryLoadPending = false
     @ObservationIgnored private var hydrateTask: Task<Void, Never>?
-    /// A retention pass was requested while the history was still loading; the end of storage
-    /// setup runs it. A cap-only request replays as cap-only, and any full request makes it full.
-    private enum RetentionPassOwed {
-        case none
-        case limitOnly
-        case full
-    }
-
-    @ObservationIgnored private var retentionPassOwed = RetentionPassOwed.none
-    /// True while a sync pull fetches and merges pages; age retention waits for its end. Owned by
-    /// the pull (`markPullStarted`, `markPullFinished`), so a push finishing meanwhile neither
-    /// reads nor clears it.
-    @ObservationIgnored private var isPullInProgress = false
-    /// Counts the pulls that merged every page, so a caller can tell whether one finished while it
-    /// waited. A failed push after a good pull still leaves the history current.
-    @ObservationIgnored private(set) var completedPullCount = 0
+    /// A retention pass was requested while the history was still loading; `hydrate()` runs it.
+    @ObservationIgnored private var retentionPassOwed = false
     @ObservationIgnored private let appGroupContext: AppGroupContext?
     /// Keeps history storage out of device backups unless the user opted in; nil without an App Group.
     @ObservationIgnored private let backupExclusion: BackupExclusion?
@@ -280,12 +266,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             publishKeyboardProjection()
         }
         hasLoaded = true
-        let owed = retentionPassOwed
-        retentionPassOwed = .none
-        switch owed {
-        case .none: break
-        case .limitOnly: enforceRetentionAndLimit(limitOnly: true)
-        case .full: enforceRetentionAndLimit()
+        if retentionPassOwed {
+            retentionPassOwed = false
+            enforceRetentionAndLimit()
         }
     }
 
@@ -312,8 +295,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         prepareStorage(context: appGroupContext, deferHistoryLoad: false)
         guard !historyWritesDisabled else { return false }
         finishStorageSetup()
-        // Age expiry waits for the pull that follows: the history read here may be stale.
-        enforceRetentionAndLimit(limitOnly: true)
+        enforceRetentionAndLimit()
         clipStoreLog.notice("Protected storage became readable; history re-read")
         return true
     }
@@ -719,24 +701,17 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     /// Applies the configured age-retention then history limit (call on launch and after a
     /// settings change). Expired unprotected clips are tombstoned so deletion propagates via
-    /// sync; the limit only trims local storage — capped clips stay in the cloud. `limitOnly`
-    /// skips the age expiry, for a caller that runs while a pull is still merging: a clip expired
-    /// from the stale local history is tombstoned as of now and would beat a copy another device
-    /// used again meanwhile.
-    func enforceRetentionAndLimit(limitOnly: Bool = false) {
+    /// sync; the limit only trims local storage — capped clips stay in the cloud.
+    func enforceRetentionAndLimit() {
         guard !isHistoryLoadPending else {
-            if !limitOnly {
-                retentionPassOwed = .full
-            } else if retentionPassOwed == .none {
-                retentionPassOwed = .limitOnly
-            }
+            retentionPassOwed = true
             return
         }
         let result = ClipboardRetention.enforce(
             items: items,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: limitOnly || isPullInProgress ? 0 : retentionDays,
+            retentionDays: retentionDays,
             now: Date()
         )
         guard result.didChange else { return }
@@ -744,34 +719,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         items = result.items
         tombstones = result.tombstones
         persist()
-    }
-
-    /// Why sync cannot pull for good: sync is off, no account is signed in or the account is
-    /// restricted, or the build has no iCloud container. The local history is then all there is, so
-    /// age retention may run on it. A temporarily unavailable account is not in this list: it comes
-    /// back, and a pull then brings in what other devices used again meanwhile. The status a store
-    /// starts with is not a verdict either, unless the build really has no container.
-    private var syncCannotPull: Bool {
-        switch syncStatus {
-        case .localOnly(.notProvisioned):
-            !CloudContainerProvisioning.isProvisioned(for: IOSCloudSyncController.containerID)
-        case .localOnly:
-            true
-        case .failed:
-            syncFailureKind.map { [.signedOut, .accountRestricted].contains($0) } ?? false
-        case .healthy, .syncing:
-            false
-        }
-    }
-
-    /// Applies retention after a foreground sync run that started when `completedPullCount` was
-    /// `pullCountBefore`. Age expiry runs once a pull finished during the run, or when sync cannot
-    /// pull at all. Only a run that stopped before its pull finished (offline, a transport error)
-    /// leaves the history stale, so only the cap applies, as it does before the first unlock.
-    func enforceRetentionAfterSyncRun(pullCountBefore: Int, syncEnabled: Bool) {
-        let pullFinished = completedPullCount != pullCountBefore
-        let historyIsStale = syncEnabled && (isAwaitingFirstUnlock || (!pullFinished && !syncCannotPull))
-        enforceRetentionAndLimit(limitOnly: historyIsStale)
     }
 
     // MARK: - SyncableStore
@@ -794,18 +741,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         if firstSyncState != .settled {
             firstSyncState = .settled
         }
-    }
-
-    func markPullStarted() {
-        isPullInProgress = true
-    }
-
-    func markPullFinished(completed: Bool) {
-        isPullInProgress = false
-        guard completed else { return }
-        completedPullCount &+= 1
-        // The pages skipped age expiry, so it runs once now that the whole pull is merged.
-        enforceRetentionAndLimit()
     }
 
     func markSyncProgress(clipsReceived: Int) {
@@ -871,15 +806,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     /// Applies the canonical state in memory and reports whether anything a snapshot stores
     /// changed. Nothing is assigned when nothing changed, so an echo of this device's own pushes
-    /// neither redraws the list nor writes the disk. A page of a pull skips age expiry: a clip
-    /// expired from the stale history is tombstoned as of now and would beat a copy another device
-    /// used again on a later page. `markPullFinished` expires them after the last.
+    /// neither redraws the list nor writes the disk.
     private func applyReconciledInMemory(_ canonical: [ClipboardItem]) -> ReconcileOutcome {
         let result = SyncReconcile.apply(
             canonical: canonical,
             replacing: items,
             historyLimit: historyLimit,
-            retentionDays: isPullInProgress ? 0 : retentionDays,
+            retentionDays: retentionDays,
             now: Date()
         )
         let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)

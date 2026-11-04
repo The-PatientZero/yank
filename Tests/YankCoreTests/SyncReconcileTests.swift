@@ -94,7 +94,10 @@ import Testing
         )
 
         #expect(result.visibleItems == [fresh])
-        #expect(result.tombstones == [oldImage.id: t0.addingTimeInterval(40 * 86_400)])
+        // Dated at the start of the 30-day window, not at `now`, so a later use elsewhere outranks it.
+        #expect(result.tombstones == [
+            oldImage.id: t0.addingTimeInterval(10 * 86_400 - ClipboardMerge.mergeBumpInterval)
+        ])
         #expect(result.expiredVisibleCount == 1)
         #expect(result.cappedVisibleCount == 0)
         #expect(result.blobReferencesToDelete == [

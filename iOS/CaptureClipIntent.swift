@@ -178,8 +178,8 @@ struct CaptureClipIntent: AppIntent {
         let runtime = IOSAppRuntime.shared
         let store = runtime.store
         await runtime.hydrate()
-        // The same duties the foreground refresh does before it drains. Age retention is not
-        // among them: it runs after the pull, so a clip another device used again is not expired.
+        // The same duties the foreground refresh does before it drains.
+        store.enforceRetentionAndLimit()
         store.reconcileBackupExclusionInBackground()
         let sources = await store.drainShareInbox()
         // Otherwise the Shortcut method is never confirmed: the app's later drain finds nothing.
@@ -203,16 +203,11 @@ struct CaptureClipIntent: AppIntent {
         }
         run.stage = .imported
         guard runtime.settings.syncEnabled else {
-            store.enforceRetentionAndLimit()
             run.stage = .pushed
             run.finish(.saved)
             return
         }
-        let pullCountBefore = store.completedPullCount
         let outcome = await runtime.syncController.refreshForeground()
-        // A pull that did not finish, when one could have, leaves the local history stale, so only
-        // the cap applies.
-        store.enforceRetentionAfterSyncRun(pullCountBefore: pullCountBefore, syncEnabled: true)
         run.stage = outcome == .failed ? .pushFailed : .pushed
         run.finish(run.result)
     }

@@ -33,13 +33,6 @@ public protocol SyncableStore: AnyObject {
     /// has delivered so far. The count includes edits to clips the store already holds, so it can
     /// exceed the number of clips shown. The next success, failure or stop clears it.
     func markSyncProgress(clipsReceived: Int)
-    /// A pull is about to fetch and merge pages. Until `markPullFinished(completed:)`, the store
-    /// must not expire clips by age: a clip expired from the stale history is tombstoned as of now
-    /// and would beat a copy another device used again on a page still to come.
-    func markPullStarted()
-    /// The pull ended. `completed` is true when every page was merged, and only then may the store
-    /// run the age expiry it held back; a pull that failed leaves the history as stale as before.
-    func markPullFinished(completed: Bool)
 }
 
 /// Reports the clips waiting out their undo window. They are still in the sync snapshot as live
@@ -61,12 +54,6 @@ public extension SyncableStore {
 
     /// Default for stores that do not show progress.
     func markSyncProgress(clipsReceived: Int) {}
-
-    /// Default for stores that do not defer age expiry while a pull merges.
-    func markPullStarted() {}
-
-    /// Default for stores that do not defer age expiry while a pull merges.
-    func markPullFinished(completed: Bool) {}
 }
 
 /// Notifications posted by the clip stores.

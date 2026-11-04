@@ -30,27 +30,8 @@ final class ClipboardStore {
             guard captureSettings != oldValue else { return }
             // A tighter limit / shorter window may now evict items; re-apply on change so
             // the live history honours the new bounds without waiting for the next capture.
-            pruneExpired(includingAge: !isAdoptingSyncedSettings)
+            pruneExpired()
         }
-    }
-
-    /// True only while `adoptSyncedCaptureSettings` assigns, so the `captureSettings` observer
-    /// applies the cap but leaves age expiry to the end of the pull.
-    @ObservationIgnored private var isAdoptingSyncedSettings = false
-
-    /// True while a sync pull fetches and merges pages. Age retention waits: a clip expired from
-    /// the stale history is tombstoned as of now and beats a copy another device used again on a
-    /// page still to come. Owned by the pull (`markPullStarted`, `markPullFinished`), so a push
-    /// finishing meanwhile neither reads nor clears it.
-    @ObservationIgnored var isPullInProgress = false
-
-    /// Adopts capture settings that arrived through sync. The history cap applies at once; age
-    /// expiry waits for the pull that carried them, which merges the other devices' newer copies
-    /// first, and then runs from `markPullFinished` or `markSyncSucceeded`.
-    func adoptSyncedCaptureSettings(_ settings: CaptureSettings) {
-        isAdoptingSyncedSettings = true
-        defer { isAdoptingSyncedSettings = false }
-        captureSettings = settings
     }
 
     /// False until the first on-disk load completes, so the history window can tell a
@@ -133,15 +114,6 @@ final class ClipboardStore {
     /// Explicit triggers (settings change, retention notification, launch) bypass the gate.
     @ObservationIgnored private var lastExpirySweep: Date = .distantPast
 
-    /// While true, age retention waits for the first pull of this launch. A clip expired by the
-    /// stale local history is tombstoned as of now, which beats a copy another device used again
-    /// meanwhile. Set before the history loads; clearing it runs the pass that was held back.
-    @ObservationIgnored var isRetentionHeldForSync = false {
-        didSet {
-            if oldValue, !isRetentionHeldForSync { pruneExpired() }
-        }
-    }
-
     /// Minimum spacing between capture-path expiry sweeps. Retention is a day-granularity
     /// policy, so a one-minute floor is imperceptible while collapsing a burst of captures
     /// from N linear passes down to one.
@@ -223,11 +195,9 @@ final class ClipboardStore {
     }
 
     /// Apply age retention, the local history cap, and tombstone pruning. Explicit calls
-    /// (launch, `captureSettings` change) bypass the capture-path time gate. While retention is
-    /// held for sync only the cap runs, since it never tombstones.
-    func pruneExpired(includingAge: Bool = true) {
-        let ageAllowed = includingAge && !isRetentionHeldForSync
-        if applyRetentionAndLimit(now: Date(), includingAge: ageAllowed) { persist() }
+    /// (launch, `captureSettings` change) bypass the capture-path time gate.
+    func pruneExpired() {
+        if applyRetentionAndLimit(now: Date()) { persist() }
     }
 
     /// One-shot sweep for blob files a reconcile's deferred delete missed — a crash between the
@@ -420,12 +390,12 @@ final class ClipboardStore {
     }
 
     @discardableResult
-    private func applyRetentionAndLimit(now: Date, includingAge: Bool = true) -> Bool {
+    private func applyRetentionAndLimit(now: Date) -> Bool {
         let result = ClipboardRetention.enforce(
             items: items,
             tombstones: tombstones,
             historyLimit: maxItems,
-            retentionDays: includingAge && !isPullInProgress ? captureSettings.retentionDays : 0,
+            retentionDays: captureSettings.retentionDays,
             now: now
         )
         guard result.didChange else { return false }
@@ -437,7 +407,6 @@ final class ClipboardStore {
 
     @discardableResult
     private func sweepExpiredOnCapture(now: Date) -> Bool {
-        guard !isRetentionHeldForSync else { return false }
         if now.timeIntervalSince(lastExpirySweep) < Self.expirySweepInterval {
             return false
         }

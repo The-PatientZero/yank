@@ -143,10 +143,6 @@ public final class CloudKitSyncService {
     private var changePullRequested = false
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
-    /// Called each time a bring-up or a remote-change run has finished its pull, before the push
-    /// and the rollout steps that can still fail. A host that holds back age-based expiry until the local history has
-    /// caught up with the other devices can release it here.
-    public var onInitialPullCompleted: (@MainActor () -> Void)?
     /// The clips the last push that got past preparing could not upload.
     private var waitingClips: [SyncWaitingClip] = []
 
@@ -379,7 +375,6 @@ public final class CloudKitSyncService {
             }
             try await coalescedPull(generation: generation)
             try requireActive(generation)
-            onInitialPullCompleted?()
             // Before observers and the first push, so nothing is built in the wrong write mode.
             try await reconcileEncryptionRollout(generation: generation)
             try startObservingLocalChanges(generation: generation)
@@ -521,7 +516,6 @@ public final class CloudKitSyncService {
             try requireActive(generation)
             let fetched = try await coalescedPull(generation: generation)
             try requireActive(generation)
-            onInitialPullCompleted?()
             try await reconcileEncryptionRollout(generation: generation)
             // Receipt comparison makes this a no-op for a clean pull. Always reconsidering
             // local state is what lets an ordinary remote change repair a missing CKAsset.
@@ -829,8 +823,6 @@ public final class CloudKitSyncService {
         var fetchedChanges = 0
         var changedHistory = 0
         var clipsDelivered = 0
-        // Owned by this pull: a push finishing meanwhile neither reads nor clears it.
-        store.markPullStarted()
         do {
             // Re-attempt earlier skipped records first, so a recovered one lands in the same
             // durable apply as the first page.
@@ -914,12 +906,9 @@ public final class CloudKitSyncService {
                 isFirstPage = false
                 accumulation = PullAccumulation()
             }
-            // Every page is merged, so the age expiry the pull held back runs now.
-            store.markPullFinished(completed: true)
             // A refetch from nothing re-delivers records this device already has.
             return startedFromNothing ? changedHistory : fetchedChanges
         } catch {
-            store.markPullFinished(completed: false)
             if canMutate(generation) {
                 deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
             }
@@ -1496,7 +1485,7 @@ public final class CloudKitSyncService {
             return false
         }
         guard let deletedAt = localWinner.deletedAt else { return false }
-        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: deletedAt, liveTimestamp: remoteItem.timestamp)
+        return ClipboardMerge.deleteOutranksLiveCopy(deletedAt: deletedAt, live: remoteItem)
     }
 
     private nonisolated static func isExpiredChangeTokenError(_ error: any Error) -> Bool {
@@ -1730,6 +1719,11 @@ public final class CloudKitSyncService {
             for recordName in batch {
                 guard let item = itemsByRecordName[recordName] else { continue }
                 if let serverRecord = serverRecords[recordName] {
+                    // A copy another device used again or protected since this delete was dated
+                    // outranks it. Erasing that copy would lose its content for every device, so
+                    // the tombstone stays unsent and no receipt is kept; the next pull delivers
+                    // the live copy here, and it replaces the tombstone.
+                    if Self.liveServerCopyOutranks(item, serverRecord: serverRecord) { continue }
                     ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
                     records.append(PreparedPushRecord(
                         itemID: item.id,
@@ -1749,6 +1743,19 @@ public final class CloudKitSyncService {
             }
         }
         return records
+    }
+
+    /// Whether the server's copy is a live clip that beats the local delete `tombstone`.
+    private nonisolated static func liveServerCopyOutranks(
+        _ tombstone: ClipboardItem,
+        serverRecord: CKRecord
+    ) -> Bool {
+        guard serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date == nil,
+              let serverCopy = ClipboardCloudMapping.item(from: serverRecord) else { return false }
+        return !ClipboardMerge.deleteOutranksLiveCopy(
+            deletedAt: tombstone.deletedAt ?? tombstone.modifiedAt,
+            live: serverCopy
+        )
     }
 
     // MARK: - Synced settings

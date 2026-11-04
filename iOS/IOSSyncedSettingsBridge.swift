@@ -2,7 +2,7 @@ import Foundation
 
 /// Adapts `IOSSettings` to the sync transport's `SyncedSettingsStore` port. Unlike macOS, which
 /// re-trims off `.yankCaptureSettingsChanged`, iOS has no such broadcast — adoption re-applies
-/// the history limit directly here since `SettingsView`'s `onChange` only fires while on screen.
+/// retention directly here since `SettingsView`'s `onChange` only fires while on screen.
 @MainActor
 final class IOSSyncedSettingsBridge: SyncedSettingsStore {
     private let settings: IOSSettings
@@ -22,8 +22,6 @@ final class IOSSyncedSettingsBridge: SyncedSettingsStore {
 
     func applySyncedSettings(_ syncedSettings: SyncedSettings) {
         settings.adoptHistoryLimit(syncedSettings)
-        // Adoption happens while a pull is merging, before the pulled clips are in: age expiry
-        // waits for the foreground refresh, which runs it once the pull is complete.
-        store?.enforceRetentionAndLimit(limitOnly: true)
+        store?.enforceRetentionAndLimit()
     }
 }
