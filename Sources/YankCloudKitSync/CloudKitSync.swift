@@ -1648,10 +1648,11 @@ public final class CloudKitSyncService {
             try await pushLocalClips(store: store, generation: generation, replanAfterKeyReset: false)
             return
         }
-        let recordsToSave = prepared.records + tombstoneRecords
+        let recordsToSave = prepared.records + tombstoneRecords.records
         guard !recordsToSave.isEmpty else {
-            if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
-                try persistPushReceipts(garbageCollectedReceipts, generation: generation)
+            let settledReceipts = garbageCollectedReceipts.merging(tombstoneRecords.settled) { _, settled in settled }
+            if isReceiptMigration || settledReceipts != existingReceipts {
+                try persistPushReceipts(settledReceipts, generation: generation)
             }
             try throwIfUnconfirmed(prepared)
             return
@@ -1662,7 +1663,8 @@ public final class CloudKitSyncService {
         syncLog.notice(
             "Sync push (records: \(recordsToSave.count, privacy: .public), without a file: \(withoutFileCount, privacy: .public))"
         )
-        var committedReceipts = existingReceipts
+        // Deletes the server already holds count as pushed, so they stop being retried and can age out.
+        var committedReceipts = existingReceipts.merging(tombstoneRecords.settled) { _, settled in settled }
         // Receipts land per accepted batch: a later batch failure must not strand the records
         // CloudKit already took, which would otherwise be re-uploaded by every future push.
         do {
@@ -1706,13 +1708,15 @@ public final class CloudKitSyncService {
     /// Tombstones save onto the server's fetched record: only assignments on a fetched record
     /// mark `.changedKeys`, erasing the clip's content/asset. A record the server never had gets
     /// a minimal tombstone directly; one merely not handed over yet stays unsent, not downgraded.
+    /// A delete the server already holds, equal or newer and without content, needs no save: it
+    /// comes back as `settled` so the caller keeps its receipt.
     private func prepareTombstonePushRecords(
         _ tombstones: [ClipboardItem],
         generation: UInt64
-    ) async throws -> [PreparedPushRecord] {
-        guard !tombstones.isEmpty else { return [] }
-        var records: [PreparedPushRecord] = []
-        records.reserveCapacity(tombstones.count)
+    ) async throws -> PreparedTombstones {
+        guard !tombstones.isEmpty else { return PreparedTombstones() }
+        var prepared = PreparedTombstones()
+        prepared.records.reserveCapacity(tombstones.count)
         let itemsByRecordName = Dictionary(
             tombstones.map { ($0.id.uuidString, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -1735,14 +1739,21 @@ public final class CloudKitSyncService {
                     // the tombstone stays unsent and no receipt is kept; the next pull delivers
                     // the live copy here, and it replaces the tombstone.
                     if Self.liveServerCopyOutranks(item, serverRecord: serverRecord) { continue }
-                    // A server tombstone that is as new as this one or newer already stands.
-                    // Overwriting it would lower the delete date, so the local one stays unsent
-                    // and the next pull brings the server's tombstone here.
-                    if Self.serverTombstoneIsAtLeastAsNew(as: item, serverRecord: serverRecord) {
+                    // A server tombstone newer than this one already stands. Overwriting it would
+                    // lower the delete date, so the local one stays unsent and the next pull
+                    // brings the server's tombstone here. One as new as this one is overwritten
+                    // only to erase content it still carries; otherwise it stands as the push.
+                    switch Self.serverTombstoneStanding(against: item, serverRecord: serverRecord) {
+                    case .older, .sameDateHoldingContent:
+                        break
+                    case .newerHoldingContent:
+                        continue
+                    case .settled:
+                        prepared.settled[item.id] = item.modifiedAt
                         continue
                     }
                     ClipboardCloudMapping.applyTombstone(from: item, to: serverRecord)
-                    records.append(PreparedPushRecord(
+                    prepared.records.append(PreparedPushRecord(
                         itemID: item.id,
                         record: serverRecord,
                         modifiedAt: item.modifiedAt
@@ -1751,7 +1762,7 @@ public final class CloudKitSyncService {
                     guard let record = ClipboardCloudMapping.record(from: item, in: zoneID) else {
                         continue
                     }
-                    records.append(PreparedPushRecord(
+                    prepared.records.append(PreparedPushRecord(
                         itemID: item.id,
                         record: record,
                         modifiedAt: item.modifiedAt
@@ -1759,18 +1770,46 @@ public final class CloudKitSyncService {
                 }
             }
         }
-        return records
+        return prepared
     }
 
-    /// Whether the server record is already a tombstone dated no earlier than the local `tombstone`.
-    private nonisolated static func serverTombstoneIsAtLeastAsNew(
-        as tombstone: ClipboardItem,
+    /// How the server record stands against the local delete `tombstone`.
+    enum ServerTombstoneStanding: Equatable {
+        /// The record is live, or a tombstone dated before the local one: the local delete is saved.
+        case older
+        /// A tombstone with the same date that still carries content: saved again to erase it.
+        case sameDateHoldingContent
+        /// A tombstone dated after the local one that still carries content: left as it is.
+        case newerHoldingContent
+        /// A tombstone dated the same or later with no content: it already says what the local one does.
+        case settled
+    }
+
+    nonisolated static func serverTombstoneStanding(
+        against tombstone: ClipboardItem,
         serverRecord: CKRecord
-    ) -> Bool {
+    ) -> ServerTombstoneStanding {
         guard let serverDeletedAt = serverRecord[ClipboardCloudMapping.Key.deletedAt] as? Date else {
-            return false
+            return .older
         }
-        return serverDeletedAt >= (tombstone.deletedAt ?? tombstone.modifiedAt)
+        let localDeletedAt = tombstone.deletedAt ?? tombstone.modifiedAt
+        guard serverDeletedAt >= localDeletedAt else { return .older }
+        guard serverTombstoneHoldsContent(serverRecord) else { return .settled }
+        return serverDeletedAt > localDeletedAt ? .newerHoldingContent : .sameDateHoldingContent
+    }
+
+    /// Whether a server tombstone still carries a clip's encrypted or readable content, as a
+    /// delete from an older build leaves it.
+    private nonisolated static func serverTombstoneHoldsContent(_ serverRecord: CKRecord) -> Bool {
+        if ClipboardCloudMapping.encryptedRefreshReason(for: serverRecord) == .tombstoneHoldsContent {
+            return true
+        }
+        return [
+            ClipboardCloudMapping.Key.textContent,
+            ClipboardCloudMapping.Key.textFilename,
+            ClipboardCloudMapping.Key.imageFilename,
+            ClipboardCloudMapping.Key.blob
+        ].contains { serverRecord[$0] != nil }
     }
 
     /// Whether the server's copy is a live clip that beats the local delete `tombstone`.
@@ -1999,6 +2038,12 @@ public final class CloudKitSyncService {
         let modifiedAt: Date
         /// The record carries neither the file nor its names, because iCloud already holds them.
         var withoutFile = false
+    }
+
+    /// The deletes to save, and the ones the server already holds, by clip with the date the local delete carries.
+    struct PreparedTombstones {
+        var records: [PreparedPushRecord] = []
+        var settled: [UUID: Date] = [:]
     }
 
     struct PreparedPushRecords {
