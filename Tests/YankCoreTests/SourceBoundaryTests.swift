@@ -14,7 +14,7 @@ struct SourceBoundaryTests {
 
     @Test("CloudKit sync only depends on core and system transport modules")
     func cloudKitSyncImportsStayNarrow() throws {
-        let allowed = Set(["CloudKit", "Foundation", "Security", "os", "YankCore"])
+        let allowed = Set(["CloudKit", "Foundation", "Network", "Security", "os", "YankCore"])
         let violations = try imports(in: "Sources/YankCloudKitSync").filter { _, imported in
             !allowed.contains(imported)
         }
