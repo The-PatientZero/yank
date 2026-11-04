@@ -5,8 +5,12 @@ struct HubSyncSummary: Equatable {
     var status: SyncStatus
     var failureKind: SyncFailureKind?
     var waitingCount: Int
+    /// Clip records iCloud has delivered so far in a pull that spans several pages.
+    var clipsReceived: Int?
 
-    static let off = HubSyncSummary(status: .localOnly(reason: .disabled), failureKind: nil, waitingCount: 0)
+    static let off = HubSyncSummary(
+        status: .localOnly(reason: .disabled), failureKind: nil, waitingCount: 0, clipsReceived: nil
+    )
 
     /// Sync is on and the build can reach iCloud: the menu shows the state and "Sync now".
     var isActive: Bool {

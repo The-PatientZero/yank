@@ -23,7 +23,7 @@ extension SettingsView {
                 .foregroundColor(.secondary)
 
             if let store {
-                syncStatusRow(store.syncStatus, failureKind: store.syncFailureKind)
+                syncStatusRow(store.syncStatus, failureKind: store.syncFailureKind, clipsReceived: store.syncClipsReceived)
                 syncActionRow(store.syncStatus, failureKind: store.syncFailureKind)
                 waitingClipsSection(store)
                 if case .localOnly = store.syncStatus {} else if let encryption = store.encryptionStatus {
@@ -57,7 +57,7 @@ extension SettingsView {
     private static let syncClockInterval: TimeInterval = 30
 
     @ViewBuilder
-    func syncStatusRow(_ status: SyncStatus, failureKind: SyncFailureKind?) -> some View {
+    func syncStatusRow(_ status: SyncStatus, failureKind: SyncFailureKind?, clipsReceived: Int?) -> some View {
         switch status {
         case .localOnly(let reason):
             let text = switch reason {
@@ -69,7 +69,8 @@ extension SettingsView {
                 .font(.system(size: TypeScale.caption))
                 .foregroundColor(.yankTextTertiary)
         case .syncing:
-            Label(SyncCopy.syncingHeadline, systemImage: SyncCopy.Symbol.syncing)
+            Label(clipsReceived.map(SyncCopy.syncingWithCount) ?? SyncCopy.syncingHeadline,
+                  systemImage: SyncCopy.Symbol.syncing)
                 .font(.system(size: TypeScale.caption))
                 .foregroundColor(.secondary)
         case .healthy(let lastSynced):

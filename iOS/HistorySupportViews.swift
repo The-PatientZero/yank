@@ -138,6 +138,36 @@ struct ICloudSignedOutBanner: View {
     }
 }
 
+/// A slim line above the history while a long first sync is still delivering clips. It is one
+/// element, so VoiceOver reads the count on focus and never speaks as the count rises.
+struct SyncProgressLine: View {
+    let clipsReceived: Int
+
+    var body: some View {
+        HStack(spacing: Space.md) {
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityHidden(true)
+            Text(SyncCopy.receivedSoFar(clipsReceived))
+                .font(.yank(.footnote))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Space.xxl)
+        .padding(.vertical, Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.yankRaised)
+        .overlay(
+            Rectangle().frame(height: Hairline.width).foregroundColor(Color.yankHairline),
+            alignment: .bottom
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SyncCopy.syncingYourClipsLabel)
+        .accessibilityValue(SyncCopy.receivedCount(clipsReceived))
+    }
+}
+
 /// Shown when automatic capture keeps coming back empty although the clipboard holds text,
 /// which is what a denied "Paste from Other Apps" setting looks like.
 struct PasteDeniedBanner: View {

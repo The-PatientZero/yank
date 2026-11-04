@@ -67,6 +67,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private(set) var syncStatus: SyncStatus = .localOnly(reason: .notProvisioned)
 
+    /// Clip records iCloud has delivered so far in a pull that spans several pages; nil otherwise.
+    private(set) var syncClipsReceived: Int?
+
     /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
     private(set) var syncFailureKind: SyncFailureKind?
 
@@ -769,6 +772,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     func markSyncStarted() {
         syncStatus = .syncing
         syncFailureKind = nil
+        syncClipsReceived = nil
         if firstSyncState != .settled {
             firstSyncState = .syncing
         }
@@ -777,6 +781,21 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     func markSyncSucceeded(at date: Date) {
         syncStatus = .healthy(lastSynced: date)
         syncFailureKind = nil
+        syncClipsReceived = nil
+        // The end of a run settles a first sync, also when no page ever applied a change, and
+        // clears a failure an earlier run left behind (a remote-change pull never marks a start).
+        if firstSyncState != .settled {
+            firstSyncState = .settled
+        }
+    }
+
+    func markSyncProgress(clipsReceived: Int) {
+        syncStatus = .syncing
+        syncFailureKind = nil
+        syncClipsReceived = clipsReceived
+        if firstSyncState != .settled {
+            firstSyncState = .syncing
+        }
     }
 
     /// A failure without a known cause: the generic "Try again" action applies.
@@ -791,6 +810,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private func recordSyncFailure(message: String, kind: SyncFailureKind?) {
         syncStatus = .failed(message: message)
         syncFailureKind = kind
+        syncClipsReceived = nil
         if firstSyncState != .settled {
             firstSyncState = .failed(message: message)
         }
@@ -804,6 +824,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     func markSyncUnavailable(reason: SyncStatus.Reason) {
         syncStatus = .localOnly(reason: reason)
         syncFailureKind = nil
+        syncClipsReceived = nil
         // A first sync that never finished must not leave a spinner or a retry screen behind.
         if firstSyncState != .settled {
             firstSyncState = .idle
@@ -856,19 +877,24 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         return ReconcileOutcome(changed: true, expiredVisibleCount: result.expiredVisibleCount)
     }
 
+    /// A page of a pull that spans several pages is not the end of the sync: the status keeps
+    /// reading "Syncing" until the service reports the run finished.
+    private func settleFirstSyncUnlessPulling() {
+        guard syncClipsReceived == nil else { return }
+        markSyncSucceeded(at: Date())
+    }
+
     func applyReconciled(_ canonical: [ClipboardItem]) {
         guard !isHistoryLoadPending else { return }
         let outcome = applyReconciledInMemory(canonical)
-        firstSyncState = .settled
-        markSyncSucceeded(at: Date())
+        settleFirstSyncUnlessPulling()
         if outcome.changed { persist(notify: outcome.expiredVisibleCount > 0) }
     }
 
     func applyReconciledDurably(_ canonical: [ClipboardItem]) throws {
         guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
         let outcome = applyReconciledInMemory(canonical)
-        firstSyncState = .settled
-        markSyncSucceeded(at: Date())
+        settleFirstSyncUnlessPulling()
         persist(notify: outcome.expiredVisibleCount > 0)
         try flushPendingWrites()
         releaseDeferredBlobDeletions(blobDeletionsAwaitingSnapshot)
@@ -878,8 +904,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         guard !historyWritesDisabled, !isHistoryLoadPending else { throw PersistenceError.writesDisabled }
         guard let historyWriter else { throw PersistenceError.appGroupUnavailable }
         let outcome = applyReconciledInMemory(canonical)
-        firstSyncState = .settled
-        markSyncSucceeded(at: Date())
+        settleFirstSyncUnlessPulling()
         let batch = blobDeletionsAwaitingSnapshot
         try await historyWriter.awaitDurableSnapshot(
             stateChanged: outcome.changed,

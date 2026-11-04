@@ -255,12 +255,14 @@ extension HistoryView {
                     .font(.yank(.subheadline))
                     .foregroundStyle(.secondary)
             }
-            Text("Pulling your history from iCloud.")
+            Text(store.syncClipsReceived.map(SyncCopy.receivedSoFar) ?? "Pulling your history from iCloud.")
                 .font(.yank(.footnote))
                 .foregroundStyle(Color.yankTextTertiary)
+                .multilineTextAlignment(.center)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Syncing your clips from iCloud")
+        .accessibilityValue(store.syncClipsReceived.map(SyncCopy.receivedCount) ?? "")
     }
 
     func syncFailedState(message: String) -> some View {

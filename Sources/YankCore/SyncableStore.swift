@@ -29,6 +29,10 @@ public protocol SyncableStore: AnyObject {
     func markSyncFailed(_ message: String)
     /// Mark sync as intentionally unavailable.
     func markSyncUnavailable(reason: SyncStatus.Reason)
+    /// Mark a pull that spans several pages as running, with the number of clip records iCloud
+    /// has delivered so far. The count includes edits to clips the store already holds, so it can
+    /// exceed the number of clips shown. The next success, failure or stop clears it.
+    func markSyncProgress(clipsReceived: Int)
 }
 
 /// Reports the clips waiting out their undo window. They are still in the sync snapshot as live
@@ -46,6 +50,9 @@ public extension SyncableStore {
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
         try applyReconciledDurably(canonical)
     }
+
+    /// Default for stores that do not show progress.
+    func markSyncProgress(clipsReceived: Int) {}
 }
 
 public extension Notification.Name {

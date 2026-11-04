@@ -564,6 +564,8 @@ final class ClipboardController {
         NSApp.unregisterForRemoteNotifications()
         if let reason {
             store.markSyncUnavailable(reason: reason)
+        } else {
+            store.clearSyncProgress()
         }
     }
 
@@ -652,7 +654,8 @@ final class ClipboardController {
         HubSyncSummary(
             status: store.syncStatus,
             failureKind: store.syncFailureKind,
-            waitingCount: store.visibleWaitingClips.count
+            waitingCount: store.visibleWaitingClips.count,
+            clipsReceived: store.syncClipsReceived
         )
     }
 

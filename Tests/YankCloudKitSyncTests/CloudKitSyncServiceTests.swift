@@ -154,7 +154,7 @@ struct CloudKitSyncServiceTests {
         #expect(quarantine[goneRecordName]?.reason.isEmpty == false)
     }
 
-    @Test func partialLaterPageCleansUpPreviouslyDownloadedUnreferencedBlobs() async throws {
+    @Test func partialLaterPageKeepsTheBlobsOfAnAppliedEarlierPage() async throws {
         let filename = "\(UUID().uuidString).txt"
         let remote = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
         let assetURL = try writeAsset("pending blob")
@@ -174,10 +174,11 @@ struct CloudKitSyncServiceTests {
             Issue.record("Expected the partial later page to fail sync")
             return
         }
-        #expect(store.appliedReconciled == nil)
+        let applied = try #require(store.appliedReconciled)
+        #expect(applied.contains { $0.id == remote.id })
         let staged = try #require(store.writtenBlobs.first)
         #expect(staged != blob)
-        #expect(store.deletedBlobs == [staged, blob])
+        #expect(store.deletedBlobs == [staged])
     }
 
     @Test func pullDeletesDownloadedBlobWhenReconcileDropsRemoteItem() async throws {
@@ -531,16 +532,18 @@ struct CloudKitSyncServiceTests {
             containerID: containerID
         )
         let database = FakeCloudKitDatabase()
-        database.pages = [
-            page(changed: [try record(for: remote)], moreComing: true),
-            page(moreComing: false)
-        ]
+        database.pages = [page(changed: [try record(for: remote)], moreComing: false)]
         let store = FakeSyncableStore()
         store.items = [tombstone]
-        var fetchCount = 0
-        database.onFetchZoneChanges = {
-            fetchCount += 1
-            if fetchCount == 2 {
+        // The tombstone is read once while the record is resolved and once more when the page is
+        // applied; it disappears between the two.
+        var pageFetched = false
+        var snapshotsAfterFetch = 0
+        database.onFetchZoneChanges = { pageFetched = true }
+        store.onItemsForSync = {
+            guard pageFetched else { return }
+            snapshotsAfterFetch += 1
+            if snapshotsAfterFetch == 2 {
                 store.items = []
             }
         }
@@ -763,7 +766,7 @@ struct CloudKitSyncServiceTests {
         #expect(database.savedBatches.isEmpty)
     }
 
-    @Test func repairReceiptIsNotInvalidatedWhenALaterPullPageFails() async throws {
+    @Test func repairReceiptIsInvalidatedWithTheAppliedPageWhenALaterPullPageFails() async throws {
         let filename = "\(UUID().uuidString).txt"
         let item = makeLargeTextItem(id: UUID(), filename: filename, modifiedAt: 100)
         let blob = try #require(SyncBlobReference(filename: filename, kind: .text))
@@ -790,12 +793,11 @@ struct CloudKitSyncServiceTests {
         let result = await service.start()
 
         guard case .failed = result else {
-            Issue.record("Expected the partial later page to abort repair")
+            Issue.record("Expected the partial later page to fail sync")
             return
         }
-        #expect(store.appliedReconciled == nil)
-        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id]
-                == item.modifiedAt)
+        #expect(store.appliedReconciled != nil)
+        #expect(try pushReceipts(defaults: defaults, containerID: containerID)?[item.id] == nil)
         #expect(database.savedBatches.isEmpty)
     }
 
@@ -3224,6 +3226,9 @@ private final class FakeCloudKitDatabase: CloudKitDatabase {
                 fetched.permanentlyMissingRecordNames.insert(recordName)
             } else if let record = fetchableRecords[recordName] {
                 fetched.records.append(checkedOutCopy(of: record, named: recordName))
+            } else if recordName == SyncedSettingsCloudMapping.recordName {
+                // CloudKit answers "unknown item" for a settings record that was never written.
+                fetched.permanentlyMissingRecordNames.insert(recordName)
             }
         }
         return fetched
@@ -3330,6 +3335,7 @@ private final class FakeSyncableStore: SyncableStore {
     var items: [ClipboardItem] = []
     var blobURLs: [SyncBlobReference: URL] = [:]
     var onApplyReconciledDurably: (() -> Void)?
+    var onItemsForSync: (() -> Void)?
     var onWriteBlob: ((SyncBlobReference) async -> Void)?
     private(set) var appliedReconciled: [ClipboardItem]?
     private(set) var writtenBlobs: [SyncBlobReference] = []
@@ -3344,7 +3350,10 @@ private final class FakeSyncableStore: SyncableStore {
         try? FileManager.default.removeItem(at: blobDirectory)
     }
 
-    func itemsForSync() -> [ClipboardItem] { items }
+    func itemsForSync() -> [ClipboardItem] {
+        onItemsForSync?()
+        return items
+    }
 
     func applyReconciled(_ canonical: [ClipboardItem]) {
         appliedReconciled = canonical

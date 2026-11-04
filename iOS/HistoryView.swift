@@ -145,6 +145,9 @@ struct HistoryView: View {
                 if store.heldClipCount > 0 {
                     HeldClipsNotice(count: store.heldClipCount)
                 }
+                if !store.items.isEmpty, let received = store.syncClipsReceived {
+                    SyncProgressLine(clipsReceived: received)
+                }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {

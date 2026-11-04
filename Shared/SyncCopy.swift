@@ -138,6 +138,25 @@ enum SyncCopy {
     static let syncNow = "Sync now"
     static let tryAgain = "Try again"
 
+    /// The running count while a pull spans several pages. It counts clip records iCloud has
+    /// delivered, not the size of the list, so there is no total to show.
+    static func receivedCount(_ count: Int) -> String {
+        count == 1 ? "1 clip received" : "\(count.formatted()) clips received"
+    }
+
+    /// Mac: the status headline with the running count.
+    static func syncingWithCount(_ count: Int) -> String {
+        "\(syncingHeadline) \(receivedCount(count))"
+    }
+
+    /// The spoken name of the iPhone rows that show the running count.
+    static let syncingYourClipsLabel = "Syncing your clips"
+
+    /// iPhone: the running count as a sentence of its own.
+    static func receivedSoFar(_ count: Int) -> String {
+        count == 1 ? "1 clip received so far" : "\(count.formatted()) clips received so far"
+    }
+
     /// Symbol names per state, so the Mac and the iPhone draw the same shapes.
     enum Symbol {
         static let syncing = "arrow.triangle.2.circlepath"

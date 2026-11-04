@@ -65,6 +65,19 @@ enum ClipboardCloudMapping {
         Key.encContent, Key.modifiedAt, Key.deletedAt
     ]
 
+    /// Every field a pull reads from a clip record except the file itself, plus the settings
+    /// record's fields: what a change-feed page asks for when this device already holds the
+    /// files. Any new field that `item(from:)` or the encrypted-copy code reads must be added
+    /// here, or a pull without files would read it as its default (for example "not pinned").
+    static let pullFieldKeys: [CKRecord.FieldKey] = contentFetchKeys + [
+        Key.type, Key.timestamp, Key.textFilename, Key.imageFilename, Key.isPinned,
+        Key.isBookmarked, Key.isTruncated, Key.originalSizeBytes, Key.deviceOrigin,
+        Key.hasRichContent, Key.aiEnrichedAt,
+        SyncedSettingsCloudMapping.Key.historyLimit,
+        SyncedSettingsCloudMapping.Key.retentionDays,
+        SyncedSettingsCloudMapping.Key.updatedAt
+    ]
+
     /// CloudKit does not keep sub-millisecond `Date` precision, and rounding may differ by one
     /// millisecond between writer and reader.
     private static let contentStampToleranceMilliseconds: Int64 = 1
@@ -176,7 +189,8 @@ enum ClipboardCloudMapping {
         from item: ClipboardItem,
         in zoneID: CKRecordZone.ID,
         blobURL: URL? = nil,
-        policy: PlainContentPolicy = .dualWrite
+        policy: PlainContentPolicy = .dualWrite,
+        omitsFileFields: Bool = false
     ) -> CKRecord? {
         guard let filenames = validatedBlobFilenames(
             type: item.type,
@@ -199,8 +213,13 @@ enum ClipboardCloudMapping {
             record[Key.aiTags] = item.aiTags
             record[Key.aiTitle] = item.aiTitle
         }
-        record[Key.textFilename] = filenames.textFilename
-        record[Key.imageFilename] = filenames.imageFilename
+        // Left unset, not set and cleared: a save that sends neither the file nor its names leaves
+        // the server's file and names as they are, so a replaced file cannot end up under the
+        // wrong name.
+        if !omitsFileFields {
+            record[Key.textFilename] = filenames.textFilename
+            record[Key.imageFilename] = filenames.imageFilename
+        }
         record[Key.isPinned] = item.isPinned ? 1 : 0
         record[Key.isBookmarked] = item.isBookmarked ? 1 : 0
         record[Key.isTruncated] = item.isTruncated ? 1 : 0
@@ -218,11 +237,22 @@ enum ClipboardCloudMapping {
                 clipID: item.id
             )
         }
-        if let blobURL {
+        if let blobURL, !omitsFileFields {
             record[Key.blob] = CKAsset(fileURL: blobURL)
         }
         return record
     }
+
+    /// Whether the server's copy of a clip already holds exactly the file this clip names. The
+    /// record only needs its file name fields for this.
+    static func serverHoldsFile(of item: ClipboardItem, in serverRecord: CKRecord) -> Bool {
+        guard item.textFilename != nil || item.imageFilename != nil else { return false }
+        return serverRecord[Key.textFilename] as? String == item.textFilename
+            && serverRecord[Key.imageFilename] as? String == item.imageFilename
+    }
+
+    /// The fields that name a clip's file, for a fetch that only compares them.
+    static let fileNameKeys: [CKRecord.FieldKey] = [Key.textFilename, Key.imageFilename]
 
     /// Builds the encrypted copy. In `dualWrite`, when plain fields plus payload would exceed the
     /// record budget the largest of the search index, OCR text and text moves out of the payload
