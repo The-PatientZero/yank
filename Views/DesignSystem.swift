@@ -117,14 +117,8 @@ extension NSColor {
     static var yankOnSuccess: NSColor {
         yankDynamic(light: YankInk.onSuccess.light, dark: YankInk.onSuccess.dark)
     }
-    static var yankTextTertiary: NSColor {
-        yankDynamic(light: YankInk.textTertiary.light, dark: YankInk.textTertiary.dark)
-    }
     static var yankDanger: NSColor {
         yankDynamic(light: YankInk.danger.light, dark: YankInk.danger.dark)
-    }
-    static var yankWarning: NSColor {
-        yankDynamic(light: YankInk.bookmark.light, dark: YankInk.bookmark.dark)
     }
 }
 
@@ -215,27 +209,18 @@ enum YankPanelTokens {
     static let contentInset: CGFloat = Space.xxxl
     static let stackSpacing: CGFloat = Space.lg
     static let tightStackSpacing: CGFloat = Space.sm
-    static var eyebrowFont: NSFont { NSFont.systemFont(ofSize: TypeScale.micro, weight: .semibold) }
     static var titleFont: NSFont { NSFont.systemFont(ofSize: TypeScale.title, weight: .semibold) }
     static var subtitleFont: NSFont { NSFont.systemFont(ofSize: TypeScale.body) }
     static var detailFont: NSFont { NSFont.systemFont(ofSize: TypeScale.caption) }
     static var buttonFont: NSFont { NSFont.systemFont(ofSize: TypeScale.control, weight: .semibold) }
     static var primaryText: NSColor { .labelColor }
     static var secondaryText: NSColor { .secondaryLabelColor }
-    static var tertiaryText: NSColor { .yankTextTertiary }
     static var infoGlyph: NSColor { .controlAccentColor }
-    static var successGlyph: NSColor { .yankSuccess }
-    static var warningGlyph: NSColor { .yankWarning }
-    static var failureGlyph: NSColor { .yankDanger }
     static var badgeFill: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.12) }
     static var detailFill: NSColor { NSColor.textBackgroundColor.withAlphaComponent(0.55) }
     static var panelStroke: NSColor { .separatorColor }
     static let badgeSize = NSSize(width: 48, height: 48)
-    static let spinnerSize = NSSize(width: 20, height: 20)
     static let primaryButtonSize = NSSize(width: 124, height: 32)
-    static let secondaryButtonSize = NSSize(width: 108, height: 32)
-    static let quietButtonSize = NSSize(width: 82, height: 32)
-    static let scrollableDetailHeight: CGFloat = 108
     static let symbolPointScale: CGFloat = 0.8
     static let fadeInDuration = 0.22
     static let fadeOutDuration = 0.26

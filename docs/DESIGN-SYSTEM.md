@@ -247,7 +247,7 @@ A 30×30 `Radius.sm` rounded square filled `yankSubtleFill`, with a centred SF S
 Wordmark described under Typography. `YankBrandMark` is the boxed logo: `Radius.md` rounded square, `yankSurface` fill, `yankHairline` border, the `BrandGlyph` asset inset by `size × 0.22`, with a soft `black @ 0.06` shadow.
 
 ### `YankPanelTokens` — [`Views/DesignSystem.swift`](../Views/DesignSystem.swift)
-AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×214`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, buttons `124/108/82 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (eyebrow `micro` semibold, title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
+AppKit sizing for the native toast/update panels (these draw outside SwiftUI): compact panel `360×214`, corner `Radius.window`, content inset `xxxl`, badge `48×48`, button `124 × 32`, fade in/out `0.22s`/`0.26s`. Fonts map to `TypeScale` (title `title` semibold, subtitle `body`, detail `caption`, button `control` semibold).
 
 ---
 
