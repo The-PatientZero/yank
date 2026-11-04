@@ -102,6 +102,12 @@ extension CloudKitSyncService {
                 }
                 await Task.yield()
             }
+            // Failures from earlier invocations are only in the saved attempt counts; read those
+            // records again too. One that was converted since is skipped, so this is harmless.
+            let retryable = state.sweepAttempts.filter {
+                $0.value > 0 && $0.value < PlaintextSweepLimits.attemptLimit
+            }
+            unresolved.formUnion(retryable.keys)
             try await retryUnresolvedReadableCopies(&unresolved, generation: generation)
         } catch {
             return handleSweepFailure(error, generation: generation)
