@@ -405,8 +405,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     /// Persists again the capture of this pasteboard generation whose save failed earlier, as
-    /// long as the clip is still the one captured. Nil when there is nothing to retry.
-    private func retryPendingForegroundCapture(
+    /// long as the clip is still the one captured. Nil when there is nothing to retry. Needs no
+    /// clipboard read, so the coordinator calls it before reading.
+    func retryPendingForegroundCapture(
         pasteboardGeneration: Int
     ) async -> IOSForegroundCaptureOutcome? {
         guard let pending = pendingForegroundCapture,

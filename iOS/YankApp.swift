@@ -57,6 +57,7 @@ final class IOSForegroundRefreshCoordinator {
         captureImage: @escaping @MainActor (Data, Int) async -> IOSForegroundCaptureOutcome = { _, _ in
             .terminalPolicyRejection
         },
+        retryPendingCapture: @escaping @MainActor (Int) async -> IOSForegroundCaptureOutcome? = { _ in nil },
         refreshSync: @MainActor () async -> Void
     ) async -> Bool {
         let didCapture = await processPasteboard(
@@ -68,7 +69,8 @@ final class IOSForegroundRefreshCoordinator {
             readText: readText,
             capture: capture,
             readImage: readImage,
-            captureImage: captureImage
+            captureImage: captureImage,
+            retryPendingCapture: retryPendingCapture
         )
         await refreshSync()
         return didCapture
@@ -86,7 +88,8 @@ final class IOSForegroundRefreshCoordinator {
         readImage: @escaping @MainActor () async -> PasteboardImageReader.Result = { .unsupported },
         captureImage: @escaping @MainActor (Data, Int) async -> IOSForegroundCaptureOutcome = { _, _ in
             .terminalPolicyRejection
-        }
+        },
+        retryPendingCapture: @escaping @MainActor (Int) async -> IOSForegroundCaptureOutcome? = { _ in nil }
     ) async -> Bool {
         guard isAutomaticCaptureAuthorized() else { return false }
         latestObservedPasteboardChangeCount = pasteboardChangeCount
@@ -127,7 +130,8 @@ final class IOSForegroundRefreshCoordinator {
                 readText: readText,
                 capture: capture,
                 readImage: readImage,
-                captureImage: captureImage
+                captureImage: captureImage,
+                retryPendingCapture: retryPendingCapture
             )
         }
         let inFlight = InFlightCapture(
@@ -156,7 +160,8 @@ final class IOSForegroundRefreshCoordinator {
         readText: @MainActor () -> String?,
         capture: @MainActor (String, Int, Bool) async -> IOSForegroundCaptureOutcome,
         readImage: @MainActor () async -> PasteboardImageReader.Result,
-        captureImage: @MainActor (Data, Int) async -> IOSForegroundCaptureOutcome
+        captureImage: @MainActor (Data, Int) async -> IOSForegroundCaptureOutcome,
+        retryPendingCapture: @MainActor (Int) async -> IOSForegroundCaptureOutcome?
     ) async -> IOSForegroundCaptureOutcome {
         guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
         if isPasteboardOwnedByThisInstallation() {
@@ -181,6 +186,16 @@ final class IOSForegroundRefreshCoordinator {
             return .terminalPolicyRejection
         case .capture:
             guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+            // A clip already captured from this generation whose save failed is saved again
+            // without reading the clipboard, so no second paste prompt appears.
+            if let outcome = await retryPendingCapture(pasteboardChangeCount) {
+                guard isAutomaticCaptureAuthorized() else { return .retryableFailure }
+                updateLatestObserved(using: currentPasteboardChangeCount)
+                if outcome != .retryableFailure {
+                    markCurrentGenerationHandled(pasteboardChangeCount)
+                }
+                return outcome
+            }
             if PasteboardAcknowledgement.prefersImage(in: pasteboardTypes) {
                 return await resolveImage(
                     pasteboardChangeCount: pasteboardChangeCount,
@@ -206,6 +221,16 @@ final class IOSForegroundRefreshCoordinator {
                 return .retryableFailure
             }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                // Empty text beside an image: save the image, as the Mac does.
+                if PasteboardAcknowledgement.declaresImage(in: pasteboardTypes) {
+                    return await resolveImage(
+                        pasteboardChangeCount: pasteboardChangeCount,
+                        isAutomaticCaptureAuthorized: isAutomaticCaptureAuthorized,
+                        currentPasteboardChangeCount: currentPasteboardChangeCount,
+                        readImage: readImage,
+                        captureImage: captureImage
+                    )
+                }
                 markCurrentGenerationHandled(pasteboardChangeCount)
                 return .terminalPolicyRejection
             }
@@ -1197,6 +1222,9 @@ struct YankApp: App {
             },
             captureImage: { pngData, generation in
                 await store.captureForegroundImage(pngData, pasteboardGeneration: generation)
+            },
+            retryPendingCapture: { generation in
+                await store.retryPendingForegroundCapture(pasteboardGeneration: generation)
             }
         )
     }

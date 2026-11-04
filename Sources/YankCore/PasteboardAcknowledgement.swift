@@ -36,11 +36,15 @@ struct PasteboardAcknowledgement: Codable, Equatable, Sendable {
     /// text. Plain text wins, as on the Mac, so copied text that carries a picture stays text,
     /// while an image that comes with only HTML or RTF (a copy from a web page) is saved as the image.
     static func prefersImage(in pasteboardTypes: [String]) -> Bool {
-        let declaresImage = pasteboardTypes.contains { UTType($0)?.conforms(to: .image) == true }
         let declaresPlainText = pasteboardTypes.contains { type in
             type == legacyStringType || UTType(type)?.conforms(to: .plainText) == true
         }
-        return declaresImage && !declaresPlainText
+        return declaresImage(in: pasteboardTypes) && !declaresPlainText
+    }
+
+    /// Whether any declared pasteboard type is an image, from the type list alone.
+    static func declaresImage(in pasteboardTypes: [String]) -> Bool {
+        pasteboardTypes.contains { UTType($0)?.conforms(to: .image) == true }
     }
 }
 

@@ -111,10 +111,19 @@ struct CaptureClipIntent: AppIntent {
                 }
             )
         } else {
-            queued = try await Self.captureClipboard(
-                resolveAppGroup: { AppGroupContainer.live() },
-                readText: { passedText ?? pasteboard.string }
-            )
+            do {
+                queued = try await Self.captureClipboard(
+                    resolveAppGroup: { AppGroupContainer.live() },
+                    readText: { passedText ?? pasteboard.string }
+                )
+            } catch CaptureError.noTextReceived
+                where readsClipboard && PasteboardAcknowledgement.declaresImage(in: pasteboard.types) {
+                // Empty text beside an image: save the image, as automatic capture does.
+                queued = try await Self.captureImage(
+                    resolveAppGroup: { AppGroupContainer.live() },
+                    readImage: { await PasteboardImageReader.read(from: pasteboard, types: pasteboard.types) }
+                )
+            }
         }
         if readsClipboard {
             queued.clipboardChangeCount = clipboardChangeCount

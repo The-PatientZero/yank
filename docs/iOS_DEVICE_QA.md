@@ -42,6 +42,7 @@ is enabled with Full Access off. Use non-identifying account aliases rather than
 - [ ] Copy new plain text in another app, return to Yank, and confirm the exact value appears once.
 - [ ] Copy a photo in Photos and an image in Safari, return to Yank after each, and confirm each appears once as an image clip.
 - [ ] Copy text that carries an image (for example from Notes) and confirm it is saved as text.
+- [ ] Copy an image that comes with empty text and confirm the image is saved, both on opening Yank and with Save Clipboard.
 - [ ] Returning with an unchanged clipboard does not refresh or duplicate the clip.
 - [ ] Copy a clip from Yank, terminate and relaunch Yank, and confirm Yank's own pasteboard write is not recaptured.
 - [ ] Copy byte-identical content from another app after that self-origin check and confirm the external copy remains eligible exactly once.
