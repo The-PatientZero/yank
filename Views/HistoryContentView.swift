@@ -60,6 +60,10 @@ struct HistoryContentView: View {
         case scrollSplitRail
     }
 
+    /// The window opened while Settings was showing, so the history screen has open steps to run
+    /// once it is back.
+    @State private var openedOverSettings = false
+
     @State var selectedIDs: Set<UUID> = []
     @State var selectionAnchor: UUID?
 
@@ -229,7 +233,23 @@ struct HistoryContentView: View {
             if !newValue { keepWindowOpen = settings.keepHistoryWindowOpen }
         }
         .onReceive(NotificationCenter.default.publisher(for: .yankOpenSettings)) { _ in setSettings(true) }
-        .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in showSettings = false }
+        // These live here, not on the history screen, which is gone while Settings is showing.
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
+            searchText = ""
+            searchTextDebounced = ""
+            activeTagFilter = nil
+            openFocusID = nil
+            pendingFocusID = nil
+            pendingOpenSteps = Self.openSteps(for: viewMode)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryFocusRequested)) { _ in
+            focusRequestedClip()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .yankWindowDidOpen)) { _ in
+            guard showSettings else { return }
+            openedOverSettings = true
+            showSettings = false
+        }
     }
 
     func setSettings(_ on: Bool) {
@@ -329,6 +349,16 @@ struct HistoryContentView: View {
 
     private var historyScreen: some View {
         historyScreenBody
+        .onAppear {
+            // The open notification went out while this screen was not on screen, so its open
+            // steps (select and scroll to the newest clip) run now that it can hear it again.
+            guard openedOverSettings else { return }
+            openedOverSettings = false
+            Task { @MainActor in
+                await Task.yield()
+                NotificationCenter.default.post(name: .yankWindowDidOpen, object: nil)
+            }
+        }
         .onChange(of: searchText) { _, newValue in
             showTagAutocomplete = newValue.hasPrefix("#")
             searchDebounceTask?.cancel()
@@ -357,17 +387,6 @@ struct HistoryContentView: View {
             }
         }
         .onChange(of: masonryKey) { _, _ in rebuildMasonryIfNeeded() }
-        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryWindowDidShow)) { _ in
-            searchText = ""
-            searchTextDebounced = ""
-            activeTagFilter = nil
-            openFocusID = nil
-            pendingFocusID = nil
-            pendingOpenSteps = Self.openSteps(for: viewMode)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .yankHistoryFocusRequested)) { _ in
-            focusRequestedClip()
-        }
         .onChange(of: pendingOpenSteps.isEmpty) { _, allRun in
             if allRun { openFocusID = nil }
         }
