@@ -7,8 +7,10 @@ Yank support is provided through this public GitHub repository.
 Before reporting a problem, install the latest available version and search the
 [existing issues](https://github.com/The-PatientZero/yank/issues) for a matching report.
 
-For general support, questions, or bug reports, open a
-[new GitHub issue](https://github.com/The-PatientZero/yank/issues/new). Include:
+Ask questions about using Yank in
+[Q&A discussions](https://github.com/The-PatientZero/yank/discussions/categories/q-a).
+To report a bug, open a [new GitHub issue](https://github.com/The-PatientZero/yank/issues/new).
+Include:
 
 - whether you are using macOS, iPhone, or iPad;
 - the Yank version and operating-system version;
@@ -16,7 +18,7 @@ For general support, questions, or bug reports, open a
 - concise steps that reproduce the problem.
 
 Do not include clipboard contents, screenshots containing private information, account
-details, or other sensitive data in a public issue.
+details, or other sensitive data in a public issue or discussion.
 
 ## iPhone and iPad help
 

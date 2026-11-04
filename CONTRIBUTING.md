@@ -3,6 +3,8 @@
 Thanks for helping improve Yank. The repository is designed so every non-device quality gate can
 run from a clean checkout without maintainer credentials, private planning files, or Apple signing.
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Requirements
 
 - macOS 14 or later

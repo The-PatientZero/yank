@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in Yank does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Install the latest release and search existing issues first.
+        Do not paste clipboard contents, account details or screenshots with private information.
+        Report security problems privately, as described in [SECURITY.md](https://github.com/The-PatientZero/yank/blob/main/SECURITY.md).
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options: [Mac, iPhone, iPad]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Yank and OS version
+      placeholder: Yank 1.2.0 on macOS 26.1
+    validations:
+      required: true
+  - type: dropdown
+    id: sync
+    attributes:
+      label: iCloud sync
+      options: ["Off", "On, one device", "On, several devices"]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened instead
+    validations:
+      required: true
