@@ -30,8 +30,27 @@ final class ClipboardStore {
             guard captureSettings != oldValue else { return }
             // A tighter limit / shorter window may now evict items; re-apply on change so
             // the live history honours the new bounds without waiting for the next capture.
-            pruneExpired()
+            pruneExpired(includingAge: !isAdoptingSyncedSettings)
         }
+    }
+
+    /// True only while `adoptSyncedCaptureSettings` assigns, so the `captureSettings` observer
+    /// applies the cap but leaves age expiry to the end of the pull.
+    @ObservationIgnored private var isAdoptingSyncedSettings = false
+
+    /// True while a sync pull fetches and merges pages. Age retention waits: a clip expired from
+    /// the stale history is tombstoned as of now and beats a copy another device used again on a
+    /// page still to come. Owned by the pull (`markPullStarted`, `markPullFinished`), so a push
+    /// finishing meanwhile neither reads nor clears it.
+    @ObservationIgnored var isPullInProgress = false
+
+    /// Adopts capture settings that arrived through sync. The history cap applies at once; age
+    /// expiry waits for the pull that carried them, which merges the other devices' newer copies
+    /// first, and then runs from `markPullFinished` or `markSyncSucceeded`.
+    func adoptSyncedCaptureSettings(_ settings: CaptureSettings) {
+        isAdoptingSyncedSettings = true
+        defer { isAdoptingSyncedSettings = false }
+        captureSettings = settings
     }
 
     /// False until the first on-disk load completes, so the history window can tell a
@@ -205,9 +224,9 @@ final class ClipboardStore {
 
     /// Apply age retention, the local history cap, and tombstone pruning. Explicit calls
     /// (launch, `captureSettings` change) bypass the capture-path time gate.
-    func pruneExpired() {
+    func pruneExpired(includingAge: Bool = true) {
         guard !isRetentionHeldForSync else { return }
-        if applyRetentionAndLimit(now: Date()) { persist() }
+        if applyRetentionAndLimit(now: Date(), includingAge: includingAge) { persist() }
     }
 
     /// One-shot sweep for blob files a reconcile's deferred delete missed — a crash between the
@@ -400,12 +419,12 @@ final class ClipboardStore {
     }
 
     @discardableResult
-    private func applyRetentionAndLimit(now: Date) -> Bool {
+    private func applyRetentionAndLimit(now: Date, includingAge: Bool = true) -> Bool {
         let result = ClipboardRetention.enforce(
             items: items,
             tombstones: tombstones,
             historyLimit: maxItems,
-            retentionDays: captureSettings.retentionDays,
+            retentionDays: includingAge && !isPullInProgress ? captureSettings.retentionDays : 0,
             now: now
         )
         guard result.didChange else { return false }

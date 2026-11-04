@@ -1077,7 +1077,7 @@ struct YankApp: App {
     private func refreshForeground() async {
         // A launch before the first unlock leaves the history unread; the files are readable now.
         IOSAppRuntime.shared.recoverProtectedStorage()
-        var syncOutcome: IOSSyncRunOutcome?
+        let pullCountBefore = store.completedPullCount
         await IOSForegroundRefreshPipeline.refresh(
             currentMode: { settings.foregroundCaptureMode },
             drainExplicitCaptures: { await store.drainShareInbox() },
@@ -1085,14 +1085,13 @@ struct YankApp: App {
                 settings.recordSuccessfulCaptureMethods(from: $0)
             },
             captureAutomatically: { await refreshAutomaticPasteboard() },
-            refreshSync: { syncOutcome = await syncController.refreshForeground() }
+            refreshSync: { _ = await syncController.refreshForeground() }
         )
         // Nothing runs in the background, so a clip that aged past the window while the app was
         // away is only removed when it returns. After the pull: a clip another device used again
-        // meanwhile must not be tombstoned from the stale local copy. When sync is on but the
-        // pull did not happen, the local history is still stale, so only the cap applies.
-        let pullMissing = settings.syncEnabled && (syncOutcome == .failed || store.isAwaitingFirstUnlock)
-        store.enforceRetentionAndLimit(limitOnly: pullMissing)
+        // meanwhile must not be tombstoned from the stale local copy. When sync is on but no pull
+        // finished and one could have, the local history is still stale, so only the cap applies.
+        store.enforceRetentionAfterSyncRun(pullCountBefore: pullCountBefore, syncEnabled: settings.syncEnabled)
     }
 
     private func refreshAutomaticPasteboard() async {

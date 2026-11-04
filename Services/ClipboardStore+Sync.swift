@@ -15,10 +15,21 @@ extension ClipboardStore {
     }
 
     func markSyncSucceeded(at date: Date) {
-        let finishedMultiPagePull = syncClipsReceived != nil
         setSyncState(.healthy(lastSynced: date), failureKind: nil)
-        // The pages skipped age expiry, so it runs once now that the whole pull is merged.
-        if finishedMultiPagePull { pruneExpired() }
+        // Covers a retention window adopted outside a pull. A pull still in flight holds age
+        // expiry back and runs it itself when it ends.
+        pruneExpired()
+    }
+
+    func markPullStarted() {
+        isPullInProgress = true
+    }
+
+    func markPullFinished(completed: Bool) {
+        isPullInProgress = false
+        // The pages skipped age expiry, so it runs once now that the whole pull is merged. A
+        // pull that failed leaves the history stale, so nothing is expired from it.
+        if completed { pruneExpired() }
     }
 
     /// A failure without a known cause: the generic "Try again" action applies.
@@ -100,16 +111,15 @@ extension ClipboardStore {
 
     /// Applies the canonical state in memory and reports whether anything a snapshot stores
     /// changed. Nothing is assigned when nothing changed, so an echo of this device's own pushes
-    /// neither redraws the history nor writes the disk. A page of a multi-page pull skips age
-    /// expiry: a clip expired from the stale history is tombstoned as of now and would beat a copy
-    /// another device used again on a later page. `markSyncSucceeded` expires them after the last.
+    /// neither redraws the history nor writes the disk. A page of a pull skips age expiry: a clip
+    /// expired from the stale history is tombstoned as of now and would beat a copy another device
+    /// used again on a later page. `markPullFinished` expires them after the last.
     private func applyReconciledInMemory(_ canonical: [ClipboardItem]) -> ReconcileOutcome {
-        let isMidPull = syncClipsReceived != nil
         let result = SyncReconcile.apply(
             canonical: canonical,
             replacing: items,
             historyLimit: maxItems,
-            retentionDays: isMidPull ? 0 : captureSettings.retentionDays,
+            retentionDays: isPullInProgress ? 0 : captureSettings.retentionDays,
             now: Date()
         )
         let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)

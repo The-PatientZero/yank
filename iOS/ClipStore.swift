@@ -137,6 +137,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     @ObservationIgnored private var retentionPassOwed = RetentionPassOwed.none
+    /// True while a sync pull fetches and merges pages; age retention waits for its end. Owned by
+    /// the pull (`markPullStarted`, `markPullFinished`), so a push finishing meanwhile neither
+    /// reads nor clears it.
+    @ObservationIgnored private var isPullInProgress = false
+    /// Counts the pulls that merged every page, so a caller can tell whether one finished while it
+    /// waited. A failed push after a good pull still leaves the history current.
+    @ObservationIgnored private(set) var completedPullCount = 0
     @ObservationIgnored private let appGroupContext: AppGroupContext?
     /// Keeps history storage out of device backups unless the user opted in; nil without an App Group.
     @ObservationIgnored private let backupExclusion: BackupExclusion?
@@ -729,7 +736,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             items: items,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: limitOnly ? 0 : retentionDays,
+            retentionDays: limitOnly || isPullInProgress ? 0 : retentionDays,
             now: Date()
         )
         guard result.didChange else { return }
@@ -737,6 +744,29 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         items = result.items
         tombstones = result.tombstones
         persist()
+    }
+
+    /// Why sync cannot pull: the account is missing, restricted or unavailable, or the build has no
+    /// iCloud container. The local history is then all there is, so age retention may run on it.
+    private var syncCannotPull: Bool {
+        switch syncStatus {
+        case .localOnly:
+            true
+        case .failed:
+            syncFailureKind.map { [.signedOut, .accountRestricted, .accountUnavailable].contains($0) } ?? false
+        case .healthy, .syncing:
+            false
+        }
+    }
+
+    /// Applies retention after a foreground sync run that started when `completedPullCount` was
+    /// `pullCountBefore`. Age expiry runs once a pull finished during the run, or when sync cannot
+    /// pull at all. Only a run that stopped before its pull finished (offline, a transport error)
+    /// leaves the history stale, so only the cap applies, as it does before the first unlock.
+    func enforceRetentionAfterSyncRun(pullCountBefore: Int, syncEnabled: Bool) {
+        let pullFinished = completedPullCount != pullCountBefore
+        let historyIsStale = syncEnabled && (isAwaitingFirstUnlock || (!pullFinished && !syncCannotPull))
+        enforceRetentionAndLimit(limitOnly: historyIsStale)
     }
 
     // MARK: - SyncableStore
@@ -751,7 +781,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     }
 
     func markSyncSucceeded(at date: Date) {
-        let finishedMultiPagePull = syncClipsReceived != nil
         syncStatus = .healthy(lastSynced: date)
         syncFailureKind = nil
         syncClipsReceived = nil
@@ -760,8 +789,18 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         if firstSyncState != .settled {
             firstSyncState = .settled
         }
+    }
+
+    func markPullStarted() {
+        isPullInProgress = true
+    }
+
+    func markPullFinished(completed: Bool) {
+        isPullInProgress = false
+        guard completed else { return }
+        completedPullCount &+= 1
         // The pages skipped age expiry, so it runs once now that the whole pull is merged.
-        if finishedMultiPagePull { enforceRetentionAndLimit() }
+        enforceRetentionAndLimit()
     }
 
     func markSyncProgress(clipsReceived: Int) {
@@ -827,16 +866,15 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     /// Applies the canonical state in memory and reports whether anything a snapshot stores
     /// changed. Nothing is assigned when nothing changed, so an echo of this device's own pushes
-    /// neither redraws the list nor writes the disk. A page of a multi-page pull skips age
-    /// expiry: a clip expired from the stale history is tombstoned as of now and would beat a copy
-    /// another device used again on a later page. `markSyncSucceeded` expires them after the last.
+    /// neither redraws the list nor writes the disk. A page of a pull skips age expiry: a clip
+    /// expired from the stale history is tombstoned as of now and would beat a copy another device
+    /// used again on a later page. `markPullFinished` expires them after the last.
     private func applyReconciledInMemory(_ canonical: [ClipboardItem]) -> ReconcileOutcome {
-        let isMidPull = syncClipsReceived != nil
         let result = SyncReconcile.apply(
             canonical: canonical,
             replacing: items,
             historyLimit: historyLimit,
-            retentionDays: isMidPull ? 0 : retentionDays,
+            retentionDays: isPullInProgress ? 0 : retentionDays,
             now: Date()
         )
         let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)

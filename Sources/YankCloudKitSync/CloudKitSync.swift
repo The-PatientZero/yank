@@ -161,6 +161,9 @@ public final class CloudKitSyncService {
     var activeRolloutEvaluation: (id: UUID, task: Task<Void, Never>)?
     var activeSweep: (id: UUID, task: Task<Void, Never>)?
     var loggedBlankClipIDs: Set<UUID> = []
+    /// Failed saves per clip of the erase of its readable copy, so a clip that keeps failing stops
+    /// holding its page back after a few attempts. Kept in memory: a relaunch starts counting again.
+    var readableCopyEraseAttempts: [String: Int] = [:]
 
     /// Live entry point: binds to the container's private database. `CKContainer(identifier:)`
     /// hard-traps on a binary not provisioned for the container, so callers must gate on
@@ -825,6 +828,8 @@ public final class CloudKitSyncService {
         var fetchedChanges = 0
         var changedHistory = 0
         var clipsDelivered = 0
+        // Owned by this pull: a push finishing meanwhile neither reads nor clears it.
+        store.markPullStarted()
         do {
             // Re-attempt earlier skipped records first, so a recovered one lands in the same
             // durable apply as the first page.
@@ -908,9 +913,12 @@ public final class CloudKitSyncService {
                 isFirstPage = false
                 accumulation = PullAccumulation()
             }
+            // Every page is merged, so the age expiry the pull held back runs now.
+            store.markPullFinished(completed: true)
             // A refetch from nothing re-delivers records this device already has.
             return startedFromNothing ? changedHistory : fetchedChanges
         } catch {
+            store.markPullFinished(completed: false)
             if canMutate(generation) {
                 deleteDownloadedBlobsNotReferenced(accumulation.downloadedBlobs, in: store)
             }
@@ -1654,6 +1662,7 @@ public final class CloudKitSyncService {
             if isReceiptMigration || garbageCollectedReceipts != existingReceipts {
                 try persistPushReceipts(garbageCollectedReceipts, generation: generation)
             }
+            try throwIfUnconfirmed(prepared)
             return
         }
 
@@ -1682,6 +1691,15 @@ public final class CloudKitSyncService {
         #if DEBUG
         await logRecordShapes(for: recordsToSave.map(\.record.recordID.recordName))
         #endif
+        try throwIfUnconfirmed(prepared)
+    }
+
+    /// Fails the push for clips that were left out because their server copy could not be read,
+    /// so the retry backoff uploads them instead of the sync reporting healthy over a missing clip.
+    private func throwIfUnconfirmed(_ prepared: PreparedPushRecords) throws {
+        guard prepared.unconfirmedCount == 0 else {
+            throw CloudKitSyncError.partialRecordFailures(prepared.unconfirmedCount)
+        }
     }
 
     /// Tombstones save onto the server's fetched record: only assignments on a fetched record
@@ -1945,6 +1963,9 @@ public final class CloudKitSyncService {
         let skippedItemIDs: [UUID]
         /// The same clips as `skippedItemIDs`, with why each one cannot be uploaded.
         var skippedClips: [SyncWaitingClip] = []
+        /// Clips left out because iCloud neither returned their server copy nor reported it
+        /// missing. The push reports a failure for them once it has saved the rest.
+        var unconfirmedCount = 0
     }
 
     nonisolated static func preparePushRecords(

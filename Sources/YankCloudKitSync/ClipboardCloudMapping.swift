@@ -529,8 +529,11 @@ enum ClipboardCloudMapping {
 
     /// Copies everything `fresh` sets onto a server-fetched record and erases the readable
     /// content keys it leaves unset, so an update cannot leave the previous readable copy behind.
+    /// A live clip also clears `deletedAt`: a clip used again after another device deleted it must
+    /// not stay a tombstone on the server, where every other device would keep reading it as deleted.
     static func merge(_ fresh: CKRecord, onto server: CKRecord) {
         for key in fresh.allKeys() { server[key] = fresh[key] }
+        server[Key.deletedAt] = fresh[Key.deletedAt]
         if let data = fresh.encryptedValues[Key.encContent] as? Data {
             server.encryptedValues[Key.encContent] = data
         }
