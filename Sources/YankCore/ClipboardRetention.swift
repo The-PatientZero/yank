@@ -105,7 +105,10 @@ enum ClipboardRetention {
     ) -> EnforcementResult {
         let originalItems = items
         var nextItems = items
-        var nextTombstones = tombstones
+        // Only deletes recorded before this pass age out here. A delete created below can be dated
+        // past the horizon (a clip last used long ago) and must still be kept to be pushed.
+        var nextTombstones = prunedTombstones(tombstones, now: now)
+        let prunedCount = tombstones.count - nextTombstones.count
         var expired: [ClipboardItem] = []
 
         if retentionDays > 0 {
@@ -130,16 +133,13 @@ enum ClipboardRetention {
             capped = result.removedItems
         }
 
-        let beforePruneCount = nextTombstones.count
-        nextTombstones = prunedTombstones(nextTombstones, now: now)
-
         return EnforcementResult(
             items: nextItems,
             tombstones: nextTombstones,
             expiredItems: expired,
             cappedItems: capped,
             blobReferencesToDelete: ClipboardBlobCleanup.referencesRemoved(from: originalItems, keeping: nextItems),
-            prunedTombstoneCount: beforePruneCount - nextTombstones.count
+            prunedTombstoneCount: prunedCount
         )
     }
 
@@ -149,8 +149,8 @@ enum ClipboardRetention {
     /// (capture, edit, pin, bookmark, tags), a later use elsewhere outranks it and the clip stays,
     /// while an unchanged copy elsewhere is still deleted. The date is never moved up to the
     /// retention window's edge: a pin, bookmark or tag made elsewhere before the edge must still
-    /// outrank it. For a very old clip it may already be past the tombstone horizon and be pruned
-    /// at once. That is fine, because every device expires the clip itself with the same date.
+    /// outrank it. For a very old clip it may already be past the tombstone horizon: it is still
+    /// kept and pushed, so the server copy is deleted too, and ages out on a later pass.
     static func expiryTombstoneDate(for item: ClipboardItem) -> Date {
         var clocks = [item.timestamp, item.modifiedAt]
         if let annotation = item.annotationClocks {
