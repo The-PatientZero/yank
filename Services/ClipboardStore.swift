@@ -57,10 +57,11 @@ final class ClipboardStore {
 
     @ObservationIgnored var tombstones: [UUID: Date] = [:]
     @ObservationIgnored var historyWritesDisabled = false
-    /// Reconcile may discover blobs that are no longer referenced before the replacement
-    /// snapshot is durable. Keep those files until a successful flush, including across a
-    /// failed sync retry, so the last durable snapshot never points at deleted content.
-    @ObservationIgnored var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
+    /// Blobs that no clip references any more, kept until the snapshot that stopped referencing
+    /// them is durable (a sync reconcile, a delete, a clear, retention or the history cap). A
+    /// failed write leaves them here for the next successful save, so the last durable snapshot
+    /// never points at deleted content.
+    @ObservationIgnored var blobDeletionsAwaitingSnapshot: Set<ClipboardBlobReference> = []
 
     /// The newest scheduled snapshot write. A sync pull that changed nothing still waits for it,
     /// and retries it if it failed, so it never reports success over a state that is not on disk.
@@ -343,7 +344,7 @@ final class ClipboardStore {
         guard maxItems > 0, items.count > maxItems else { return false }
         let result = ClipboardRetention.cap(items, limit: maxItems)
         guard result.items != items else { return false }
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
         return true
     }
@@ -358,7 +359,7 @@ final class ClipboardStore {
             now: now
         )
         guard result.didChange else { return false }
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
         tombstones = result.tombstones
         return true
@@ -406,10 +407,25 @@ final class ClipboardStore {
             tombstones: tombstones
         )
         latestHistoryWriteReceipt = receipt
+        releaseBlobsOnceDurable(after: receipt)
         if notify {
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
         }
         return receipt
+    }
+
+    /// Deletes the blobs waiting on a snapshot once this write is on disk. The batch is the set
+    /// as it is now, released only on this write's own receipt, so an earlier write finishing can
+    /// never delete files that a later, not yet durable snapshot still lists. A failed write
+    /// leaves the batch in the set for the next successful save.
+    private func releaseBlobsOnceDurable(after receipt: HistorySnapshotWriteReceipt) {
+        let batch = blobDeletionsAwaitingSnapshot
+        guard !batch.isEmpty else { return }
+        Task { [weak self] in
+            guard case .success = await receipt.value() else { return }
+            guard let self, !self.historyWritesDisabled else { return }
+            self.releaseDeferredBlobDeletions(batch)
+        }
     }
 
     /// Flush any pending debounced write synchronously. Called on app termination so the

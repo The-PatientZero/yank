@@ -96,7 +96,7 @@ extension ClipboardStore {
         if result.expiredVisibleCount > 0 {
             Log.store.info("Reconcile retention expired \(result.expiredVisibleCount) synced clip(s).")
         }
-        pendingReconciledBlobDeletions.formUnion(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.visibleItems
         tombstones = result.tombstones
         return ReconcileOutcome(changed: true, expiredVisibleCount: result.expiredVisibleCount)
@@ -112,13 +112,13 @@ extension ClipboardStore {
         let outcome = applyReconciledInMemory(canonical)
         persist(notify: outcome.expiredVisibleCount > 0)
         try historyWriter.flush().get()
-        releaseDeferredBlobDeletions(pendingReconciledBlobDeletions)
+        releaseDeferredBlobDeletions(blobDeletionsAwaitingSnapshot)
     }
 
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
         guard !historyWritesDisabled else { throw PersistenceError.writesDisabled }
         let outcome = applyReconciledInMemory(canonical)
-        let batch = pendingReconciledBlobDeletions
+        let batch = blobDeletionsAwaitingSnapshot
         try await historyWriter.awaitDurableSnapshot(
             stateChanged: outcome.changed,
             latestReceipt: latestHistoryWriteReceipt,
@@ -137,7 +137,7 @@ extension ClipboardStore {
     func releaseDeferredBlobDeletions(_ batch: Set<ClipboardBlobReference>) {
         let referencedBlobs = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
         blobStore.deleteBlobReferences(Array(batch.subtracting(referencedBlobs)))
-        pendingReconciledBlobDeletions.subtract(batch)
+        blobDeletionsAwaitingSnapshot.subtract(batch)
     }
 
     func blobURL(for reference: SyncBlobReference) -> URL? {

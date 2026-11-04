@@ -27,7 +27,7 @@ extension ClipboardStore {
         pendingDeletion = nil
         let ids = Set(pending.items.map(\.id))
         let result = ClipboardMutations.removeItems(ids: ids, from: items)
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()
@@ -93,7 +93,7 @@ extension ClipboardStore {
         resetCaptureSuppression()
         heldElements = []
         let result = ClipboardMutations.removeItems(ids: Set(items.map(\.id)), from: items)
-        blobStore.deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()

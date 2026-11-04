@@ -78,10 +78,11 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private(set) var storageUnavailable = false
 
     @ObservationIgnored private var tombstones: [UUID: Date] = [:]
-    /// Blobs removed by reconciliation stay available until the replacement history and
-    /// tombstones have both flushed. Survives a failed in-process retry so a later successful
-    /// snapshot can finish cleanup without data loss.
-    @ObservationIgnored private var pendingReconciledBlobDeletions: Set<ClipboardBlobReference> = []
+    /// Blobs no clip references any more stay on disk until the snapshot that stopped
+    /// referencing them is durable (a sync reconcile, a delete, a clear, retention or the history
+    /// cap). Survives a failed write so a later successful snapshot can finish cleanup without
+    /// data loss.
+    @ObservationIgnored private var blobDeletionsAwaitingSnapshot: Set<ClipboardBlobReference> = []
 
     private(set) var pendingDeletion: PendingDeletion? {
         didSet { filterCache.invalidate() }
@@ -339,11 +340,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         case .success:
             if pendingForegroundTextCapture?.pasteboardGeneration == pasteboardGeneration,
                pendingForegroundTextCapture?.item.id == itemID {
-                let referencedBlobs = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
-                let orphanedBlobs = pendingForegroundTextCapture?
-                    .deferredBlobDeletions
-                    .subtracting(referencedBlobs) ?? []
-                deleteBlobReferences(Array(orphanedBlobs))
+                releaseDeferredBlobDeletions(pendingForegroundTextCapture?.deferredBlobDeletions ?? [])
                 pendingForegroundTextCapture = nil
             }
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
@@ -584,7 +581,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// Identical pure decisions as the macOS store via `ClipboardMutations.removeItems`.
     private func removeItems(ids: Set<UUID>) {
         let result = ClipboardMutations.removeItems(ids: ids, from: items)
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         recordTombstones(result.tombstones)
         items = result.items
         persist()
@@ -623,7 +620,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             now: Date()
         )
         guard result.didChange else { return }
-        deleteBlobReferences(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
         tombstones = result.tombstones
         persist()
@@ -707,7 +704,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         if result.expiredVisibleCount > 0 {
             clipStoreLog.info("Reconcile retention expired \(result.expiredVisibleCount) synced clip(s).")
         }
-        pendingReconciledBlobDeletions.formUnion(result.blobReferencesToDelete)
+        blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.visibleItems
         tombstones = result.tombstones
         return ReconcileOutcome(changed: true, expiredVisibleCount: result.expiredVisibleCount)
@@ -727,7 +724,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         markSyncSucceeded(at: Date())
         persist(notify: outcome.expiredVisibleCount > 0)
         try flushPendingWrites()
-        releaseDeferredBlobDeletions(pendingReconciledBlobDeletions)
+        releaseDeferredBlobDeletions(blobDeletionsAwaitingSnapshot)
     }
 
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
@@ -736,7 +733,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         let outcome = applyReconciledInMemory(canonical)
         firstSyncState = .settled
         markSyncSucceeded(at: Date())
-        let batch = pendingReconciledBlobDeletions
+        let batch = blobDeletionsAwaitingSnapshot
         try await historyWriter.awaitDurableSnapshot(
             stateChanged: outcome.changed,
             latestReceipt: latestHistoryWriteReceipt,
@@ -755,7 +752,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     private func releaseDeferredBlobDeletions(_ batch: Set<ClipboardBlobReference>) {
         let referencedBlobs = Set(items.flatMap { ClipboardBlobCleanup.references(in: $0) })
         deleteBlobReferences(Array(batch.subtracting(referencedBlobs)))
-        pendingReconciledBlobDeletions.subtract(batch)
+        blobDeletionsAwaitingSnapshot.subtract(batch)
     }
 
     func blobURL(for item: ClipboardItem) -> URL? {
@@ -803,7 +800,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     ) -> [ClipboardBlobReference] {
         guard let result = historyLimitCapResult() else { return [] }
         if !deferBlobDeletion {
-            deleteBlobReferences(result.blobReferencesToDelete)
+            blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         }
         items = result.items
         return result.blobReferencesToDelete
@@ -929,10 +926,25 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             }
         )
         latestHistoryWriteReceipt = receipt
+        releaseBlobsOnceDurable(after: receipt)
         if notify {
             NotificationCenter.default.post(name: .yankLocalStoreDidChange, object: self)
         }
         return receipt
+    }
+
+    /// Deletes the blobs waiting on a snapshot once this write is on disk. The batch is the set
+    /// as it is now, released only on this write's own receipt, so an earlier write finishing can
+    /// never delete files that a later, not yet durable snapshot still lists. A failed write
+    /// leaves the batch in the set for the next successful save.
+    private func releaseBlobsOnceDurable(after receipt: HistorySnapshotWriteReceipt) {
+        let batch = blobDeletionsAwaitingSnapshot
+        guard !batch.isEmpty else { return }
+        Task { [weak self] in
+            guard case .success = await receipt.value() else { return }
+            guard let self, !self.historyWritesDisabled else { return }
+            self.releaseDeferredBlobDeletions(batch)
+        }
     }
 
     /// Synchronously commit the latest scheduled snapshot before an extension or App Intent
