@@ -1077,9 +1077,6 @@ struct YankApp: App {
     private func refreshForeground() async {
         // A launch before the first unlock leaves the history unread; the files are readable now.
         IOSAppRuntime.shared.recoverProtectedStorage()
-        // Nothing runs in the background, so a clip that aged past the window while the app was
-        // away is only removed when it returns. Before the drain: clips captured now are new.
-        store.enforceRetentionAndLimit()
         await IOSForegroundRefreshPipeline.refresh(
             currentMode: { settings.foregroundCaptureMode },
             drainExplicitCaptures: { await store.drainShareInbox() },
@@ -1089,6 +1086,10 @@ struct YankApp: App {
             captureAutomatically: { await refreshAutomaticPasteboard() },
             refreshSync: { await syncController.refreshForeground() }
         )
+        // Nothing runs in the background, so a clip that aged past the window while the app was
+        // away is only removed when it returns. After the pull: a clip another device used again
+        // meanwhile must not be tombstoned from the stale local copy.
+        store.enforceRetentionAndLimit()
     }
 
     private func refreshAutomaticPasteboard() async {

@@ -433,6 +433,7 @@ final class ClipboardController {
             self.cloudSyncStartTask = nil
             if case .started = result {
                 self.cloudSyncDidStart = true
+                self.store.isRetentionHeldForSync = false
                 if self.followUpAfterSetup {
                     self.followUpAfterSetup = false
                     self.remoteChangeTrigger.trigger()
@@ -562,6 +563,8 @@ final class ClipboardController {
         }
         cloudSync = nil
         cloudSyncDidStart = false
+        // Without a running sync there is no pull to wait for. A rebuild keeps waiting.
+        if stopRecoveryTriggers { store.isRetentionHeldForSync = false }
         NSApp.unregisterForRemoteNotifications()
         if let reason {
             store.markSyncUnavailable(reason: reason)

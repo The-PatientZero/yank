@@ -114,6 +114,15 @@ final class ClipboardStore {
     /// Explicit triggers (settings change, retention notification, launch) bypass the gate.
     @ObservationIgnored private var lastExpirySweep: Date = .distantPast
 
+    /// While true, age retention waits for the first pull of this launch. A clip expired by the
+    /// stale local history is tombstoned as of now, which beats a copy another device used again
+    /// meanwhile. Set before the history loads; clearing it runs the pass that was held back.
+    @ObservationIgnored var isRetentionHeldForSync = false {
+        didSet {
+            if oldValue, !isRetentionHeldForSync { pruneExpired() }
+        }
+    }
+
     /// Minimum spacing between capture-path expiry sweeps. Retention is a day-granularity
     /// policy, so a one-minute floor is imperceptible while collapsing a burst of captures
     /// from N linear passes down to one.
@@ -197,6 +206,7 @@ final class ClipboardStore {
     /// Apply age retention, the local history cap, and tombstone pruning. Explicit calls
     /// (launch, `captureSettings` change) bypass the capture-path time gate.
     func pruneExpired() {
+        guard !isRetentionHeldForSync else { return }
         if applyRetentionAndLimit(now: Date()) { persist() }
     }
 
@@ -407,6 +417,7 @@ final class ClipboardStore {
 
     @discardableResult
     private func sweepExpiredOnCapture(now: Date) -> Bool {
+        guard !isRetentionHeldForSync else { return false }
         if now.timeIntervalSince(lastExpirySweep) < Self.expirySweepInterval {
             return false
         }
