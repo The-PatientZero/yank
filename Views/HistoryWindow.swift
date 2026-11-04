@@ -435,6 +435,9 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         // then selects and scrolls to the newest clip of the unfiltered list.
         if isNewOpen {
             NotificationCenter.default.post(name: .yankHistoryWindowDidShow, object: nil)
+        } else {
+            // No open step follows, so a clip the caller asked for is handed over directly.
+            NotificationCenter.default.post(name: .yankHistoryFocusRequested, object: nil)
         }
 
         super.showWindow(sender)

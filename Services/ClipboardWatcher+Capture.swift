@@ -44,8 +44,6 @@ final class ClipboardWatcher {
     private var sequenceCollectionActive = false
 
     // Size thresholds for text handling
-    private nonisolated static let inlineTextLimit = 50_000
-    private nonisolated static let previewLength = 500
     nonisolated static let maxImageInputBytes = 32 * 1024 * 1024
     nonisolated static let maxRasterPixels: Int64 = 40_000_000
 
@@ -333,12 +331,7 @@ private extension ClipboardWatcher {
             return .unsupported
         }
         return .text(
-            TextCapturePlan.make(
-                for: text,
-                inlineLimit: inlineTextLimit,
-                previewLength: previewLength,
-                maxStoredBytes: SyncBlobKind.text.maximumBytes
-            ),
+            TextCapturePlan.make(for: text),
             originalText: text,
             fingerprint: .text(text),
             richArchive: richArchive,

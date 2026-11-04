@@ -19,5 +19,6 @@ public enum SyncEncryptionStatus: Equatable, Sendable {
 /// `SyncableStore` stays source compatible.
 @MainActor
 public protocol SyncEncryptionStatusReporting: AnyObject {
+    /// Records the latest encryption status; nil means none is known.
     func markEncryptionStatus(_ status: SyncEncryptionStatus?)
 }

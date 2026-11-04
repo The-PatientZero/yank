@@ -65,6 +65,19 @@ enum ClipboardCloudMapping {
         Key.encContent, Key.modifiedAt, Key.deletedAt
     ]
 
+    /// Every field a pull reads from a clip record except the file itself, plus the settings
+    /// record's fields: what a change-feed page asks for when this device already holds the
+    /// files. Any new field that `item(from:)` or the encrypted-copy code reads must be added
+    /// here, or a pull without files would read it as its default (for example "not pinned").
+    static let pullFieldKeys: [CKRecord.FieldKey] = contentFetchKeys + [
+        Key.type, Key.timestamp, Key.textFilename, Key.imageFilename, Key.isPinned,
+        Key.isBookmarked, Key.isTruncated, Key.originalSizeBytes, Key.deviceOrigin,
+        Key.hasRichContent, Key.aiEnrichedAt,
+        SyncedSettingsCloudMapping.Key.historyLimit,
+        SyncedSettingsCloudMapping.Key.retentionDays,
+        SyncedSettingsCloudMapping.Key.updatedAt
+    ]
+
     /// CloudKit does not keep sub-millisecond `Date` precision, and rounding may differ by one
     /// millisecond between writer and reader.
     private static let contentStampToleranceMilliseconds: Int64 = 1
@@ -75,7 +88,10 @@ enum ClipboardCloudMapping {
     /// payload because the record would not fit, which readers take from the plain keys.
     /// `plainRemoved` says the record no longer carries plain content, so a blank plain field is
     /// not a removal. `omittedFields` lists derived fields left out of the payload because the
-    /// record would not fit; they exist nowhere in the record.
+    /// record would not fit; they exist nowhere in the record. `annotationClocks` says when pin,
+    /// bookmark and tags were each last changed, at full date precision; it is read only from a
+    /// current payload, so a record last written by a build that does not know it is merged as
+    /// a whole record.
     struct EncryptedContentPayload: Codable {
         static let currentVersion = 1
 
@@ -91,6 +107,7 @@ enum ClipboardCloudMapping {
         var plainFields: [String]
         var plainRemoved: Bool?
         var omittedFields: [String]?
+        var annotationClocks: AnnotationClocks?
     }
 
     /// Reads only the format version, so a payload from a newer build is recognised even when
@@ -108,6 +125,7 @@ enum ClipboardCloudMapping {
         var tags: [String]
         var aiTags: [String]
         var aiTitle: String?
+        var annotationClocks: AnnotationClocks?
 
         init(
             sourceApp: String?,
@@ -116,7 +134,8 @@ enum ClipboardCloudMapping {
             searchIndex: String?,
             tags: [String],
             aiTags: [String],
-            aiTitle: String?
+            aiTitle: String?,
+            annotationClocks: AnnotationClocks? = nil
         ) {
             self.sourceApp = sourceApp
             self.textContent = textContent
@@ -125,6 +144,7 @@ enum ClipboardCloudMapping {
             self.tags = tags
             self.aiTags = aiTags
             self.aiTitle = aiTitle
+            self.annotationClocks = annotationClocks
         }
 
         init(_ item: ClipboardItem) {
@@ -135,7 +155,8 @@ enum ClipboardCloudMapping {
                 searchIndex: item.searchIndex,
                 tags: item.tags,
                 aiTags: item.aiTags,
-                aiTitle: item.aiTitle
+                aiTitle: item.aiTitle,
+                annotationClocks: item.annotationClocks
             )
         }
     }
@@ -168,7 +189,8 @@ enum ClipboardCloudMapping {
         from item: ClipboardItem,
         in zoneID: CKRecordZone.ID,
         blobURL: URL? = nil,
-        policy: PlainContentPolicy = .dualWrite
+        policy: PlainContentPolicy = .dualWrite,
+        omitsFileFields: Bool = false
     ) -> CKRecord? {
         guard let filenames = validatedBlobFilenames(
             type: item.type,
@@ -191,8 +213,13 @@ enum ClipboardCloudMapping {
             record[Key.aiTags] = item.aiTags
             record[Key.aiTitle] = item.aiTitle
         }
-        record[Key.textFilename] = filenames.textFilename
-        record[Key.imageFilename] = filenames.imageFilename
+        // Left unset, not set and cleared: a save that sends neither the file nor its names leaves
+        // the server's file and names as they are, so a replaced file cannot end up under the
+        // wrong name.
+        if !omitsFileFields {
+            record[Key.textFilename] = filenames.textFilename
+            record[Key.imageFilename] = filenames.imageFilename
+        }
         record[Key.isPinned] = item.isPinned ? 1 : 0
         record[Key.isBookmarked] = item.isBookmarked ? 1 : 0
         record[Key.isTruncated] = item.isTruncated ? 1 : 0
@@ -210,11 +237,22 @@ enum ClipboardCloudMapping {
                 clipID: item.id
             )
         }
-        if let blobURL {
+        if let blobURL, !omitsFileFields {
             record[Key.blob] = CKAsset(fileURL: blobURL)
         }
         return record
     }
+
+    /// Whether the server's copy of a clip already holds exactly the file this clip names. The
+    /// record only needs its file name fields for this.
+    static func serverHoldsFile(of item: ClipboardItem, in serverRecord: CKRecord) -> Bool {
+        guard item.textFilename != nil || item.imageFilename != nil else { return false }
+        return serverRecord[Key.textFilename] as? String == item.textFilename
+            && serverRecord[Key.imageFilename] as? String == item.imageFilename
+    }
+
+    /// The fields that name a clip's file, for a fetch that only compares them.
+    static let fileNameKeys: [CKRecord.FieldKey] = [Key.textFilename, Key.imageFilename]
 
     /// Builds the encrypted copy. In `dualWrite`, when plain fields plus payload would exceed the
     /// record budget the largest of the search index, OCR text and text moves out of the payload
@@ -240,7 +278,8 @@ enum ClipboardCloudMapping {
             aiTitle: content.aiTitle,
             plainFields: [],
             plainRemoved: policy == .encryptedOnly ? true : nil,
-            omittedFields: omittedFields.isEmpty ? nil : omittedFields
+            omittedFields: omittedFields.isEmpty ? nil : omittedFields,
+            annotationClocks: content.annotationClocks
         )
         let plainBytes = policy == .dualWrite ? plainContentByteCount(of: content) : 0
         let encoder = JSONEncoder()
@@ -329,6 +368,7 @@ enum ClipboardCloudMapping {
             && lhs.deletedAt == rhs.deletedAt
             && lhs.deviceOrigin == rhs.deviceOrigin
             && lhs.hasRichContent == rhs.hasRichContent
+            && lhs.annotationClocks == rhs.annotationClocks
     }
 
     /// Rewrites a *server-fetched* record into a content-free tombstone: nil only marks a key
@@ -422,6 +462,7 @@ enum ClipboardCloudMapping {
             content.tags = payload.tags
             content.aiTags = payload.aiTags
             content.aiTitle = payload.aiTitle
+            content.annotationClocks = payload.annotationClocks
             if !payload.plainFields.contains(Key.textContent) { content.textContent = payload.textContent }
             if !payload.plainFields.contains(Key.ocrText) { content.ocrText = payload.ocrText }
             if !payload.plainFields.contains(Key.searchIndex) { content.searchIndex = payload.searchIndex }
@@ -535,7 +576,8 @@ enum ClipboardCloudMapping {
             aiEnrichedAt: record[Key.aiEnrichedAt] as? Date,
             modifiedAt: modifiedAt,
             deletedAt: deletedAt,
-            deviceOrigin: record[Key.deviceOrigin] as? String ?? ""
+            deviceOrigin: record[Key.deviceOrigin] as? String ?? "",
+            annotationClocks: content.annotationClocks
         )
     }
 

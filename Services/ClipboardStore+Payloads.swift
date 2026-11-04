@@ -35,15 +35,6 @@ extension ClipboardStore {
         return written
     }
 
-    func saveImage(_ data: Data) -> String? {
-        blobStore.saveImage(data)
-    }
-
-    /// Persists a full pasteboard archive (binary plist) and returns its filename.
-    func saveRichArchive(_ archive: PasteboardArchive) -> String? {
-        blobStore.saveRichArchive(archive)
-    }
-
     func richArchiveAsync(for item: ClipboardItem) async -> PasteboardArchive? {
         guard let url = blobStore.richArchiveURL(for: item) else { return nil }
         do {
@@ -52,11 +43,6 @@ extension ClipboardStore {
             Log.store.error("Failed to load rich archive: \(error.localizedDescription)")
             return nil
         }
-    }
-
-    /// Saves large text off the main actor so a multi-MB write never stalls the menu-bar capture UI.
-    func saveTextAsync(_ text: String) async -> String? {
-        await blobStore.saveTextAsync(text)
     }
 
     /// Load full text content from file (lazy loading for large text)
@@ -112,34 +98,27 @@ extension ClipboardStore {
     }
 
     /// Load a chunk of text content, reading only what's necessary
-    func textChunk(for item: ClipboardItem, charCount: Int, byteOffset: Int = 0) -> TextChunkPage? {
-        Self.textChunk(for: item, textURL: blobURL(for: item), charCount: charCount, byteOffset: byteOffset)
-    }
-
     nonisolated static func textChunk(
         for item: ClipboardItem,
         textURL: URL?,
         charCount: Int,
         byteOffset: Int = 0
     ) -> TextChunkPage? {
-        if let url = textURL, item.textFilename != nil {
-            return TextChunkReader.page(
-                for: item, textURL: url, charCount: charCount, byteOffset: byteOffset
-            ) { error in
-                Log.store.error("Failed to read text chunk: \(error.localizedDescription)")
-            }
+        TextChunkReader.page(
+            for: item, textURL: textURL, charCount: charCount, byteOffset: byteOffset
+        ) { error in
+            Log.store.error("Failed to read text chunk: \(error.localizedDescription)")
         }
-        return TextChunkReader.page(for: item, textURL: nil, charCount: charCount)
     }
 
     /// Total size of an item, in bytes.
     func itemSize(for item: ClipboardItem) -> Int? {
-        if let original = item.originalSizeBytes { return original }
+        if let inline = item.inlineSizeBytes { return inline }
 
         switch item.type {
         case .text:
-            guard let filename = item.textFilename else { return item.textContent?.utf8.count }
-            guard let url = blobStore.textURL(filename: filename) else {
+            guard let filename = item.textFilename,
+                  let url = blobStore.textURL(filename: filename) else {
                 return nil
             }
             return cachedFileSize(id: item.id, url: url)
@@ -171,6 +150,18 @@ enum ImageExportError: Error, LocalizedError {
             "An image could not be found in the clipboard store."
         case .copyFailed(_, let underlying):
             "Failed to save an image: \(underlying.localizedDescription)"
+        }
+    }
+}
+
+extension ClipboardItem {
+    /// Whether Paste as Text is expected to have something to insert, mirroring
+    /// `ClipboardStore.pasteAsTextContent(for:)`. Advisory for text clips: an empty or unreadable
+    /// file passes here and is reported when the paste is tried.
+    var canPasteAsText: Bool {
+        switch type {
+        case .text: true
+        case .image: recognizedText != nil
         }
     }
 }

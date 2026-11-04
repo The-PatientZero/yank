@@ -23,6 +23,26 @@ extension View {
     }
 }
 
+/// The visible Copy button on a row or tile. It is a sibling of the row's open button, never part
+/// of its label, so a tap on it copies without opening details and VoiceOver reads it as its own
+/// element. The same copy path as the swipe and menu Copy runs behind `action`.
+struct ClipCopyButton: View {
+    let excerpt: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "doc.on.doc")
+                .font(.yank(.subheadline))
+                .foregroundStyle(.secondary)
+                .frame(width: ControlTarget.touch, height: ControlTarget.touch)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Copy \(excerpt)")
+    }
+}
+
 /// A button shown next to a capture method, for the methods iOS lets Yank link to.
 struct CaptureSetupAction {
     let title: String
@@ -135,6 +155,36 @@ struct ICloudSignedOutBanner: View {
             alignment: .bottom
         )
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// A slim line above the history while a long first sync is still delivering clips. It is one
+/// element, so VoiceOver reads the count on focus and never speaks as the count rises.
+struct SyncProgressLine: View {
+    let clipsReceived: Int
+
+    var body: some View {
+        HStack(spacing: Space.md) {
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityHidden(true)
+            Text(SyncCopy.receivedSoFar(clipsReceived))
+                .font(.yank(.footnote))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Space.xxl)
+        .padding(.vertical, Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.yankRaised)
+        .overlay(
+            Rectangle().frame(height: Hairline.width).foregroundColor(Color.yankHairline),
+            alignment: .bottom
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SyncCopy.syncingYourClipsLabel)
+        .accessibilityValue(SyncCopy.receivedCount(clipsReceived))
     }
 }
 

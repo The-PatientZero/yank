@@ -93,6 +93,7 @@ targets:
       - Shared/ThumbnailCache.swift
       - Shared/ClipPresentationCache.swift
       - Shared/SyncCopy.swift
+      - Shared/ClipActionCopy.swift
       - Shared/YankWordmark.swift
       - Shared/ClipSwatchPreview.swift
       - Shared/ClipKindIcon.swift

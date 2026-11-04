@@ -3,10 +3,13 @@ import Foundation
 /// A one-shot, on-device rewrite applied to a clip's text before pasting (Smart Paste).
 /// User-invoked, never automatic; the result is pasted, never stored.
 public enum TextTransform: String, CaseIterable, Identifiable, Sendable {
+    /// The ways a clip's text can be rewritten.
     case proofread, concise, formal, casual, summarize, bullets
 
+    /// The raw value, so each transform is uniquely identifiable.
     public var id: String { rawValue }
 
+    /// The name shown to people.
     public var label: String {
         switch self {
         case .proofread: return "Proofread"
@@ -18,6 +21,7 @@ public enum TextTransform: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// The SF Symbol name that represents the transform.
     public var symbol: String {
         switch self {
         case .proofread: return "checkmark.circle"
@@ -52,5 +56,6 @@ public enum TextTransform: String, CaseIterable, Identifiable, Sendable {
 /// Applies a `TextTransform` to text on-device. Implemented by the Foundation Models
 /// transformer on macOS 26+; the protocol stays framework-free for testability.
 public protocol TextTransformer: Sendable {
+    /// Returns the rewritten text, or nil when no result was produced.
     func transform(_ text: String, as transform: TextTransform) async -> String?
 }

@@ -8,7 +8,9 @@ import YankCore
 /// Outcome of `CloudKitSyncService.start()`: sync came up, or it failed with a
 /// user-presentable message.
 public enum CloudKitSyncStartResult: Equatable, Sendable {
+    /// Sync came up.
     case started
+    /// Sync did not come up; `message` is safe to show to a person.
     case failed(message: String)
 }
 
@@ -23,6 +25,9 @@ struct CloudKitZoneChanges {
     var failedRecords: [CloudKitRecordFailure] = []
     var changeToken: CKServerChangeToken?
     var moreComing: Bool
+    /// The page was requested without the file field, so its records carry no `CKAsset` whether
+    /// or not iCloud holds a file for them.
+    var assetsOmitted = false
 }
 
 struct CloudKitRecordFailure {
@@ -204,7 +209,8 @@ extension CKDatabase: CloudKitDatabase {
             deletedRecordNames: changes.deletions.map { $0.recordID.recordName },
             failedRecords: failedRecords.sorted { $0.recordName < $1.recordName },
             changeToken: changes.changeToken,
-            moreComing: changes.moreComing
+            moreComing: changes.moreComing,
+            assetsOmitted: desiredKeys.map { !$0.contains(ClipboardCloudMapping.Key.blob) } ?? false
         )
     }
 

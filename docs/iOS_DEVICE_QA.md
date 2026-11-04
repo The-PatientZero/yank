@@ -113,6 +113,18 @@ If clip insertion or next-keyboard switching is unavailable, do not submit the b
 - [ ] Launch after first unlock hydrates the original history. The storage banner clears without a relaunch and the Sync and history limit settings keep their earlier values.
 - [ ] After a foreground capture, immediately background or terminate Yank; relaunch shows the acknowledged clip exactly once, while interrupted unacknowledged work remains retryable.
 
+Two-device edits (Mac and iPhone on the same iCloud account, both on Debug builds, both offline while editing, then online; after a delete wait 10 seconds before going online). For the older-version cases, build Yank 1.2.0 from the `v1.2.0` tag.
+
+- [ ] Pin on one device and add the tag "work" to the same clip on the other: both devices show the clip pinned and tagged.
+- [ ] Bookmark on one device and remove the tag "work" on the other: both show it bookmarked and without the tag.
+- [ ] Pin on the iPhone while the Mac copies the same clip again from history: both show it pinned, first in the Pinned section.
+- [ ] Delete on the Mac, then a minute later pin the clip on the iPhone: the clip is gone from both and stays gone after relaunching both.
+- [ ] Delete on the Mac, then a minute later copy the clip again from history on the iPhone: the clip is on both devices, as the newest clip.
+- [ ] Copy the exact same text on both devices while offline and pin it on the iPhone: after sync there is one clip, pinned and newest, and search finds one result.
+- [ ] Universal Clipboard: copy on the Mac and open Yank on the iPhone right away; after sync both show one clip. Record the iOS version and whether two clips ever appeared.
+- [ ] With Yank 1.2.0 on both devices, create two identical clips, then install this build: both clips stay, history count unchanged, also after lowering and raising the history limit.
+- [ ] One device on Yank 1.2.0, one on this build: pin on one and tag on the other, in each order, then reuse versus pin, then delete versus pin in each direction. Both devices end the same, and sync goes quiet (idle "Sync pull started" count in Console, clip Modified time in CloudKit Console stops changing).
+
 ## Capacity and resource checks
 
 On the lowest-memory test devices, repeat launch, search, scroll, extension open, and sync with

@@ -197,7 +197,8 @@ final class ClipboardController {
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
             onOpenFullHistory: { [weak self] in self?.showHistoryWindow() },
             onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() },
-            onResumeCapture: { [weak self] in self?.setCapturePaused(false) }
+            onResumeCapture: { [weak self] in self?.setCapturePaused(false) },
+            isPasteSequenceActive: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.isActive ?? false }
         )
 
         let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
@@ -564,6 +565,8 @@ final class ClipboardController {
         NSApp.unregisterForRemoteNotifications()
         if let reason {
             store.markSyncUnavailable(reason: reason)
+        } else {
+            store.clearSyncProgress()
         }
     }
 
@@ -624,7 +627,10 @@ final class ClipboardController {
         quickPickerWindowController?.showWindow(nil)
     }
 
-    private func showHistoryWindow() {
+    /// The one way to show the history window. `clipID` is the clip to select and scroll to; every
+    /// open without a target clears any earlier one, so an old request can never come back.
+    func showHistoryWindow(focusing clipID: UUID? = nil) {
+        dependencies.appStatus.historyFocusClipID = clipID
         cancelDelayedQuickPickerOpen()
         quickPickerWindowController?.close()
         historyWindowController?.showWindow(nil)
@@ -638,11 +644,11 @@ final class ClipboardController {
     private func updateTooltip() {
         let settings = dependencies.settings
         let shortcut = "\(settings.hotkeyModifiers.displayString)\(keyCodeNames[settings.hotkeyKeyCode] ?? "?")"
-        let action = pasteSequenceCoordinator?.isActive == true ? "Paste next" : "Yank"
+        let isSequenceActive = pasteSequenceCoordinator?.isActive == true
         dependencies.hub.setTooltip(
-            headline: "\(action) — \(shortcut)",
+            headline: "\(isSequenceActive ? "Paste next" : "Yank") — \(shortcut)",
             syncProblem: syncSummary.problemLine,
-            hint: "Right-click for options"
+            hint: isSequenceActive ? "Right-click to cancel the paste sequence" : "Right-click or Control-click for options"
         )
     }
 
@@ -652,7 +658,8 @@ final class ClipboardController {
         HubSyncSummary(
             status: store.syncStatus,
             failureKind: store.syncFailureKind,
-            waitingCount: store.visibleWaitingClips.count
+            waitingCount: store.visibleWaitingClips.count,
+            clipsReceived: store.syncClipsReceived
         )
     }
 

@@ -95,7 +95,12 @@ struct ClipStoreExtensionHandoffTests {
         try writeHistory([older, newest], in: fixture)
         let store = ClipStore(context: fixture.context)
 
-        await store.capture(text: "repeat", sourceApp: "Notes")
+        await store.captureForegroundText(
+            "repeat",
+            pasteboardGeneration: 1,
+            hasRichContent: false,
+            sourceApp: "Notes"
+        )
         try store.flushPendingWrites()
 
         #expect(store.items.count == 2)
@@ -139,7 +144,12 @@ struct ClipStoreExtensionHandoffTests {
         try writeHistory([rich, fileBacked, truncated], in: fixture)
         let store = ClipStore(context: fixture.context)
 
-        await store.capture(text: "same", sourceApp: "Notes")
+        await store.captureForegroundText(
+            "same",
+            pasteboardGeneration: 1,
+            hasRichContent: false,
+            sourceApp: "Notes"
+        )
         try store.flushPendingWrites()
 
         #expect(store.items.count == 4)
@@ -465,7 +475,11 @@ struct ClipStoreExtensionHandoffTests {
         defer { fixture.cleanUp() }
         let store = ClipStore(context: fixture.context)
 
-        await store.capture(text: "durable before suspension")
+        await store.captureForegroundText(
+            "durable before suspension",
+            pasteboardGeneration: 1,
+            hasRichContent: false
+        )
         try await store.flushPendingWritesBeforeSuspension()
 
         let snapshot = try HistorySnapshotLoader.load(
@@ -484,7 +498,11 @@ struct ClipStoreExtensionHandoffTests {
             withIntermediateDirectories: false
         )
 
-        await store.capture(text: "must not be acknowledged as durable")
+        await store.captureForegroundText(
+            "must not be acknowledged as durable",
+            pasteboardGeneration: 1,
+            hasRichContent: false
+        )
 
         await #expect(throws: (any Error).self) {
             try await store.flushPendingWritesBeforeSuspension()
@@ -495,8 +513,8 @@ struct ClipStoreExtensionHandoffTests {
         let fixture = try makeFixture()
         defer { fixture.cleanUp() }
         let store = ClipStore(context: fixture.context)
-        await store.capture(text: "first")
-        await store.capture(text: "second")
+        await store.captureForegroundText("first", pasteboardGeneration: 1, hasRichContent: false)
+        await store.captureForegroundText("second", pasteboardGeneration: 2, hasRichContent: false)
         let first = try #require(store.items.first { $0.textContent == "first" })
 
         store.touch(first)
@@ -508,7 +526,8 @@ struct ClipStoreExtensionHandoffTests {
         let fixture = try makeFixture()
         defer { fixture.cleanUp() }
         let store = ClipStore(context: fixture.context)
-        #expect(await store.captureImage(pngData: Data([0x89, 0x50, 0x4E, 0x47])))
+        try fixture.context.shareInbox.enqueue(imagePNG: Data([0x89, 0x50, 0x4E, 0x47]))
+        await store.drainShareInbox()
         try store.flushPendingWrites()
         let filename = try #require(store.items.first?.imageFilename)
         let blobURL = try #require(
@@ -539,7 +558,8 @@ struct ClipStoreExtensionHandoffTests {
         let fixture = try makeFixture()
         defer { fixture.cleanUp() }
         let store = ClipStore(context: fixture.context)
-        #expect(await store.captureImage(pngData: Data([0x89, 0x50, 0x4E, 0x47])))
+        try fixture.context.shareInbox.enqueue(imagePNG: Data([0x89, 0x50, 0x4E, 0x47]))
+        await store.drainShareInbox()
         try store.flushPendingWrites()
         let item = try #require(store.items.first)
         let filename = try #require(item.imageFilename)

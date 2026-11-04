@@ -22,7 +22,7 @@ extension PasteController {
         let (panel, content) = YankPanelFactory.makePanel(
             size: YankPanelTokens.compactToastPanelSize,
             title: accessibilityCardTitle,
-            mode: .passive(anchorApp: previousApp)
+            anchorApp: previousApp
         )
         panel.setAccessibilityTitle(accessibilityCardAnnouncement)
         content.setAccessibilityLabel(accessibilityCardAnnouncement)
@@ -32,7 +32,6 @@ extension PasteController {
 
         let enableButton = YankPanelFactory.makeButton(
             title: "Enable auto-paste",
-            style: .primary,
             target: PasteControllerHUDOpener.shared,
             action: #selector(PasteControllerHUDOpener.grantAccess(_:)),
             accessibilityLabel: "Enable auto-paste",
@@ -46,10 +45,7 @@ extension PasteController {
                 accentColor: YankPanelTokens.infoGlyph,
                 title: accessibilityCardTitle,
                 message: "Press ⌘V to paste.",
-                detail: .note("Turn on Accessibility access to paste automatically."),
-                textAlignment: .leading,
-                actionAlignment: .trailing,
-                verticalPlacement: .top,
+                detail: "Turn on Accessibility access to paste automatically.",
                 actions: [enableButton]
             )
         )

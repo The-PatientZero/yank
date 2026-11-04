@@ -29,15 +29,35 @@ public protocol SyncableStore: AnyObject {
     func markSyncFailed(_ message: String)
     /// Mark sync as intentionally unavailable.
     func markSyncUnavailable(reason: SyncStatus.Reason)
+    /// Mark a pull that spans several pages as running, with the number of clip records iCloud
+    /// has delivered so far. The count includes edits to clips the store already holds, so it can
+    /// exceed the number of clips shown. The next success, failure or stop clears it.
+    func markSyncProgress(clipsReceived: Int)
 }
 
+/// Reports the clips waiting out their undo window. They are still in the sync snapshot as live
+/// clips, so sync needs to know them to keep a pulled duplicate from collapsing into one that
+/// is about to be deleted. A separate protocol so `SyncableStore` stays source compatible: a
+/// store that does not adopt it reports none.
+@MainActor
+public protocol PendingDeletionReporting: AnyObject {
+    /// The IDs of the clips the user deleted that can still be undone.
+    var pendingDeletionIDs: Set<UUID> { get }
+}
+
+/// Defaults for stores that do not implement these requirements themselves.
 public extension SyncableStore {
     /// Default for stores that only offer the blocking variant.
     func applyReconciledAwaitingDurability(_ canonical: [ClipboardItem]) async throws {
         try applyReconciledDurably(canonical)
     }
+
+    /// Default for stores that do not show progress.
+    func markSyncProgress(clipsReceived: Int) {}
 }
 
+/// Notifications posted by the clip stores.
 public extension Notification.Name {
+    /// Posted when the local clip store changed, so the sync transport can push.
     static let yankLocalStoreDidChange = Notification.Name("yankLocalStoreDidChange")
 }

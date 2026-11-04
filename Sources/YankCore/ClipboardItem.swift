@@ -1,5 +1,28 @@
 import Foundation
 
+/// When pin, bookmark and tags were each last changed by the user. Sync decides these three
+/// fields one by one with these times, so a pin on one device and a tag on another both survive.
+public struct AnnotationClocks: Codable, Hashable, Sendable {
+    /// When the pin state last changed.
+    public var pinnedAt: Date
+    /// When the bookmark state last changed.
+    public var bookmarkedAt: Date
+    /// When the user tags last changed.
+    public var tagsAt: Date
+
+    /// Creates clocks with one change time per field.
+    public init(pinnedAt: Date, bookmarkedAt: Date, tagsAt: Date) {
+        self.pinnedAt = pinnedAt
+        self.bookmarkedAt = bookmarkedAt
+        self.tagsAt = tagsAt
+    }
+
+    /// Clocks for a clip that never recorded any: every field counts as changed when the clip last was.
+    public init(allAt date: Date) {
+        self.init(pinnedAt: date, bookmarkedAt: date, tagsAt: date)
+    }
+}
+
 /// Persisted clipboard-history record. Small text stays inline; large text and images
 /// point at blob files. Rich pasteboard archives are macOS-local and not synced.
 public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
@@ -60,6 +83,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     // TODO(v2): Remove aiTitle, the legacy title enrichment APIs, CloudKit mapping, and
     // compatibility tests together in the next breaking history/sync migration.
     public var aiTitle: String?
+    /// When on-device enrichment last ran; nil if it never has.
     public var aiEnrichedAt: Date?
 
     /// True when the original text exceeded the storage limit and only a preview is saved.
@@ -72,6 +96,10 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// multi-MB blobs on every keystroke.
     public let searchIndex: String?
 
+    /// Per-field change times for pin, bookmark and tags. Nil means never recorded (every clip
+    /// before this existed); readers then treat each time as `modifiedAt`.
+    public var annotationClocks: AnnotationClocks?
+
     /// Last-writer-wins sync clock.
     public var modifiedAt: Date
     /// Soft-delete tombstone timestamp; non-nil means the delete should propagate.
@@ -79,7 +107,8 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     /// Device identifier that last authored this record.
     public var deviceOrigin: String
 
-    public init(id: UUID = UUID(), type: ClipboardItemType, timestamp: Date = Date(), sourceApp: String? = nil, textContent: String? = nil, textFilename: String? = nil, imageFilename: String? = nil, richFilename: String? = nil, hasRichContent: Bool = false, isPinned: Bool = false, isBookmarked: Bool = false, tags: [String] = [], ocrText: String? = nil, isTruncated: Bool = false, originalSizeBytes: Int? = nil, searchIndex: String? = nil, aiTags: [String] = [], aiTitle: String? = nil, aiEnrichedAt: Date? = nil, modifiedAt: Date? = nil, deletedAt: Date? = nil, deviceOrigin: String = "") {
+    /// Creates a clip; omitted arguments take the defaults shown, with a fresh `id` and the current time as `timestamp`.
+    public init(id: UUID = UUID(), type: ClipboardItemType, timestamp: Date = Date(), sourceApp: String? = nil, textContent: String? = nil, textFilename: String? = nil, imageFilename: String? = nil, richFilename: String? = nil, hasRichContent: Bool = false, isPinned: Bool = false, isBookmarked: Bool = false, tags: [String] = [], ocrText: String? = nil, isTruncated: Bool = false, originalSizeBytes: Int? = nil, searchIndex: String? = nil, aiTags: [String] = [], aiTitle: String? = nil, aiEnrichedAt: Date? = nil, modifiedAt: Date? = nil, deletedAt: Date? = nil, deviceOrigin: String = "", annotationClocks: AnnotationClocks? = nil) {
         self.id = id
         self.type = type
         self.timestamp = timestamp
@@ -102,6 +131,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.modifiedAt = modifiedAt ?? timestamp
         self.deletedAt = deletedAt
         self.deviceOrigin = deviceOrigin
+        self.annotationClocks = annotationClocks
     }
 
     enum CodingKeys: String, CodingKey {
@@ -110,8 +140,10 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         case modifiedAt, deletedAt, deviceOrigin
         case hasRichContent
         case aiTags, aiTitle, aiEnrichedAt
+        case annotationClocks
     }
 
+    /// Decodes a clip, giving every field a record from an older version lacks its default.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(UUID.self, forKey: .id)
@@ -136,8 +168,10 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.aiTags = try container.decodeIfPresent([String].self, forKey: .aiTags) ?? []
         self.aiTitle = try container.decodeIfPresent(String.self, forKey: .aiTitle)
         self.aiEnrichedAt = try container.decodeIfPresent(Date.self, forKey: .aiEnrichedAt)
+        self.annotationClocks = try container.decodeIfPresent(AnnotationClocks.self, forKey: .annotationClocks)
     }
 
+    /// Encodes the clip in the form `init(from:)` reads.
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -162,6 +196,7 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         try container.encode(aiTags, forKey: .aiTags)
         try container.encodeIfPresent(aiTitle, forKey: .aiTitle)
         try container.encodeIfPresent(aiEnrichedAt, forKey: .aiEnrichedAt)
+        try container.encodeIfPresent(annotationClocks, forKey: .annotationClocks)
     }
 
     /// Create an inline text clip.
@@ -327,10 +362,12 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
+    /// Two clips are equal when their `id`s match, whatever their other fields hold; `hasSamePersistedFields(as:)` is the content comparison.
     public static func == (lhs: ClipboardItem, rhs: ClipboardItem) -> Bool {
         lhs.id == rhs.id
     }
 
+    /// Hashes `id` only, consistent with `==`.
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
@@ -361,11 +398,14 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             && modifiedAt == other.modifiedAt
             && deletedAt == other.deletedAt
             && deviceOrigin == other.deviceOrigin
+            && annotationClocks == other.annotationClocks
     }
 }
 
 /// Primary kind of content stored in a clipboard item.
 public enum ClipboardItemType: String, Codable, Sendable {
+    /// Inline, file-backed or rich text.
     case text
+    /// An image.
     case image
 }

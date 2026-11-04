@@ -106,15 +106,7 @@ struct FooterHintsBar: View {
     }
 
     private func keyHint(_ key: String, _ label: String) -> some View {
-        HStack(spacing: Space.xs) {
-            Text(key)
-                .font(.system(size: TypeScale.micro, weight: .medium, design: .rounded))
-                .padding(.horizontal, Space.xs)
-                .padding(.vertical, Space.hair)
-                .background(Color.yankSubtleFill, in: RoundedRectangle(cornerRadius: Radius.xs))
-            Text(label)
-                .lineLimit(1)
-        }
+        KeyHint(key: key, label: label)
     }
 
     private var footerAccessibilityLabel: String {
@@ -142,5 +134,24 @@ struct FooterHintsBar: View {
         }
         if focusedItemHasOCR { parts.append("Option Return to paste as text") }
         return parts.joined(separator: ". ")
+    }
+}
+
+/// A keycap and its one-line label, shared by the history footer and the Quick Picker footer.
+/// The font and ink of the label come from the container.
+struct KeyHint: View {
+    let key: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: Space.xs) {
+            Text(key)
+                .font(.system(size: TypeScale.micro, weight: .medium, design: .rounded))
+                .padding(.horizontal, Space.xs)
+                .padding(.vertical, Space.hair)
+                .background(Color.yankSubtleFill, in: RoundedRectangle(cornerRadius: Radius.xs))
+            Text(label)
+                .lineLimit(1)
+        }
     }
 }

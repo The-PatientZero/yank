@@ -315,7 +315,8 @@ final class HubController {
             return
         }
 
-        if event.type == .rightMouseUp {
+        // A Control-click opens the menu as a right-click does; macOS may deliver it as either event.
+        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
             showMenu()
         } else {
             primaryPanelProvider?().onOpenQuickPicker()

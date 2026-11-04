@@ -49,6 +49,9 @@ final class ClipboardStore {
     /// Why sync is in its failed state, when the sync service could tell; nil for any other state.
     var syncFailureKind: SyncFailureKind?
 
+    /// Clip records iCloud has delivered so far in a pull that spans several pages; nil otherwise.
+    var syncClipsReceived: Int?
+
     /// Clips the last push could not prepare for upload. Read through `visibleWaitingClips`.
     var waitingClips: [SyncWaitingClip] = []
 
@@ -214,22 +217,13 @@ final class ClipboardStore {
     /// Returns whether the capture was saved (or merged into an existing clip). `false` means
     /// nothing durable changed, so the caller must not treat the content as applied.
     @discardableResult
-    func add(
-        _ item: ClipboardItem,
-        richArchive: PasteboardArchive? = nil,
-        observedAt: Date? = nil
-    ) -> Bool {
+    func add(_ item: ClipboardItem, observedAt: Date? = nil) -> Bool {
         guard !isHistoryLoadPending else { return reportCaptureResult(saved: false) }
-        var stamped = stampOrigin(on: item)
+        let stamped = stampOrigin(on: item)
         guard !refreshDuplicateIfPresent(stamped, observedAt: observedAt) else {
             return reportCaptureResult(saved: !historyWritesDisabled)
         }
 
-        // Persist the full pasteboard archive only now that we know the item is being
-        // inserted (not deduped) — so a rejected copy never orphans a rich file.
-        if let archive = richArchive, let filename = saveRichArchive(archive) {
-            stamped.richFilename = filename
-        }
         insert(stamped, observedAt: observedAt)
         return reportCaptureResult(saved: !historyWritesDisabled)
     }
@@ -290,11 +284,10 @@ final class ClipboardStore {
         // matching capture while retaining its stable identity and annotations; older
         // pre-existing duplicates remain untouched for forward-compatible history handling.
         // A clip waiting out its undo window is not a match: the fresh copy must outlive it.
-        let pendingIDs = Set(pendingDeletion?.items.map(\.id) ?? [])
         guard case .refresh(let existingID) = DuplicateCaptureDecision.decide(
             for: item,
             in: items,
-            excluding: pendingIDs
+            pending: pendingDeletion
         ) else {
             return false
         }
@@ -338,7 +331,8 @@ final class ClipboardStore {
             aiEnrichedAt: item.aiEnrichedAt,
             modifiedAt: item.modifiedAt,
             deletedAt: item.deletedAt,
-            deviceOrigin: item.deviceOrigin
+            deviceOrigin: item.deviceOrigin,
+            annotationClocks: item.annotationClocks
         )
     }
 
@@ -485,3 +479,4 @@ final class ClipboardStore {
 extension ClipboardStore: SyncableStore {}
 extension ClipboardStore: SyncEncryptionStatusReporting {}
 extension ClipboardStore: SyncIssueReporting {}
+extension ClipboardStore: PendingDeletionReporting {}

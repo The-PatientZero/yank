@@ -100,7 +100,7 @@ struct ClipPeekView: View {
         guard item.textFilename != nil else { return item.textContent ?? "" }
         let textURL = store.blobURL(for: item)
         let result = await Task.detached(priority: .userInitiated) {
-            ClipStore.textChunk(for: item, textURL: textURL, charCount: 2_000)
+            ClipStore.textChunk(for: item, textURL: textURL, charCount: ChunkedTextPaging.firstPageCharCount)
         }.value
         return result?.text ?? item.textContent ?? ""
     }

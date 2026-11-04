@@ -8,6 +8,9 @@ struct ClipRowView: View {
     var isHighlighted = false
     var isSelected = false
     var onTagTap: ((String) -> Void)? = nil
+    /// Keeps a touch-sized slot free at the bottom-trailing corner for the Copy button that the
+    /// history list lays over the row, so it never covers the metadata or the tag chip.
+    var reservesCopySlot = false
 
     /// `@ScaledMetric` requires a literal anchor, so the Dynamic-Type-scaled size is derived
     /// as `scaleUnit * readingSize` below rather than stored directly.
@@ -65,8 +68,8 @@ struct ClipRowView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !stacksMetadata {
-                metadata
+            if !stacksMetadata || reservesCopySlot {
+                trailingColumn
             }
         }
         .padding(.horizontal, Space.sm)
@@ -77,6 +80,25 @@ struct ClipRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: clipRowCornerRadius))
         .animation(IOSMotion.quick(reduceMotion), value: isHighlighted)
         .animation(IOSMotion.state(reduceMotion), value: isSelected)
+    }
+
+    /// Where the history list places the Copy button over a row: inside the row's own padding.
+    static func copyButtonInsets(density: ClipDensity) -> EdgeInsets {
+        EdgeInsets(top: 0, leading: 0, bottom: density.rowVerticalPadding, trailing: Space.sm)
+    }
+
+    /// Metadata at the top, then the reserved Copy slot at the bottom (the metadata moves into
+    /// the text column at accessibility sizes).
+    private var trailingColumn: some View {
+        VStack(alignment: .trailing, spacing: Space.xs) {
+            if !stacksMetadata {
+                metadata
+            }
+            if reservesCopySlot {
+                Spacer(minLength: 0)
+                Color.clear.frame(width: ControlTarget.touch, height: ControlTarget.touch)
+            }
+        }
     }
 
     /// Selection/highlight wash and border read from the environment `.tint` — the chosen

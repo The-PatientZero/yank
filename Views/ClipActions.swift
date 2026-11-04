@@ -20,8 +20,8 @@ struct ClipContextMenu: View {
         Button("Paste", action: actions.paste)
         Button("Copy", action: actions.copy)
         Divider()
-        Button(item.isPinned ? "Unpin" : "Pin to top", action: actions.togglePin)
-        Button(item.isBookmarked ? "Remove Bookmark" : "Bookmark", action: actions.toggleBookmark)
+        Button(ClipActionCopy.pin(isPinned: item.isPinned), action: actions.togglePin)
+        Button(ClipActionCopy.bookmark(isBookmarked: item.isBookmarked), action: actions.toggleBookmark)
         Button("Add Tag…", action: actions.addTag)
         Divider()
         Button("Delete", role: .destructive, action: actions.delete)
@@ -40,14 +40,14 @@ struct ClipHoverActions: View {
     var body: some View {
         HStack(spacing: Self.buttonGap) {
             IconButton(systemName: item.isPinned ? "pin.fill" : "pin",
-                       label: item.isPinned ? "Unpin" : "Pin to top",
-                       help: item.isPinned ? "Unpin (⌘P)" : "Pin to top (⌘P)",
+                       label: ClipActionCopy.pin(isPinned: item.isPinned),
+                       help: "\(ClipActionCopy.pin(isPinned: item.isPinned)) (⌘P)",
                        tint: item.isPinned ? AppTheme.active.foreground : .secondary,
                        size: TypeScale.control,
                        action: actions.togglePin)
             IconButton(systemName: item.isBookmarked ? "bookmark.fill" : "bookmark",
-                       label: item.isBookmarked ? "Remove Bookmark" : "Bookmark",
-                       help: item.isBookmarked ? "Remove Bookmark (⌘B)" : "Bookmark (⌘B)",
+                       label: ClipActionCopy.bookmark(isBookmarked: item.isBookmarked),
+                       help: "\(ClipActionCopy.bookmarkHelp(isBookmarked: item.isBookmarked)) (⌘B)",
                        tint: item.isBookmarked ? Color.yankBookmark : .secondary,
                        size: TypeScale.control,
                        action: actions.toggleBookmark)

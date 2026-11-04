@@ -14,7 +14,7 @@ extension ClipboardStore {
         commitPendingDeleteIfNeeded()
         // At enqueue, not at commit: a copy made inside the undo window must not be dropped.
         resetCaptureSuppression()
-        pendingDeletion = PendingDeletion(items: toDelete, enqueuedAt: Date())
+        pendingDeletion = PendingDeletion(items: toDelete)
         Feedback.emit(.delete)
     }
 
@@ -50,13 +50,7 @@ extension ClipboardStore {
     /// Search / `#tag` / `@app`-filtered, pinned-first. Memoised until `items` changes,
     /// since callers re-read this on every render.
     func filteredItems(search: String, activeTag: String?) -> [ClipboardItem] {
-        if let cached = filterCache.result(query: search, tag: activeTag) {
-            return cached
-        }
-        let visible = PendingDeletePolicy.visibleItems(items, pending: pendingDeletion)
-        let result = ClipQuery.filter(visible, search: search, activeTag: activeTag)
-        filterCache.store(result, query: search, tag: activeTag)
-        return result
+        filterCache.filtered(items, pending: pendingDeletion, search: search, activeTag: activeTag)
     }
 
     func addTag(_ tag: String, to item: ClipboardItem) {

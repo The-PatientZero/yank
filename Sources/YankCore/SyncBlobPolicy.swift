@@ -2,8 +2,11 @@ import Foundation
 
 /// Kinds of blob files that can be exchanged through sync.
 public enum SyncBlobKind: Hashable, Sendable {
+    /// A clip's image file.
     case image
+    /// A clip's text file.
     case text
+    /// A clip's rich-text file.
     case rich
 
     /// Required filename extension for this blob kind.

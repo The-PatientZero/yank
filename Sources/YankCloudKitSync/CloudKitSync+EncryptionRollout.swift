@@ -88,22 +88,41 @@ extension CloudKitSyncService {
     /// Builds the records for live clips. In encrypted-only mode a clip is saved onto the
     /// server's copy with its old readable keys cleared: a fresh record leaves unset server keys
     /// untouched, so an edit would otherwise leave the previous readable content behind.
+    ///
+    /// A clip with a push receipt whose file iCloud already holds under the same name is saved
+    /// without the file and its names, so a pin, tag or OCR edit sends only the changed fields.
+    /// Anything that cannot be confirmed (no record, another name, no answer) attaches the file.
     func prepareClipPushRecords(
         _ items: [ClipboardItem],
         policy: ClipboardCloudMapping.PlainContentPolicy,
+        receipts: [UUID: Date],
         generation: UInt64
     ) async throws -> PreparedPushRecords {
+        let itemsByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let candidates = items.filter { $0.syncBlobReference != nil && receipts[$0.id] != nil }
+        guard policy == .encryptedOnly else {
+            let held = try await blobsHeldByServer(among: candidates, generation: generation)
+            return Self.preparePushRecords(
+                items,
+                in: zoneID,
+                policy: policy,
+                blobHeldByServer: held
+            ) { item in
+                existingBlobURL(for: item)
+            }
+        }
         let fresh = Self.preparePushRecords(items, in: zoneID, policy: policy) { item in
             existingBlobURL(for: item)
         }
-        guard policy == .encryptedOnly, !fresh.records.isEmpty else { return fresh }
+        guard !fresh.records.isEmpty else { return fresh }
+        let candidateIDs = Set(candidates.map(\.id))
         var records: [PreparedPushRecord] = []
         records.reserveCapacity(fresh.records.count)
         for batch in fresh.records.chunked(into: 100) {
             let fetched = try await database.fetchRecords(
                 for: batch.map { $0.record.recordID.recordName },
                 in: zoneID,
-                desiredKeys: ClipboardCloudMapping.contentFetchKeys
+                desiredKeys: ClipboardCloudMapping.contentFetchKeys + ClipboardCloudMapping.fileNameKeys
             )
             try requireActive(generation)
             if fetched.encryptedDataKeyWasReset {
@@ -116,11 +135,29 @@ extension CloudKitSyncService {
             for prepared in batch {
                 let recordName = prepared.record.recordID.recordName
                 if let serverRecord = serverRecords[recordName] {
-                    ClipboardCloudMapping.merge(prepared.record, onto: serverRecord)
+                    var source = prepared
+                    if candidateIDs.contains(prepared.itemID),
+                       let item = itemsByID[prepared.itemID],
+                       ClipboardCloudMapping.serverHoldsFile(of: item, in: serverRecord),
+                       let withoutFile = ClipboardCloudMapping.record(
+                           from: item,
+                           in: zoneID,
+                           policy: policy,
+                           omitsFileFields: true
+                       ) {
+                        source = PreparedPushRecord(
+                            itemID: prepared.itemID,
+                            record: withoutFile,
+                            modifiedAt: prepared.modifiedAt,
+                            withoutFile: true
+                        )
+                    }
+                    ClipboardCloudMapping.merge(source.record, onto: serverRecord)
                     records.append(PreparedPushRecord(
-                        itemID: prepared.itemID,
+                        itemID: source.itemID,
                         record: serverRecord,
-                        modifiedAt: prepared.modifiedAt
+                        modifiedAt: source.modifiedAt,
+                        withoutFile: source.withoutFile
                     ))
                 } else if fetched.permanentlyMissingRecordNames.contains(recordName) {
                     records.append(prepared)
@@ -136,6 +173,47 @@ extension CloudKitSyncService {
             skippedItemIDs: fresh.skippedItemIDs,
             skippedClips: fresh.skippedClips
         )
+    }
+
+    /// Asks iCloud for the file names of the given clips, a batch at a time, and returns the
+    /// ones whose stored file is the file the clip names now. A failed probe only means the file
+    /// is attached again, as it was before this check existed.
+    private func blobsHeldByServer(
+        among candidates: [ClipboardItem],
+        generation: UInt64
+    ) async throws -> Set<UUID> {
+        var held: Set<UUID> = []
+        for batch in candidates.chunked(into: 100) {
+            let fetched: CloudKitFetchedRecords
+            do {
+                fetched = try await database.fetchRecords(
+                    for: batch.map(\.id.uuidString),
+                    in: zoneID,
+                    desiredKeys: ClipboardCloudMapping.fileNameKeys
+                )
+            } catch {
+                try requireActive(generation)
+                syncLog.info(
+                    "could not check which files iCloud holds; attaching them: \(error.localizedDescription, privacy: .public)"
+                )
+                return held
+            }
+            try requireActive(generation)
+            if fetched.encryptedDataKeyWasReset {
+                noteEncryptedDataKeyReset(during: "push preparation")
+            }
+            let serverRecords = Dictionary(
+                fetched.records.map { ($0.recordID.recordName, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            for item in batch {
+                if let serverRecord = serverRecords[item.id.uuidString],
+                   ClipboardCloudMapping.serverHoldsFile(of: item, in: serverRecord) {
+                    held.insert(item.id)
+                }
+            }
+        }
+        return held
     }
 
     // MARK: - Upgrade: repair blank clips

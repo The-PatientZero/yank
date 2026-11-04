@@ -4,8 +4,10 @@ import Foundation
 /// with constants, not an enum) so a later value does not break a downstream `switch`: always
 /// keep a `default`.
 public struct SyncFailureKind: RawRepresentable, Hashable, Sendable {
+    /// The stable string form of the kind.
     public let rawValue: String
 
+    /// Creates a kind from its raw value; values this version does not know are accepted.
     public init(rawValue: String) {
         self.rawValue = rawValue
     }
@@ -29,12 +31,14 @@ public struct SyncFailureKind: RawRepresentable, Hashable, Sendable {
 /// A sync failure turned into one plain sentence. The sentence lives here once so both apps
 /// show the same words for the same cause.
 public struct SyncFailure: Equatable, Sendable {
+    /// The classified cause.
     public let kind: SyncFailureKind
     /// The CloudKit error number behind an `other` failure, so a bug report can name it.
     public let code: Int?
     /// A sentence of its own for an `other` failure that is not a CloudKit error.
     public let detail: String?
 
+    /// Creates a failure of the given kind.
     public init(kind: SyncFailureKind, code: Int? = nil, detail: String? = nil) {
         self.kind = kind
         self.code = code
@@ -66,8 +70,10 @@ public struct SyncFailure: Equatable, Sendable {
 
 /// Why a clip cannot be uploaded as it is. Open set, like `SyncFailureKind`.
 public struct SyncWaitingReason: RawRepresentable, Hashable, Sendable {
+    /// The stable string form of the reason.
     public let rawValue: String
 
+    /// Creates a reason from its raw value; values this version does not know are accepted.
     public init(rawValue: String) {
         self.rawValue = rawValue
     }
@@ -81,9 +87,12 @@ public struct SyncWaitingReason: RawRepresentable, Hashable, Sendable {
 /// A clip this device skipped because it cannot prepare it for upload. It keeps no push receipt,
 /// so every later push retries it.
 public struct SyncWaitingClip: Equatable, Hashable, Sendable, Identifiable {
+    /// The ID of the waiting clip.
     public let id: UUID
+    /// Why the clip cannot be prepared.
     public let reason: SyncWaitingReason
 
+    /// Creates a waiting clip.
     public init(id: UUID, reason: SyncWaitingReason) {
         self.id = id
         self.reason = reason
@@ -95,6 +104,7 @@ public struct SyncWaitingClip: Equatable, Hashable, Sendable, Identifiable {
 /// gets `markSyncFailed(_:)` with the same sentence.
 @MainActor
 public protocol SyncIssueReporting: AnyObject {
+    /// Records a typed sync failure for display.
     func markSyncFailure(_ failure: SyncFailure)
     /// The clips the last push could not prepare; empty once none are waiting.
     func markClipsWaiting(_ clips: [SyncWaitingClip])

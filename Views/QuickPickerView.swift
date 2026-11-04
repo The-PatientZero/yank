@@ -2,6 +2,14 @@ import SwiftUI
 import Cocoa
 import Observation
 
+/// Footer key hints that give way, first to last, when the picker is too narrow. "↵ paste",
+/// "⌘↵ copy", "⌥↵ as text", "⌘1–9 quick" and "esc close" never drop.
+private enum QuickPickerHint {
+    case history, search
+
+    static let dropOrder: [QuickPickerHint] = [.search, .history]
+}
+
 struct QuickPickerView: View {
     let store: ClipboardStore
     let settings: SettingsManager
@@ -69,6 +77,17 @@ struct QuickPickerView: View {
     }
 
     private var header: some View {
+        // Below the search field's minimum width the sequence button keeps only its icon.
+        ViewThatFits(in: .horizontal) {
+            headerRow(showsSequenceLabel: true)
+            headerRow(showsSequenceLabel: false)
+        }
+        .padding(.horizontal, Space.lg)
+        .padding(.top, Space.lg)
+        .padding(.bottom, Space.md)
+    }
+
+    private func headerRow(showsSequenceLabel: Bool) -> some View {
         HStack(spacing: Space.sm) {
             HStack(spacing: Space.sm) {
                 Image(systemName: "magnifyingglass")
@@ -83,6 +102,7 @@ struct QuickPickerView: View {
             }
             .padding(.horizontal, Space.md)
             .padding(.vertical, Space.sm)
+            .frame(minWidth: QuickPickerLayout.minSearchFieldWidth)
             .background(Color.yankRaised.opacity(0.65), in: RoundedRectangle(cornerRadius: Radius.md))
             .overlay(
                 RoundedRectangle(cornerRadius: Radius.md)
@@ -102,9 +122,13 @@ struct QuickPickerView: View {
                                      action: interpretSearch)
                 }
             }
-            PickerIconButton(systemName: "list.number",
-                             label: "Start Paste Sequence",
-                             action: onStartPasteSequence)
+            // Starting does nothing while a sequence runs, so the button is not offered then.
+            if !presentationState.isPasteSequenceActive {
+                PickerIconButton(systemName: "list.number",
+                                 label: "Paste Sequence",
+                                 title: showsSequenceLabel ? "Paste Sequence" : nil,
+                                 action: onStartPasteSequence)
+            }
             PickerIconButton(systemName: "arrow.up.left.and.arrow.down.right",
                              label: "Full history",
                              action: onOpenFullHistory)
@@ -112,9 +136,6 @@ struct QuickPickerView: View {
                              label: "Close",
                              action: onDismiss)
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.top, Space.lg)
-        .padding(.bottom, Space.md)
     }
 
     private var list: some View {
@@ -199,27 +220,94 @@ struct QuickPickerView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text(
-                smartSearchState.results != nil
-                    ? "Smart results · \(items.count)"
-                    : "\(items.count) \(items.count == 1 ? "clip" : "clips")"
-            )
-                .font(.system(size: TypeScale.micro))
-                .foregroundColor(.yankTextTertiary)
-                .lineLimit(1)
-                .layoutPriority(1)
-            if settings.capturePaused {
-                pausedNotice
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text(
+                    smartSearchState.results != nil
+                        ? "Smart results · \(items.count)"
+                        : "\(items.count) \(items.count == 1 ? "clip" : "clips")"
+                )
+                    .font(.system(size: TypeScale.micro))
+                    .foregroundColor(.yankTextTertiary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if settings.capturePaused {
+                    pausedNotice
+                }
+                Spacer()
+                if let selectedItem {
+                    ClipStatusBadge(item: selectedItem)
+                }
             }
-            Spacer()
-            if let selectedItem {
-                ClipStatusBadge(item: selectedItem)
-            }
+            hintsRow
         }
         .padding(.horizontal, Space.lg)
         .padding(.vertical, Space.sm)
         .background(Color.yankRaised.opacity(0.78))
+    }
+
+    /// The key hints, or a notice in their place. The hints stay in the layout (invisible) while
+    /// a notice shows, so the row keeps its height and the list does not move.
+    private var hintsRow: some View {
+        let notice = presentationState.notice
+        return ZStack(alignment: .leading) {
+            keyHints
+                .opacity(notice == nil ? 1 : 0)
+                .accessibilityHidden(notice != nil)
+            if let notice {
+                Text(notice)
+                    .font(.system(size: TypeScale.micro, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Narrow pickers drop whole hints in `QuickPickerHint.dropOrder`; the first tier that fits wins.
+    private var keyHints: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(0...QuickPickerHint.dropOrder.count, id: \.self) { dropped in
+                keyHintTier(dropping: dropped)
+            }
+        }
+        .font(.system(size: TypeScale.micro))
+        .foregroundColor(.yankTextTertiary)
+        .accessibilityElement()
+        .accessibilityLabel(keyHintsAccessibilityLabel)
+    }
+
+    private func keyHintTier(dropping count: Int) -> some View {
+        let dropped = QuickPickerHint.dropOrder.prefix(count)
+        return HStack(spacing: Space.lg) {
+            KeyHint(key: "↵", label: "paste")
+            KeyHint(key: "⌘↵", label: "copy")
+            if selectedItem?.canPasteAsText == true {
+                KeyHint(key: "⌥↵", label: "as text")
+            }
+            KeyHint(key: "⌘1–9", label: "quick")
+            KeyHint(key: "esc", label: "close")
+            if !dropped.contains(.history) {
+                KeyHint(key: "⌘O", label: "history")
+            }
+            if !dropped.contains(.search) {
+                KeyHint(key: "⌘F", label: "search")
+            }
+        }
+    }
+
+    /// Every key, whether or not the strip had room to draw its hint.
+    private var keyHintsAccessibilityLabel: String {
+        var parts = [
+            "Return pastes",
+            "Command Return copies"
+        ]
+        if selectedItem?.canPasteAsText == true { parts.append("Option Return pastes as text") }
+        parts.append("Command 1 through 9 for quick paste")
+        parts.append("Escape closes")
+        parts.append("Command O opens full history")
+        parts.append("Command F searches")
+        return parts.joined(separator: ". ")
     }
 
     /// The saved pause and the way to end it. It keeps its layout priority, so the selected
@@ -274,6 +362,7 @@ struct QuickPickerView: View {
     private func rowMenu(for item: ClipboardItem) -> some View {
         Button("Paste") { onPaste(item) }
         Button("Copy") { onCopy(item) }
+        Button(item.isPinned ? "Unpin" : "Pin to top") { store.togglePin(for: item) }
         ForEach(item.aiTags.filter { !item.tags.contains($0) }, id: \.self) { tag in
             Button("Add “\(tag)” Tag") { store.addTag(tag, to: item) }
         }

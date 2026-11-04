@@ -4,7 +4,6 @@ enum SyncCopy {
     static let sectionDescription = "Your clips can follow you across devices through your own iCloud — free, no separate Yank account needed."
     static let optInDescription = "Off by default. When on, clips sync through your private iCloud database."
     static let localOnlySectionDescription = "This build keeps clips on this device. iCloud sync is available in the official signed app."
-    static let iCloudRequirement = "iCloud account required. Sign in to iCloud in Settings to enable sync."
 
     /// The sentence every retention, limit and clear message ends with, so the protected set is
     /// described in exactly one place.
@@ -137,6 +136,25 @@ enum SyncCopy {
     static let problemHeadline = "Sync problem"
     static let syncNow = "Sync now"
     static let tryAgain = "Try again"
+
+    /// The running count while a pull spans several pages. It counts clip records iCloud has
+    /// delivered, not the size of the list, so there is no total to show.
+    static func receivedCount(_ count: Int) -> String {
+        count == 1 ? "1 clip received" : "\(count.formatted()) clips received"
+    }
+
+    /// Mac: the status headline with the running count.
+    static func syncingWithCount(_ count: Int) -> String {
+        "\(syncingHeadline) \(receivedCount(count))"
+    }
+
+    /// The spoken name of the iPhone rows that show the running count.
+    static let syncingYourClipsLabel = "Syncing your clips"
+
+    /// iPhone: the running count as a sentence of its own.
+    static func receivedSoFar(_ count: Int) -> String {
+        count == 1 ? "1 clip received so far" : "\(count.formatted()) clips received so far"
+    }
 
     /// Symbol names per state, so the Mac and the iPhone draw the same shapes.
     enum Symbol {

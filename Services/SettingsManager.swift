@@ -386,8 +386,8 @@ struct AppExclusionSuggestion: Identifiable {
     var id: String { bundleID }
 }
 
-/// Curated, opt-in exclusion suggestions. Users review before enabling and
-/// can add any other app from disk, so the list stays small and high-confidence.
+/// Known password managers. A first launch excludes all of them; users can remove
+/// any and add other apps from disk, so the list stays small and high-confidence.
 let suggestedExclusions: [AppExclusionSuggestion] = [
     AppExclusionSuggestion(bundleID: "com.apple.Passwords", name: "Passwords"),
     AppExclusionSuggestion(bundleID: "com.1password.1password", name: "1Password"),
