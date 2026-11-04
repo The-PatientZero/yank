@@ -206,7 +206,7 @@ extension HistoryContentView {
         copyConfirmationTask?.cancel()
         showCopyConfirmation = true
         copyConfirmationTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1_400))
+            try? await Task.sleep(for: CopyConfirmationCapsule.displayDuration)
             guard !Task.isCancelled else { return }
             showCopyConfirmation = false
         }

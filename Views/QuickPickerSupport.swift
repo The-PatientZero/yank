@@ -77,6 +77,9 @@ struct QuickPickerThumbnailFrame<Content: View>: View {
 struct PickerIconButton: View {
     let systemName: String
     let label: String
+    /// Text shown beside the icon; nil draws the icon alone and `label` stays the help and
+    /// accessibility text.
+    var title: String?
     let action: () -> Void
 
     @State private var isHovered = false
@@ -84,9 +87,7 @@ struct PickerIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: TypeScale.control, weight: .medium))
-                .frame(width: ControlTarget.compact, height: ControlTarget.compact)
+            content
                 .contentShape(RoundedRectangle(cornerRadius: Radius.sm))
         }
         .buttonStyle(.plain)
@@ -100,6 +101,23 @@ struct PickerIconButton: View {
         .animation(YankMotion.quick(reduceMotion), value: isHovered)
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    @ViewBuilder private var content: some View {
+        if let title {
+            HStack(spacing: Space.xs) {
+                Image(systemName: systemName)
+                Text(title)
+                    .lineLimit(1)
+            }
+            .font(.system(size: TypeScale.control, weight: .medium))
+            .padding(.horizontal, Space.sm)
+            .frame(minWidth: ControlTarget.compact, minHeight: ControlTarget.compact)
+        } else {
+            Image(systemName: systemName)
+                .font(.system(size: TypeScale.control, weight: .medium))
+                .frame(width: ControlTarget.compact, height: ControlTarget.compact)
+        }
     }
 }
 

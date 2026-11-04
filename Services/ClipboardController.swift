@@ -197,7 +197,8 @@ final class ClipboardController {
             anchorFrameProvider: dependencies.hub.statusItemAnchorFrame,
             onOpenFullHistory: { [weak self] in self?.showHistoryWindow() },
             onStartPasteSequence: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.start() },
-            onResumeCapture: { [weak self] in self?.setCapturePaused(false) }
+            onResumeCapture: { [weak self] in self?.setCapturePaused(false) },
+            isPasteSequenceActive: { [weak pasteSequenceCoordinator] in pasteSequenceCoordinator?.isActive ?? false }
         )
 
         let enrichment = ClipEnrichmentService(store: store, settings: dependencies.settings)
@@ -640,11 +641,11 @@ final class ClipboardController {
     private func updateTooltip() {
         let settings = dependencies.settings
         let shortcut = "\(settings.hotkeyModifiers.displayString)\(keyCodeNames[settings.hotkeyKeyCode] ?? "?")"
-        let action = pasteSequenceCoordinator?.isActive == true ? "Paste next" : "Yank"
+        let isSequenceActive = pasteSequenceCoordinator?.isActive == true
         dependencies.hub.setTooltip(
-            headline: "\(action) — \(shortcut)",
+            headline: "\(isSequenceActive ? "Paste next" : "Yank") — \(shortcut)",
             syncProblem: syncSummary.problemLine,
-            hint: "Right-click for options"
+            hint: isSequenceActive ? "Right-click to cancel the paste sequence" : "Right-click or Control-click for options"
         )
     }
 

@@ -56,8 +56,6 @@ extension SettingsView {
                              mods: HotkeyModifiers(command: true, option: true), keyCode: 9)
                 presetButton(label: "⌃⇧V", humanLabel: "Control Shift V",
                              mods: HotkeyModifiers(shift: true, control: true), keyCode: 9)
-                presetButton(label: "⌘B", humanLabel: "Command B",
-                             mods: HotkeyModifiers(command: true), keyCode: 11)
             }
         }
     }

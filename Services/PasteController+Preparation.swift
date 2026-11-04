@@ -260,22 +260,32 @@ extension PasteController {
         }
     }
 
-    static func copyToClipboard(_ item: ClipboardItem, store: ClipboardStore) {
+    /// Copies `item` to the general pasteboard. `completion` runs once the copy has settled: with
+    /// `true` after the write succeeded and the clip moved to the top, with `false` when the write
+    /// did not happen (another app wrote the pasteboard first, or there was nothing to write).
+    static func copyToClipboard(
+        _ item: ClipboardItem,
+        store: ClipboardStore,
+        completion: (@MainActor (Bool) -> Void)? = nil
+    ) {
         let pasteboard = NSPasteboard.general
         let intent = deferredWriteCoordinator.begin(for: pasteboard)
         Task { @MainActor in
             let prepared = await prepareContents(of: item, store: store)
             guard deferredWriteCoordinator.claim(intent, for: pasteboard) else {
                 discardTempFiles(in: prepared.fallback)
+                completion?(false)
                 return
             }
             guard writePreparedContents(prepared, to: pasteboard) != nil else {
                 Log.paste.error(
                     "Copy produced no pasteboard content for clip \(item.id, privacy: .public)"
                 )
+                completion?(false)
                 return
             }
             store.moveToTop(item)
+            completion?(true)
         }
     }
 
