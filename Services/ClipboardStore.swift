@@ -223,10 +223,11 @@ final class ClipboardStore {
     }
 
     /// Apply age retention, the local history cap, and tombstone pruning. Explicit calls
-    /// (launch, `captureSettings` change) bypass the capture-path time gate.
+    /// (launch, `captureSettings` change) bypass the capture-path time gate. While retention is
+    /// held for sync only the cap runs, since it never tombstones.
     func pruneExpired(includingAge: Bool = true) {
-        guard !isRetentionHeldForSync else { return }
-        if applyRetentionAndLimit(now: Date(), includingAge: includingAge) { persist() }
+        let ageAllowed = includingAge && !isRetentionHeldForSync
+        if applyRetentionAndLimit(now: Date(), includingAge: ageAllowed) { persist() }
     }
 
     /// One-shot sweep for blob files a reconcile's deferred delete missed — a crash between the

@@ -143,8 +143,8 @@ public final class CloudKitSyncService {
     private var changePullRequested = false
     private var lifecycleGeneration: UInt64 = 0
     private var isStopped = false
-    /// Called each time a bring-up has finished its pull, before the push and the rollout steps
-    /// that can still fail. A host that holds back age-based expiry until the local history has
+    /// Called each time a bring-up or a remote-change run has finished its pull, before the push
+    /// and the rollout steps that can still fail. A host that holds back age-based expiry until the local history has
     /// caught up with the other devices can release it here.
     public var onInitialPullCompleted: (@MainActor () -> Void)?
     /// The clips the last push that got past preparing could not upload.
@@ -521,6 +521,7 @@ public final class CloudKitSyncService {
             try requireActive(generation)
             let fetched = try await coalescedPull(generation: generation)
             try requireActive(generation)
+            onInitialPullCompleted?()
             try await reconcileEncryptionRollout(generation: generation)
             // Receipt comparison makes this a no-op for a clean pull. Always reconsidering
             // local state is what lets an ordinary remote change repair a missing CKAsset.
