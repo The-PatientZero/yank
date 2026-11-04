@@ -300,17 +300,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         return true
     }
 
-    /// Capture text from the foreground clipboard, share extension, or App Intent; large text is
-    /// file-backed and oversized text truncated per the size policy in `TextCapturePlan`.
-    func capture(text: String, sourceApp: String? = nil) async {
-        _ = await captureText(
-            text,
-            sourceApp: sourceApp,
-            pasteboardGeneration: nil,
-            hasRichContent: false
-        )
-    }
-
     /// Capture a foreground pasteboard generation and return only after its canonical
     /// history snapshot is durable. A failed receipt remains retryable under the same
     /// generation without creating another file-backed item or blob.
@@ -472,19 +461,6 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func saveTextBlob(_ text: String, filename: String? = nil) async -> String? {
         await blobStore.saveText(text, filename: filename)
-    }
-
-    @discardableResult
-    func captureImage(pngData: Data, sourceApp: String? = nil) async -> Bool {
-        await hydrate()
-        guard !historyWritesDisabled else { return false }
-        guard let filename = await saveImageBlob(pngData) else { return false }
-        var item = ClipboardItem.image(filename: filename, sourceApp: sourceApp)
-        item.deviceOrigin = DeviceIdentity.current
-        items.insert(item, at: 0)
-        applyHistoryLimit()
-        persist()
-        return true
     }
 
     private func saveImageBlob(_ data: Data, filename: String? = nil) async -> String? {
