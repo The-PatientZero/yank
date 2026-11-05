@@ -82,7 +82,8 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
    assets and the matching `CHANGELOG.md` section. Releases are immutable once published.
 3. Opens a PR to refresh `releases.json` — the updater's feed — and attempts
    auto-merge for that PR only.
-4. Bumps the Homebrew cask in `The-PatientZero/homebrew-tap`.
+4. Opens a PR in `The-PatientZero/homebrew-tap` that bumps the Homebrew cask. The tap requires a
+   review, so merge that PR by hand.
 
 The macOS archive and export both use the preinstalled Developer ID certificate and
 provisioning profile. Release CI must not create ephemeral Apple Development certificates;
@@ -107,7 +108,7 @@ read them only after the environment's reviewer approves the run.
 | `ASC_KEY_ID` | Key ID of that API key |
 | `ASC_ISSUER_ID` | Issuer ID from App Store Connect → Integrations |
 | `MAC_PROVISIONING_PROFILE_B64` | Developer ID provisioning profile (`.provisionprofile`), base64-encoded — created manually in the developer portal (cloud signing cannot create Developer ID profiles) |
-| `TAP_PUSH_TOKEN` | Fine-grained PAT with contents read/write on `homebrew-tap` only |
+| `TAP_PUSH_TOKEN` | Fine-grained PAT on `homebrew-tap` only, with contents and pull requests read/write |
 
 `ASC_KEY_B64`, `ASC_KEY_ID` and `ASC_ISSUER_ID` are also read by the TestFlight
 cloud-signing step, and an environment secret is invisible to a job in another
