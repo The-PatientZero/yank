@@ -8,6 +8,10 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Yank no longer crashes during iCloud sync when it saves a change to a clip that is already in iCloud. Before, the app crashed on every sync until the change was saved, which made it close right after opening.
+
 ## [1.4.0] - 2026-11-04
 
 ### Added
