@@ -5,6 +5,7 @@ readonly ASC_API_BASE="https://api.appstoreconnect.apple.com"
 readonly ASC_TOKEN_LIFETIME_SECONDS=300
 readonly DEFAULT_PROCESSING_TIMEOUT_SECONDS=3600
 readonly DEFAULT_POLL_INTERVAL_SECONDS=30
+readonly AUTOMATIC_ASSIGNMENT_TIMEOUT_SECONDS=900
 WORK_DIRECTORY=""
 
 usage() {
@@ -454,10 +455,20 @@ assign_build() {
     if ! api_request POST \
         "${ASC_API_BASE}/v1/betaGroups/${group_id}/relationships/builds" \
         "$body" >/dev/null; then
-        # A group with automatic distribution can add the build between the check above and this request.
-        assignment_exists "$group_id" "$build_id" \
+        wait_for_assignment "$group_id" "$build_id" \
             || fail "could not add build ${build_id} to the group"
     fi
+}
+
+wait_for_assignment() {
+    local group_id="$1"
+    local build_id="$2"
+    local started_at="$SECONDS"
+
+    until assignment_exists "$group_id" "$build_id"; do
+        (( SECONDS - started_at < AUTOMATIC_ASSIGNMENT_TIMEOUT_SECONDS )) || return 1
+        sleep "$DEFAULT_POLL_INTERVAL_SECONDS"
+    done
 }
 
 assignment_exists() {
