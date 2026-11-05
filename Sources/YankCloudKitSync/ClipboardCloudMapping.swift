@@ -533,7 +533,10 @@ enum ClipboardCloudMapping {
     /// not stay a tombstone on the server, where every other device would keep reading it as deleted.
     /// The caller leaves out a live clip that a server delete outranks (`ClipboardMerge.deleteOutranksLiveCopy`).
     static func merge(_ fresh: CKRecord, onto server: CKRecord) {
-        for key in fresh.allKeys() { server[key] = fresh[key] }
+        // `allKeys()` also lists encrypted keys. Setting one through the plain subscript on a record
+        // that already holds it encrypted raises an exception, so encrypted keys are copied below.
+        let encryptedKeys = Set(fresh.encryptedValues.allKeys())
+        for key in fresh.allKeys() where !encryptedKeys.contains(key) { server[key] = fresh[key] }
         server[Key.deletedAt] = fresh[Key.deletedAt]
         if let data = fresh.encryptedValues[Key.encContent] as? Data {
             server.encryptedValues[Key.encContent] = data
