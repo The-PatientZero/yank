@@ -289,13 +289,33 @@ jobs:
           gh pr merge "$PR_URL" --auto --squash --delete-branch \
             || echo "Auto-merge could not be enabled; merge $PR_URL manually."
 
-      - name: Bump Homebrew cask
+      - name: Open Homebrew cask PR
         env:
           GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
         run: |
+          TAP_REPO="The-PatientZero/homebrew-tap"
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          CASK_BRANCH="yank-$VERSION"
           gh auth setup-git
-          gh repo clone The-PatientZero/homebrew-tap "$RUNNER_TEMP/homebrew-tap"
-          git -C "$RUNNER_TEMP/homebrew-tap" config user.name "The-PatientZero"
-          git -C "$RUNNER_TEMP/homebrew-tap" config user.email "The-PatientZero@users.noreply.github.com"
-          RELEASE_TAG="$RELEASE_TAG" TAP_DIR="$RUNNER_TEMP/homebrew-tap" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
-          git -C "$RUNNER_TEMP/homebrew-tap" push origin main
+          gh repo clone "$TAP_REPO" "$TAP_DIR"
+          git -C "$TAP_DIR" config user.name "The-PatientZero"
+          git -C "$TAP_DIR" config user.email "The-PatientZero@users.noreply.github.com"
+          git -C "$TAP_DIR" switch -c "$CASK_BRANCH"
+          RELEASE_TAG="$RELEASE_TAG" TAP_DIR="$TAP_DIR" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
+          git -C "$TAP_DIR" push --force origin "$CASK_BRANCH"
+
+          PR_URL="$(gh pr list \
+            --repo "$TAP_REPO" \
+            --head "$CASK_BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url')"
+          if [ -z "$PR_URL" ]; then
+            PR_URL="$(gh pr create \
+              --repo "$TAP_REPO" \
+              --base main \
+              --head "$CASK_BRANCH" \
+              --title "yank $VERSION" \
+              --body "Updates the Yank cask to $VERSION after publishing $RELEASE_TAG.")"
+          fi
+          echo "Homebrew cask PR: $PR_URL"
