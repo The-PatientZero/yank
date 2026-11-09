@@ -17,11 +17,12 @@ If you discover a security vulnerability in Yank, please **do not** open a publi
 
 Instead, report it privately using GitHub's private vulnerability reporting:
 
-1. Go to the **Security** tab of this repository
-2. Click **"Report a vulnerability"**
-3. Fill in the details
+1. Open the [private advisory form](https://github.com/The-PatientZero/yank/security/advisories/new)
+   (or go to the **Security** tab of this repository and click **"Report a vulnerability"**)
+2. Fill in the details
 
-If private vulnerability reporting is unavailable, contact the maintainer through GitHub first
+If private vulnerability reporting is unavailable, contact the maintainer
+[@The-PatientZero](https://github.com/The-PatientZero) through GitHub first
 without posting exploit details publicly.
 
 ### What to include
