@@ -59,7 +59,7 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainer, [@The-PatientZero](https://github.com/The-PatientZero),
+reported to the maintainer, [@koksalmehmet](https://github.com/koksalmehmet),
 through GitHub.
 All complaints will be reviewed and investigated promptly and fairly.
 

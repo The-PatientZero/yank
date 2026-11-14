@@ -14,7 +14,7 @@ final class UpdateService {
     private nonisolated static let lastCheckThrottle: TimeInterval = 86400
     private nonisolated static let periodicCheckInterval: Duration = .seconds(86400)
     private nonisolated static let releaseFeedURL =
-        URL(string: "https://raw.githubusercontent.com/The-PatientZero/yank/main/releases.json")!
+        URL(string: "https://raw.githubusercontent.com/koksalmehmet/yank/main/releases.json")!
     private let releasesURL: URL
     private var updateState: UpdateLifecycleState = .idle {
         didSet {

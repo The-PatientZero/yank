@@ -19,7 +19,7 @@ import Testing
             tagName: tag,
             prerelease: prerelease,
             publishedAt: publishedAt,
-            htmlURL: htmlURL ?? "https://github.com/The-PatientZero/yank/releases/tag/\(tag)",
+            htmlURL: htmlURL ?? "https://github.com/koksalmehmet/yank/releases/tag/\(tag)",
             body: body,
             assets: assets
         )
@@ -39,7 +39,7 @@ import Testing
         #expect(candidate?.tag == "v2.0.0")
         #expect(candidate?.downloadURL == "https://example.com/Yank-2.0.0-Silicon.zip")
         #expect(candidate?.checksumURL == "https://example.com/Yank-2.0.0-Silicon.zip.sha256")
-        #expect(candidate?.releaseURL == "https://github.com/The-PatientZero/yank/releases/tag/v2.0.0")
+        #expect(candidate?.releaseURL == "https://github.com/koksalmehmet/yank/releases/tag/v2.0.0")
     }
 
     @Test func skipsPrereleases() {
@@ -85,13 +85,13 @@ import Testing
     @Test func decodesGitHubReleaseJSON() throws {
         let json = """
         [{"tag_name":"v1.2.0","prerelease":false,"published_at":"2026-01-01T00:00:00Z",
-          "html_url":"https://github.com/The-PatientZero/yank/releases/tag/v1.2.0",
+          "html_url":"https://github.com/koksalmehmet/yank/releases/tag/v1.2.0",
           "body":"- Inline update notes",
           "assets":[{"name":"Yank-1.2.0-Silicon.zip","browser_download_url":"https://x/y.zip"}]}]
         """
         let releases = try JSONDecoder().decode([UpdateRelease].self, from: Data(json.utf8))
         #expect(releases.first?.tagName == "v1.2.0")
-        #expect(releases.first?.htmlURL == "https://github.com/The-PatientZero/yank/releases/tag/v1.2.0")
+        #expect(releases.first?.htmlURL == "https://github.com/koksalmehmet/yank/releases/tag/v1.2.0")
         #expect(releases.first?.body == "- Inline update notes")
         #expect(releases.first?.assets.first?.downloadURL == "https://x/y.zip")
     }
