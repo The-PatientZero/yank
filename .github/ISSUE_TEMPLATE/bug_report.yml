@@ -7,7 +7,7 @@ body:
       value: |
         Install the latest release and search existing issues first.
         Do not paste clipboard contents, account details or screenshots with private information.
-        Report security problems privately, as described in [SECURITY.md](https://github.com/The-PatientZero/yank/blob/main/SECURITY.md).
+        Report security problems privately, as described in [SECURITY.md](https://github.com/koksalmehmet/yank/blob/main/SECURITY.md).
   - type: dropdown
     id: platform
     attributes:

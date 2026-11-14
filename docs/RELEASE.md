@@ -82,7 +82,7 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
    assets, the provenance bundle (`Yank-<version>.intoto.jsonl`), and the matching `CHANGELOG.md` section. Releases are immutable once published.
 3. Opens a PR to refresh `releases.json` — the updater's feed — and attempts
    auto-merge for that PR only.
-4. Opens a PR in `The-PatientZero/homebrew-tap` that bumps the Homebrew cask. The tap requires a
+4. Opens a PR in `koksalmehmet/homebrew-tap` that bumps the Homebrew cask. The tap requires a
    review, so merge that PR by hand.
 
 The macOS archive and export both use the preinstalled Developer ID certificate and
@@ -150,8 +150,8 @@ until the last one):
    tag pattern, widen to `v*` and `*`; the workflow's strict tag check still applies.
 3. Copy the eight secrets from the table above into the `release` environment, and copy
    `ASC_KEY_B64`, `ASC_KEY_ID` and `ASC_ISSUER_ID` into the `testflight` environment.
-4. Verify: `gh api repos/The-PatientZero/yank/environments/release` shows the reviewer,
-   `gh api repos/The-PatientZero/yank/environments/release/deployment-branch-policies`
+4. Verify: `gh api repos/koksalmehmet/yank/environments/release` shows the reviewer,
+   `gh api repos/koksalmehmet/yank/environments/release/deployment-branch-policies`
    lists exactly the three rules, `gh secret list --env release` and
    `gh secret list --env testflight` show the names above, and one approval-gated run
    (or a TestFlight dispatch for the `testflight` copies) succeeds.

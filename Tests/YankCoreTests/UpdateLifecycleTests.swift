@@ -76,9 +76,9 @@ import Testing
             ## What's Changed
             - Inline update notes
             - Cleaner updater lifecycle
-            **Full Changelog**: https://github.com/The-PatientZero/yank/compare/v1.2.2...v1.2.3
+            **Full Changelog**: https://github.com/koksalmehmet/yank/compare/v1.2.2...v1.2.3
             """,
-            releaseURL: "https://github.com/The-PatientZero/yank/releases/tag/v1.2.3"
+            releaseURL: "https://github.com/koksalmehmet/yank/releases/tag/v1.2.3"
         ).menuPresentation
 
         #expect(presentation.title == "What's new in 1.2.3")
@@ -92,8 +92,8 @@ import Testing
         let presentation = UpdateLifecycleState.installed(
             version: "1.2.3",
             tag: "v1.2.3",
-            releaseNotes: "**Full Changelog**: https://github.com/The-PatientZero/yank/compare/v1.2.2...v1.2.3",
-            releaseURL: "https://github.com/The-PatientZero/yank/releases/tag/v1.2.3"
+            releaseNotes: "**Full Changelog**: https://github.com/koksalmehmet/yank/compare/v1.2.2...v1.2.3",
+            releaseURL: "https://github.com/koksalmehmet/yank/releases/tag/v1.2.3"
         ).menuPresentation
 
         #expect(presentation.detail == "Release notes are available on GitHub.")

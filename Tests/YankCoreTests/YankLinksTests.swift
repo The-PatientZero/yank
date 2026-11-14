@@ -9,6 +9,6 @@ struct YankLinksTests {
 
         #expect(url.scheme == "https")
         #expect(url.host == "github.com")
-        #expect(url.path == "/The-PatientZero/yank/blob/main/PRIVACY.md")
+        #expect(url.path == "/koksalmehmet/yank/blob/main/PRIVACY.md")
     }
 }

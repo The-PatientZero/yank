@@ -70,7 +70,7 @@ enum UpdateSecurityPolicy {
     /// Release assets (archive and checksum) are listed only on this host and path. The final
     /// location after GitHub's redirect to its storage host is checked separately.
     private static let releaseAssetHost = "github.com"
-    private static let releaseAssetPathPrefix = "/The-PatientZero/yank/releases/download/"
+    private static let releaseAssetPathPrefix = "/koksalmehmet/yank/releases/download/"
     /// An asset path after the prefix is exactly `<tag>/<file>`.
     private static let releaseAssetPathSegmentCount = 2
     /// Percent-encoded dot, slash and backslash: refused so the path cannot hide traversal.

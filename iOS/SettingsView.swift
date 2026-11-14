@@ -416,10 +416,10 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section("About") {
             LabeledContent("Version", value: appVersion)
-            Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
+            Link("Star on GitHub", destination: URL(string: "https://github.com/koksalmehmet/yank")!)
             Link("Privacy Policy", destination: YankLinks.privacyPolicy)
-            Link("Report an Issue", destination: URL(string: "https://github.com/The-PatientZero/yank/issues/new")!)
-            Link("Sponsor Yank", destination: URL(string: "https://github.com/sponsors/The-PatientZero")!)
+            Link("Report an Issue", destination: URL(string: "https://github.com/koksalmehmet/yank/issues/new")!)
+            Link("Sponsor Yank", destination: URL(string: "https://github.com/sponsors/koksalmehmet")!)
             Text("Designed to disappear. Built to remember.")
                 .font(.yank(.footnote))
                 .italic()

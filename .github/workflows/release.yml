@@ -299,13 +299,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
         run: |
-          TAP_REPO="The-PatientZero/homebrew-tap"
+          TAP_REPO="koksalmehmet/homebrew-tap"
           TAP_DIR="$RUNNER_TEMP/homebrew-tap"
           CASK_BRANCH="yank-$VERSION"
           gh auth setup-git
           gh repo clone "$TAP_REPO" "$TAP_DIR"
-          git -C "$TAP_DIR" config user.name "The-PatientZero"
-          git -C "$TAP_DIR" config user.email "The-PatientZero@users.noreply.github.com"
+          git -C "$TAP_DIR" config user.name "koksalmehmet"
+          git -C "$TAP_DIR" config user.email "koksalmehmet@users.noreply.github.com"
           git -C "$TAP_DIR" switch -c "$CASK_BRANCH"
           RELEASE_TAG="$RELEASE_TAG" TAP_DIR="$TAP_DIR" ./scripts/update_homebrew_cask.sh "$VERSION" build/dist/Yank.dmg
           git -C "$TAP_DIR" push --force origin "$CASK_BRANCH"

@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/macOS-14.0+-black?style=for-the-badge&logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6-orange?style=for-the-badge&logo=swift" alt="Swift 6">
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT">
-  <a href="https://scorecard.dev/viewer/?uri=github.com/The-PatientZero/yank"><img src="https://img.shields.io/ossf-scorecard/github.com/The-PatientZero/yank?style=for-the-badge&label=OpenSSF%20Scorecard" alt="OpenSSF Scorecard"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/koksalmehmet/yank"><img src="https://img.shields.io/ossf-scorecard/github.com/koksalmehmet/yank?style=for-the-badge&label=OpenSSF%20Scorecard" alt="OpenSSF Scorecard"></a>
 </p>
 
 > **Status: Yank is publicly available for macOS, iPhone, and iPad.** Yank started as a
@@ -26,7 +26,7 @@
   known password managers are excluded by default while secret‑marked pasteboard copies are skipped.
 - **Free & open source** — everything is free, including cross‑device sync (Mac ↔ iPhone).
   No purchase, no subscription, no account to create. If Yank saves you time, consider
-  [sponsoring development](https://github.com/sponsors/The-PatientZero).
+  [sponsoring development](https://github.com/sponsors/koksalmehmet).
 - **Text + Images + OCR** — captures plain text, links, rich text, images, and screenshots;
   extracts searchable text from images on-device with Apple Vision.
 - **Purposeful, on-device intelligence** — optional Apple Intelligence (macOS 26+): tag
@@ -99,14 +99,14 @@ they are. Paste Sequence needs Accessibility access to send the paste.
 ## Install
 
 Grab the notarized DMG from
-[Releases](https://github.com/The-PatientZero/yank/releases/latest), or use Homebrew:
+[Releases](https://github.com/koksalmehmet/yank/releases/latest), or use Homebrew:
 
 ```bash
-brew install --cask The-PatientZero/tap/yank
+brew install --cask koksalmehmet/tap/yank
 ```
 
 To check that a download was built from this repository, run
-`gh attestation verify Yank.dmg --repo The-PatientZero/yank`.
+`gh attestation verify Yank.dmg --repo koksalmehmet/yank`.
 
 The iPhone and iPad app is available on the
 [App Store](https://apps.apple.com/app/id6791990020). On iOS, you choose whether Yank may
@@ -118,7 +118,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 ## Building from Source
 
 ```bash
-git clone https://github.com/The-PatientZero/yank.git
+git clone https://github.com/koksalmehmet/yank.git
 cd yank
 XCODEGEN_BIN="$(scripts/install_xcodegen.sh)"
 "$XCODEGEN_BIN" generate   # project.yml is the source of truth

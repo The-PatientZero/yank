@@ -5,7 +5,7 @@ import Testing
 @Suite struct UpdateSecurityPolicyTests {
     @Test func allowsPublicHTTPSReleaseFeedOutsideGitHubAPI() throws {
         try UpdateSecurityPolicy.validateReleaseFeedURL(
-            #require(URL(string: "https://raw.githubusercontent.com/The-PatientZero/yank/main/releases.json"))
+            #require(URL(string: "https://raw.githubusercontent.com/koksalmehmet/yank/main/releases.json"))
         )
     }
 
@@ -18,14 +18,14 @@ import Testing
             )
         }
         expectUpdateError("private GitHub API feed should fail as unsupported") { error in
-            if case .unsupportedReleaseFeed("https://api.github.com/repos/The-PatientZero/yank/releases") = error {
+            if case .unsupportedReleaseFeed("https://api.github.com/repos/koksalmehmet/yank/releases") = error {
                 true
             } else {
                 false
             }
         } operation: {
             try UpdateSecurityPolicy.validateReleaseFeedURL(
-                #require(URL(string: "https://api.github.com/repos/The-PatientZero/yank/releases"))
+                #require(URL(string: "https://api.github.com/repos/koksalmehmet/yank/releases"))
             )
         }
     }
@@ -60,7 +60,7 @@ import Testing
 
     @Test func allowsTrustedGithubReleaseHostsOverHTTPS() throws {
         try UpdateSecurityPolicy.validateReleaseAssetURL(
-            #require(URL(string: "https://github.com/The-PatientZero/yank/releases/download/v1.2.0/Yank-1.2.0-universal.zip"))
+            #require(URL(string: "https://github.com/koksalmehmet/yank/releases/download/v1.2.0/Yank-1.2.0-universal.zip"))
         )
     }
 
@@ -83,7 +83,7 @@ import Testing
 
     @Test func trustsOnlyHTTPSGitHubReleasePages() throws {
         let releasePage = try #require(UpdateSecurityPolicy.trustedReleasePageURL(
-            from: "https://github.com/The-PatientZero/yank/releases/tag/v1.2.0"
+            from: "https://github.com/koksalmehmet/yank/releases/tag/v1.2.0"
         ))
         #expect(releasePage.host == "github.com")
 
@@ -113,11 +113,11 @@ import Testing
     }
 
     @Test func describesUnsupportedReleaseFeed() {
-        let error = UpdateError.unsupportedReleaseFeed("https://api.github.com/repos/The-PatientZero/yank/releases")
+        let error = UpdateError.unsupportedReleaseFeed("https://api.github.com/repos/koksalmehmet/yank/releases")
         #expect(
             error.errorDescription ==
                 "Update feed must be a public HTTPS manifest, not a private or authenticated API: " +
-                "https://api.github.com/repos/The-PatientZero/yank/releases"
+                "https://api.github.com/repos/koksalmehmet/yank/releases"
         )
     }
 

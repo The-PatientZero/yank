@@ -167,17 +167,17 @@ struct SettingsView: View {
                         .font(.system(size: TypeScale.body, design: .serif))
                         .italic()
                         .foregroundColor(.secondary)
-                    Text("Yank \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · by @The-PatientZero")
+                    Text("Yank \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · by @koksalmehmet")
                         .font(.system(size: TypeScale.caption))
                         .foregroundColor(.yankTextTertiary)
                 }
             }
             SettingsUpdatesRow()
             HStack(spacing: Space.lg) {
-                Link("Star on GitHub", destination: URL(string: "https://github.com/The-PatientZero/yank")!)
+                Link("Star on GitHub", destination: URL(string: "https://github.com/koksalmehmet/yank")!)
                 Link("Privacy Policy", destination: YankLinks.privacyPolicy)
-                Link("Report an Issue", destination: URL(string: "https://github.com/The-PatientZero/yank/issues/new")!)
-                Link("Sponsor Yank", destination: URL(string: "https://github.com/sponsors/The-PatientZero")!)
+                Link("Report an Issue", destination: URL(string: "https://github.com/koksalmehmet/yank/issues/new")!)
+                Link("Sponsor Yank", destination: URL(string: "https://github.com/sponsors/koksalmehmet")!)
             }
             .font(.system(size: TypeScale.caption, weight: .medium))
         }
