@@ -21,13 +21,18 @@ struct ClipRowView: View {
     private var kind: ClipKind { item.kind }
     private var stacksMetadata: Bool { dynamicTypeSize.isAccessibilitySize }
 
-    /// Anchored to `IOSType.readingBody` (19pt, deliberately +2 over system body) rather than the
-    /// compact macOS `bodyFont` (12–14pt), which would push clip content below system body on iOS.
+    /// Cozy matches the system body size so a list row shows as much of the clip as other list
+    /// apps do; Snug and Airy step 2pt either side.
+    private static let listBodySize: CGFloat = 17
+    private static let densityStep: CGFloat = 2
+    /// Monospaced glyphs are wider, so code drops a step to match the visual size of prose.
+    private static let monospacedStep: CGFloat = 2
+
     private var readingSize: CGFloat {
         switch density {
-        case .snug: return IOSType.readingBody - 2  // 17
-        case .cozy: return IOSType.readingBody       // 19
-        case .airy: return IOSType.readingBody + 2   // 21
+        case .snug: return Self.listBodySize - Self.densityStep
+        case .cozy: return Self.listBodySize
+        case .airy: return Self.listBodySize + Self.densityStep
         }
     }
     private var bodySize: CGFloat { scaleUnit * readingSize }
@@ -91,6 +96,12 @@ struct ClipRowView: View {
                     .lineLimit(stacksMetadata ? 2 : 1)
                     .truncationMode(kind.isLink ? .middle : .tail)
                     .layoutPriority(-1)
+                if !stacksMetadata {
+                    Text("·")
+                        .font(.yank(.caption))
+                        .foregroundStyle(metadataColor)
+                        .accessibilityHidden(true)
+                }
             }
             metadata
         }
@@ -156,7 +167,8 @@ struct ClipRowView: View {
                 .truncationMode(.middle)
         } else {
             Text(item.excerpt)
-                .font(.system(size: bodySize, design: kind.isCode ? .monospaced : .default))
+                .font(.system(size: kind.isCode ? bodySize - Self.monospacedStep : bodySize,
+                              design: kind.isCode ? .monospaced : .default))
                 .lineLimit(excerptLineLimit)
         }
     }

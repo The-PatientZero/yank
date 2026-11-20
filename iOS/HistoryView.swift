@@ -437,11 +437,14 @@ struct HistoryView: View {
         }
     }
 
+    /// The row's own padding spaces clips apart, so the list adds only a sliver above and below.
+    private static let listRowInsets = EdgeInsets(top: Space.xxs, leading: Space.xl, bottom: Space.xxs, trailing: Space.xl)
+
     private var list: some View {
         List {
             ForEach(ClipSectioning.sections(filtered)) { section in
                 Section {
-                    ForEach(section.items) { item in listRow(item) }
+                    ForEach(section.items) { item in listRow(item).listRowInsets(Self.listRowInsets) }
                 } header: {
                     Text(section.label)
                         .font(.yank(.caption, weight: .semibold))
