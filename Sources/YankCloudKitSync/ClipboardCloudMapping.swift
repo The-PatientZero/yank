@@ -6,7 +6,7 @@ import YankCore
 #endif
 
 /// Pure `ClipboardItem ⇄ CKRecord` mapping for scalar fields. Blobs attach as `CKAsset`.
-/// No network — round-trips offline, so it is unit-tested directly.
+/// Maps records without network access.
 enum ClipboardCloudMapping {
     static let recordType = "ClipboardItem"
 

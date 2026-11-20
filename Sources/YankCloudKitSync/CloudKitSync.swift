@@ -106,10 +106,8 @@ public final class CloudKitSyncService {
     let encryptedCopyBackfillKey: String
     private let historyCoverageKey: String
     private let localOnlyClipsKey: String
-    private let pushDebounceNanoseconds: UInt64
+    private let pushDebounceNanoseconds: UInt64 = 750_000_000
     private let pushRetryDelaysNanoseconds: [UInt64]
-    private let beforeReceiptPersistence: (() throws -> Void)?
-    private let afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)?
     weak var store: SyncableStore?
     /// Weak like `store`: the composition root owns the settings bridge and outlives the
     /// service, so a strong edge here would keep the app's settings graph alive past `stop()`.
@@ -226,18 +224,13 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.changeToken.\(containerIdentifier)")
     }
 
-    /// Seam-injecting initializer — tests pass an in-memory `CloudKitDatabase` fake.
+    /// Binds the sync service to its database and checkpoint store.
     init(
         containerIdentifier: String,
         store: SyncableStore,
         database: any CloudKitDatabase,
         settingsStore: (any SyncedSettingsStore)? = nil,
-        defaults: UserDefaults = .standard,
-        pushDebounceNanoseconds: UInt64 = 750_000_000,
-        pushRetryDelaysNanoseconds: [UInt64] = CloudKitSyncService.defaultPushRetryDelaysNanoseconds,
-        resolutionEpoch: String = CloudKitSyncService.defaultResolutionEpoch,
-        beforeReceiptPersistence: (() throws -> Void)? = nil,
-        afterReceiptInvalidationBeforeTokenPersistence: (() throws -> Void)? = nil
+        defaults: UserDefaults = .standard
     ) {
         self.database = database
         self.store = store
@@ -251,16 +244,12 @@ public final class CloudKitSyncService {
         self.encryptedCopyBackfillKey = "cloudkit.encryptedCopyBackfill.\(containerIdentifier)"
         self.historyCoverageKey = "cloudkit.historyCoverage.\(containerIdentifier)"
         self.localOnlyClipsKey = "cloudkit.localOnlyClips.\(containerIdentifier)"
-        self.pushDebounceNanoseconds = pushDebounceNanoseconds
-        self.pushRetryDelaysNanoseconds = pushRetryDelaysNanoseconds
-        self.beforeReceiptPersistence = beforeReceiptPersistence
-        self.afterReceiptInvalidationBeforeTokenPersistence =
-            afterReceiptInvalidationBeforeTokenPersistence
+        self.pushRetryDelaysNanoseconds = Self.defaultPushRetryDelaysNanoseconds
         self.changeToken = Self.loadToken(from: defaults, key: tokenKey)
         self.pushReceipts = Self.loadPushReceipts(from: defaults, key: pushReceiptsKey)
         self.pullQuarantine = Self.reQuarantineForEpoch(
             Self.loadPullQuarantine(from: defaults, key: pullQuarantineKey),
-            epoch: resolutionEpoch,
+            epoch: Self.defaultResolutionEpoch,
             defaults: defaults,
             quarantineKey: pullQuarantineKey,
             epochKey: "cloudkit.pullQuarantine.epoch.\(containerIdentifier)"
@@ -771,7 +760,6 @@ public final class CloudKitSyncService {
             guard Self.isExpiredChangeTokenError(error) else { throw error }
             syncLog.info("CloudKit change token expired; retrying from the beginning.")
             try invalidateAllPushReceipts(generation: generation)
-            try afterReceiptInvalidationBeforeTokenPersistence?()
             try requireActive(generation)
             try persistToken(nil, generation: generation)
             changeToken = nil
@@ -990,7 +978,6 @@ public final class CloudKitSyncService {
             try await awaitActivePushCompletion(generation: generation)
             try requireActive(generation)
             try applyPullReceiptChanges(receiptChanges, generation: generation)
-            try afterReceiptInvalidationBeforeTokenPersistence?()
             try requireActive(generation)
         }
         guard !quarantine.didOverflow else {
@@ -1828,7 +1815,7 @@ public final class CloudKitSyncService {
     // MARK: - Synced settings
 
     /// What to do with the settings record after reading the server's copy. Pure and total, so
-    /// the last-writer-wins rule is decided in one place and tested without a network.
+    /// the last-writer-wins rule is decided in one place.
     enum SettingsResolution: Equatable {
         case idle
         case adopt(SyncedSettings)
@@ -2199,8 +2186,6 @@ public final class CloudKitSyncService {
         _ receipts: [UUID: Date],
         generation: UInt64
     ) throws {
-        try requireActive(generation)
-        try beforeReceiptPersistence?()
         try requireActive(generation)
         guard let data = try? CloudKitPushReceiptCodec.encode(receipts) else {
             throw CloudKitSyncError.pushReceiptEncodingFailed

@@ -12,8 +12,7 @@ final class ClipboardWatcher {
 
     private let store: ClipboardStore
 
-    /// Capture-relevant settings, injected rather than read from `SettingsManager.shared` so
-    /// capture is testable in isolation; the composition root re-assigns this on change.
+    /// Capture settings refreshed by the composition root when preferences change.
     var captureSettings: CaptureSettings
 
     private var timer: Timer?
@@ -47,18 +46,15 @@ final class ClipboardWatcher {
     nonisolated static let maxImageInputBytes = 32 * 1024 * 1024
     nonisolated static let maxRasterPixels: Int64 = 40_000_000
 
-    /// Injectable for tests only; production always watches the general pasteboard.
-    private let pasteboardName: NSPasteboard.Name
+    private let pasteboardName: NSPasteboard.Name = .general
     private var pasteboard: NSPasteboard { NSPasteboard(name: pasteboardName) }
 
     init(
         store: ClipboardStore,
-        settings: CaptureSettings,
-        pasteboardName: NSPasteboard.Name = .general
+        settings: CaptureSettings
     ) {
         self.store = store
         self.captureSettings = settings
-        self.pasteboardName = pasteboardName
         self.lastChangeCount = NSPasteboard(name: pasteboardName).changeCount
 
         NotificationCenter.default.addObserver(
@@ -165,11 +161,6 @@ final class ClipboardWatcher {
 
     func ignoreNextCopy() {
         ignoreNextChange.toggle()
-    }
-
-    /// Test hook: awaits the capture pipeline draining so assertions see the applied history.
-    func waitForCaptureQueueIdle() async {
-        await captureQueue.waitUntilIdle()
     }
 
     func checkClipboard() {

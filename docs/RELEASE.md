@@ -89,7 +89,8 @@ The macOS archive and export both use the preinstalled Developer ID certificate 
 provisioning profile. Release CI must not create ephemeral Apple Development certificates;
 they are unnecessary for Developer ID distribution and can exhaust Apple's certificate quota.
 
-`ci.yml` runs `swift test` and unsigned macOS/iOS builds on every push and PR.
+`ci.yml` runs `swift build` and unsigned macOS/iOS builds on every push and PR.
+Behavior is verified by hand and cross-model code review; this repository keeps no automated tests.
 Before publishing a signed macOS artifact, verify its effective entitlements select CloudKit
 `Production` and APNs `production`; a signed Debug diagnostic build must select CloudKit
 `Development` and APNs `development`.

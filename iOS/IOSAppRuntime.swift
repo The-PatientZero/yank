@@ -3,7 +3,7 @@ import UIKit
 /// The store, settings and sync controller the app runs on, created once per process by whoever
 /// needs them first. A background launch for a CloudKit push may never create a window, so the
 /// app delegate reaches the sync controller through here instead of through the first scene.
-/// Only the app and its delegate use this; tests and previews build their own objects.
+/// Only the app and its delegate use this; previews build their own objects.
 @MainActor
 final class IOSAppRuntime {
     static let shared = IOSAppRuntime()

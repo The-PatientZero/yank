@@ -47,8 +47,7 @@ struct UpdateAsset: Decodable, Equatable {
 }
 
 /// Pure selection of the newest non-prerelease release that ships a signed ZIP plus its
-/// matching SHA-256 checksum, preferring the asset for the running architecture. No I/O,
-/// so it unit-tests headlessly — the part of the updater most likely to rot silently.
+/// matching SHA-256 checksum, preferring the asset for the running architecture.
 enum UpdateReleaseSelection {
     struct Candidate: Equatable {
         let tag: String

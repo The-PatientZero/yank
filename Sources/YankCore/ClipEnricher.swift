@@ -16,15 +16,13 @@ public struct ClipEnrichment: Sendable, Equatable {
 
 /// Produces on-device suggestions for a clip's text. Implemented by the Foundation Models
 /// enricher on macOS 26+; the protocol stays here (no framework import) so the pipeline and
-/// tests don't depend on a platform-only framework.
+/// enrichment can be shared across platforms.
 public protocol ClipEnricher: Sendable {
     /// Returns the suggestions for `text`.
     func enrich(_ text: String) async -> ClipEnrichment
 }
 
-/// Pure gating policy for background enrichment, extracted so the privacy/correctness rules
-/// (opt-in, text-only, skip-truncated, skip-already-enriched, length thresholds) are tested
-/// headlessly rather than living inside the `@MainActor` service wiring.
+/// Shared privacy and eligibility policy for background enrichment.
 public enum ClipEnrichmentPolicy {
     /// Shortest text worth tagging at all.
     public static let minTextLength = 6
@@ -47,7 +45,7 @@ public enum ClipEnrichmentPolicy {
 }
 
 /// Pure cleanup for raw tag output: normalise to the tag idiom, drop noise and anything the
-/// user already tagged, dedupe, and cap. Shared by the enricher and tested headlessly.
+/// user already tagged, dedupe, and cap. Shared by the enricher.
 public enum AITagCleaner {
     /// Normalizes `raw` into tags, skipping those under two characters, already in `existing` or repeated, and returns at most `limit`.
     public static func clean(_ raw: [String], existing: [String] = [], limit: Int = 3) -> [String] {

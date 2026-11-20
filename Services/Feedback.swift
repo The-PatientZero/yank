@@ -39,7 +39,7 @@ struct FeedbackSettings: Equatable, Sendable {
     var hapticFeedbackEnabled: Bool
     var soundEffectChoice: SoundEffectChoice
 
-    /// Everything off: the default for tests and previews, where a cue must stay inert.
+    /// Everything off: the default for previews, where a cue must stay inert.
     static let silent = FeedbackSettings(
         soundEffectsEnabled: false,
         hapticFeedbackEnabled: false,
