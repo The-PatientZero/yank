@@ -8,8 +8,8 @@ struct ClipRowView: View {
     var isHighlighted = false
     var isSelected = false
     var onTagTap: ((String) -> Void)? = nil
-    /// Keeps a touch-sized slot free at the bottom-trailing corner for the Copy button that the
-    /// history list lays over the row, so it never covers the metadata or the tag chip.
+    /// Keeps a touch-wide column free at the trailing edge for the Copy button that the history
+    /// list lays over the row, so it never covers the text, metadata or tag chip.
     var reservesCopySlot = false
 
     /// `@ScaledMetric` requires a literal anchor, so the Dynamic-Type-scaled size is derived
@@ -42,13 +42,7 @@ struct ClipRowView: View {
             VStack(alignment: .leading, spacing: Space.xxs) {
                 primaryText
 
-                if let detail = secondaryDetail {
-                    Text(detail)
-                        .font(.yank(.caption))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(stacksMetadata ? 2 : 1)
-                        .truncationMode(kind.isLink ? .middle : .tail)
-                }
+                secondaryLine
 
                 if !item.tags.isEmpty {
                     HStack(spacing: Space.xs) {
@@ -61,15 +55,11 @@ struct ClipRowView: View {
                     }
                 }
 
-                if stacksMetadata {
-                    metadata
-                        .padding(.top, Space.xxs)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !stacksMetadata || reservesCopySlot {
-                trailingColumn
+            if reservesCopySlot {
+                Color.clear.frame(width: ControlTarget.touch, height: Self.copySlotHeight)
             }
         }
         .padding(.horizontal, Space.sm)
@@ -82,22 +72,27 @@ struct ClipRowView: View {
         .animation(IOSMotion.state(reduceMotion), value: isSelected)
     }
 
-    /// Where the history list places the Copy button over a row: inside the row's own padding.
-    static func copyButtonInsets(density: ClipDensity) -> EdgeInsets {
-        EdgeInsets(top: 0, leading: 0, bottom: density.rowVerticalPadding, trailing: Space.sm)
-    }
+    /// The reserved Copy column takes width only, so the row stays as tall as its text.
+    private static let copySlotHeight: CGFloat = 1
 
-    /// Metadata at the top, then the reserved Copy slot at the bottom (the metadata moves into
-    /// the text column at accessibility sizes).
-    private var trailingColumn: some View {
-        VStack(alignment: .trailing, spacing: Space.xs) {
-            if !stacksMetadata {
-                metadata
+    /// Where the history list places the Copy button over a row: centred in the reserved column.
+    static let copyButtonInsets = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: Space.sm)
+
+    /// Source or link detail, then age and status, on one caption line (wrapping at accessibility sizes).
+    @ViewBuilder private var secondaryLine: some View {
+        let layout = stacksMetadata
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Space.xxs))
+            : AnyLayout(HStackLayout(spacing: Space.xs))
+        layout {
+            if let detail = secondaryDetail {
+                Text(detail)
+                    .font(.yank(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(stacksMetadata ? 2 : 1)
+                    .truncationMode(kind.isLink ? .middle : .tail)
+                    .layoutPriority(-1)
             }
-            if reservesCopySlot {
-                Spacer(minLength: 0)
-                Color.clear.frame(width: ControlTarget.touch, height: ControlTarget.touch)
-            }
+            metadata
         }
     }
 
@@ -114,12 +109,11 @@ struct ClipRowView: View {
         return isHighlighted ? 0.10 : 0
     }
 
+    /// A resting row has no outline: the list's own separator divides rows.
     private var borderStyle: AnyShapeStyle {
         if isSelected { return AnyShapeStyle(.tint.opacity(0.55)) }
         if isHighlighted { return AnyShapeStyle(.tint.opacity(0.28)) }
-        // Resting hairline matches the grid tiles' edge density instead of relying on `List` separators alone.
-        // `yankHairline` is a solid color, so it stays semantic in dark mode and honors Reduce Transparency.
-        return AnyShapeStyle(Color.yankHairline)
+        return AnyShapeStyle(Color.clear)
     }
 
     /// Metadata ink: the selected variant when a selection or highlight fill sits behind the text.
@@ -127,26 +121,15 @@ struct ClipRowView: View {
         isSelected || isHighlighted ? .yankTextTertiarySelected : .yankTextTertiary
     }
 
-    @ViewBuilder private var metadata: some View {
-        if stacksMetadata {
-            HStack(spacing: Space.xs) {
-                RichContentBadge(state: item.richContentState, font: .yank(.caption))
-                Text(item.relativeAge)
-                    .font(.yank(.caption))
-                    .foregroundStyle(metadataColor)
-                ClipStatusBadge(item: item, font: .yank(.caption))
-            }
-        } else {
-            VStack(alignment: .trailing, spacing: Space.xs) {
-                HStack(spacing: Space.xs) {
-                    RichContentBadge(state: item.richContentState, font: .yank(.caption))
-                    Text(item.relativeAge)
-                        .font(.yank(.caption))
-                        .foregroundStyle(metadataColor)
-                }
-                ClipStatusBadge(item: item, font: .yank(.caption))
-            }
+    private var metadata: some View {
+        HStack(spacing: Space.xs) {
+            RichContentBadge(state: item.richContentState, font: .yank(.caption))
+            Text(item.relativeAge)
+                .font(.yank(.caption))
+                .foregroundStyle(metadataColor)
+            ClipStatusBadge(item: item, font: .yank(.caption))
         }
+        .fixedSize()
     }
 
     @ViewBuilder private var icon: some View {

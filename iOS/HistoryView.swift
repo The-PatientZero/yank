@@ -471,7 +471,7 @@ struct HistoryView: View {
                 action: "Toggle selection"
             )
         } else {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack(alignment: .trailing) {
                 Button { open(item) } label: {
                     ClipRowView(item: item, store: store, density: settings.density,
                                 isHighlighted: isOpen(item), onTagTap: applyTag, reservesCopySlot: true)
@@ -490,7 +490,7 @@ struct HistoryView: View {
                     action: "Open details"
                 )
                 ClipCopyButton(excerpt: item.excerpt) { copyClipWithFlash(item) }
-                    .padding(ClipRowView.copyButtonInsets(density: settings.density))
+                    .padding(ClipRowView.copyButtonInsets)
             }
                 .listRowBackground(Color.clear)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
