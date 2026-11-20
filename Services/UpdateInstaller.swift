@@ -27,31 +27,18 @@ private func mapUpdateError<T>(
     }
 }
 
-/// The external commands the installer shells out to (extraction, codesign verification,
-/// Gatekeeper, chmod). Injected so each install gate can be tested without a signed archive or
-/// the machine's real Gatekeeper state; production always uses `.system`.
-struct UpdateProcessRunner: Sendable {
-    private let execute: @Sendable (String, String, [String]) throws -> Void
-
-    init(_ execute: @escaping @Sendable (String, String, [String]) throws -> Void) {
-        self.execute = execute
-    }
-
-    /// Launches the process, folding failures into `UpdateError` (see `mapUpdateError`).
-    func run(_ name: String, _ executable: String, _ arguments: [String]) throws(UpdateError) {
+/// Runs installer commands and reports launch or exit failures as `UpdateError`.
+private enum UpdateProcessRunner {
+    static func run(_ name: String, _ executable: String, _ arguments: [String]) throws(UpdateError) {
         try mapUpdateError(operation: "Launching \(name)") {
-            try execute(name, executable, arguments)
-        }
-    }
-
-    static let system = UpdateProcessRunner { name, executable, arguments in
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw UpdateError.processFailed(name: name, status: process.terminationStatus)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw UpdateError.processFailed(name: name, status: process.terminationStatus)
+            }
         }
     }
 }
@@ -92,14 +79,10 @@ enum UpdateInstaller {
         expectedChecksum: String,
         targetAppURL: URL,
         releaseNotes: String? = nil,
-        releaseURL: String? = nil,
-        runner: UpdateProcessRunner = .system,
-        stagingRootOverride: URL? = nil
+        releaseURL: String? = nil
     ) throws(UpdateError) -> StagedUpdate {
         let fileManager = FileManager.default
-        // Staging clears the whole root, so tests must be able to point it away from the
-        // real Application Support tree rather than deleting a user's pending update.
-        let updatesRoot = stagingRootOverride ?? stagingRootDirectory(fileManager: fileManager)
+        let updatesRoot = stagingRootDirectory(fileManager: fileManager)
         try? fileManager.removeItem(at: updatesRoot)
 
         let stageDirectory = updatesRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -123,12 +106,12 @@ enum UpdateInstaller {
             throw .checksumMismatch(expected: expectedChecksum, actual: actualChecksum)
         }
 
-        try runner.run("ditto", "/usr/bin/ditto", ["-xk", zipURL.path, extractURL.path])
+        try UpdateProcessRunner.run("ditto", "/usr/bin/ditto", ["-xk", zipURL.path, extractURL.path])
 
         guard fileManager.fileExists(atPath: newAppURL.path) else { throw .missingBundle }
         try validateBundle(at: newAppURL, expectedVersion: expectedVersion)
-        try verifyCodeSignature(at: newAppURL, runner: runner)
-        try assessWithGatekeeper(newAppURL, runner: runner)
+        try verifyCodeSignature(at: newAppURL)
+        try assessWithGatekeeper(newAppURL)
 
         return StagedUpdate(
             version: expectedVersion,
@@ -142,8 +125,7 @@ enum UpdateInstaller {
     }
 
     static func launchStagedInstall(
-        _ staged: StagedUpdate,
-        runner: UpdateProcessRunner = .system
+        _ staged: StagedUpdate
     ) throws(UpdateError) {
         let fileManager = FileManager.default
         let stagedAppURL = URL(fileURLWithPath: staged.stagedAppPath)
@@ -156,8 +138,8 @@ enum UpdateInstaller {
         try validateTargetAppURL(targetAppURL)
         guard fileManager.fileExists(atPath: stagedAppURL.path) else { throw .missingBundle }
         try validateBundle(at: stagedAppURL, expectedVersion: staged.version)
-        try verifyCodeSignature(at: stagedAppURL, runner: runner)
-        try assessWithGatekeeper(stagedAppURL, runner: runner)
+        try verifyCodeSignature(at: stagedAppURL)
+        try assessWithGatekeeper(stagedAppURL)
 
         let script = """
         #!/bin/bash
@@ -199,8 +181,8 @@ enum UpdateInstaller {
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         }
 
-        try runner.run("chmod", "/bin/chmod", ["755", scriptURL.path])
-        try runner.run(
+        try UpdateProcessRunner.run("chmod", "/bin/chmod", ["755", scriptURL.path])
+        try UpdateProcessRunner.run(
             "installer launcher",
             "/bin/sh",
             ["-c", "nohup /bin/bash \(ShellQuoting.quoted(scriptURL.path)) >\(ShellQuoting.quoted(logURL.path)) 2>&1 &"]
@@ -257,15 +239,14 @@ enum UpdateInstaller {
     }
 
     private static func verifyCodeSignature(
-        at appURL: URL,
-        runner: UpdateProcessRunner
+        at appURL: URL
     ) throws(UpdateError) {
         let requirement = [
             "anchor apple generic",
             "certificate leaf[subject.OU] = \"\(Self.expectedTeamIdentifier)\"",
             "identifier \"\(Self.expectedBundleIdentifier)\""
         ].joined(separator: " and ")
-        try runner.run(
+        try UpdateProcessRunner.run(
             "codesign",
             "/usr/bin/codesign",
             ["--verify", "--deep", "--strict", "-R=\(requirement)", appURL.path]
@@ -273,10 +254,9 @@ enum UpdateInstaller {
     }
 
     private static func assessWithGatekeeper(
-        _ appURL: URL,
-        runner: UpdateProcessRunner
+        _ appURL: URL
     ) throws(UpdateError) {
-        try runner.run(
+        try UpdateProcessRunner.run(
             "spctl",
             "/usr/sbin/spctl",
             ["-a", "-t", "execute", "-vv", appURL.path]

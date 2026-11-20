@@ -2,8 +2,7 @@ import SwiftUI
 import AppKit
 
 /// A key+modifier combination a user tried to bind, paired with whether it collides
-/// with a reserved system shortcut. Pure value so the conflict rule is easy to reason
-/// about (and test, if `HotkeyModifiers` ever moves into `YankCore`).
+/// with a reserved system shortcut.
 struct ShortcutCandidate {
     let keyCode: UInt16
     let modifiers: HotkeyModifiers

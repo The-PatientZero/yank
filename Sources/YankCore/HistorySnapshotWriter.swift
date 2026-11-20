@@ -90,7 +90,6 @@ final class HistorySnapshotWriter {
     private let debounce: Duration
     private let queue: DispatchQueue
     private let onError: (@Sendable (Error) -> Void)?
-    private let failureInjector: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)?
 
     /// The most recent snapshot's write, kept until it is dispatched to `queue`.
     private var pendingWrite: PendingWrite?
@@ -106,8 +105,7 @@ final class HistorySnapshotWriter {
         fileProtection: FileProtectionType? = nil,
         debounce: Duration = .zero,
         queueLabel: String,
-        onError: (@Sendable (Error) -> Void)? = nil,
-        failureInjector: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)? = nil
+        onError: (@Sendable (Error) -> Void)? = nil
     ) {
         self.historyURL = historyURL
         self.tombstonesURL = tombstonesURL
@@ -117,7 +115,6 @@ final class HistorySnapshotWriter {
         self.debounce = debounce
         self.queue = DispatchQueue(label: queueLabel, qos: .utility)
         self.onError = onError
-        self.failureInjector = failureInjector
     }
 
     /// Snapshot the current state and schedule a coalesced write. Calls within the debounce
@@ -194,7 +191,6 @@ final class HistorySnapshotWriter {
         let filePermissions = self.filePermissions
         let fileProtection = self.fileProtection
         let onError = self.onError
-        let failureInjector = self.failureInjector
         let transactionURL = HistorySnapshotTransaction.transactionURL(for: historyURL)
         return {
             do {
@@ -220,7 +216,6 @@ final class HistorySnapshotWriter {
                     filePermissions: filePermissions,
                     fileProtection: fileProtection
                 )
-                try failureInjector?(.transactionStaged)
 
                 // The staged envelope is the crash-safe checkpoint; the bytes below are the ones
                 // just encoded for it, so they are written as they are instead of being read
@@ -232,8 +227,7 @@ final class HistorySnapshotWriter {
                     tombstonesURL: tombstonesURL,
                     writeOptions: writeOptions.union(.atomic),
                     filePermissions: filePermissions,
-                    fileProtection: fileProtection,
-                    afterCanonicalWrite: failureInjector
+                    fileProtection: fileProtection
                 )
             } catch {
                 onError?(error)

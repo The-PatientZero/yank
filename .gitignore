@@ -64,19 +64,12 @@ Temporary Items
 fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
-fastlane/test_output
-
-# Code coverage
-*.gcda
-*.gcno
 
 # Application
 *.app
 *.dmg
 .env
 **/*.dmg
-
-build_test/
 
 *.zip
 

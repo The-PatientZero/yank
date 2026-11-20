@@ -347,11 +347,6 @@ final class SerialCaptureQueue<Value: Sendable> {
         tail = nil
     }
 
-    func waitUntilIdle() async {
-        let currentTail = tail
-        await currentTail?.value
-    }
-
     private func finish(id: UUID) {
         loaderTasks[id] = nil
         applicationTasks[id] = nil

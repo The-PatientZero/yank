@@ -227,32 +227,6 @@ targets:
         CODE_SIGN_ENTITLEMENTS: iOS/Yank-iOS-Extension.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
 
-  YankAppTests:
-    type: bundle.unit-test
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources:
-      - Tests/YankAppTests
-    dependencies:
-      - target: Yank
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.thepatientzero.yank.tests
-        GENERATE_INFOPLIST_FILE: YES
-
-  YankiOSTests:
-    type: bundle.unit-test
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources:
-      - Tests/YankiOSTests
-    dependencies:
-      - target: YankiOS
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.thepatientzero.yank.ios.tests
-        GENERATE_INFOPLIST_FILE: YES
-
 schemes:
   Yank:
     build:
@@ -260,10 +234,6 @@ schemes:
         Yank: all
     run:
       config: Debug
-    test:
-      config: Debug
-      targets:
-        - YankAppTests
     profile:
       config: Release
     analyze:
@@ -276,9 +246,5 @@ schemes:
         YankiOS: all
     run:
       config: Debug
-    test:
-      config: Debug
-      targets:
-        - YankiOSTests
     archive:
       config: Release

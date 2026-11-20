@@ -1,8 +1,7 @@
 import UIKit
 
 /// Owns the finite UIKit execution window used to finish an iOS history checkpoint when
-/// the scene leaves the active state. The injected begin/end closures keep the lifecycle
-/// rules deterministic in tests while the app delegate supplies the real UIKit boundary.
+/// the scene leaves the active state. The app delegate supplies the UIKit task boundary.
 @MainActor
 final class IOSHistoryBackgroundFlushCoordinator {
     static let taskName = "Yank history flush"
@@ -86,11 +85,10 @@ final class IOSHistoryBackgroundFlushCoordinator {
 @MainActor
 final class YankAppDelegate: NSObject, UIApplicationDelegate {
     private static let cloudContainerID = "iCloud.com.thepatientzero.yank"
-    private let syncEnabledProvider: @MainActor () -> Bool
     private let historyFlushCoordinator = IOSHistoryBackgroundFlushCoordinator()
     private let privacyCover = IOSPrivacyCover()
     /// Wired at launch from the app runtime, which needs no window, so a launch straight into a
-    /// background fetch can sync. Tests inject their own.
+    /// background fetch can sync.
     var remoteChangeHandler: (() async -> IOSSyncRunOutcome)?
     private var pendingRemoteChange: PendingRemoteChange?
 
@@ -100,23 +98,13 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
         let completion: (UIBackgroundFetchResult) -> Void
     }
 
-    override init() {
-        self.syncEnabledProvider = Self.syncEnabledFromDefaults
-        super.init()
-    }
-
-    init(syncEnabledProvider: @escaping @MainActor () -> Bool) {
-        self.syncEnabledProvider = syncEnabledProvider
-        super.init()
-    }
-
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         privacyCover.startObserving()
         remoteChangeHandler = IOSAppRuntime.shared.remoteChangeHandler
-        if syncEnabledProvider()
+        if Self.syncEnabledFromDefaults()
             && CloudContainerProvisioning.isProvisioned(for: Self.cloudContainerID) {
             application.registerForRemoteNotifications()
         }
@@ -129,7 +117,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         cancelPendingRemoteChange()
-        guard syncEnabledProvider() else {
+        guard Self.syncEnabledFromDefaults() else {
             completionHandler(.noData)
             return
         }
@@ -140,7 +128,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
                 return
             }
             guard !Task.isCancelled,
-                  self.syncEnabledProvider(),
+                  Self.syncEnabledFromDefaults(),
                   self.pendingRemoteChange?.id == requestID else {
                 self.finishRemoteChange(requestID, result: .noData)
                 return
@@ -152,7 +140,7 @@ final class YankAppDelegate: NSObject, UIApplicationDelegate {
             }
             let outcome = await remoteChangeHandler()
             guard !Task.isCancelled,
-                  self.syncEnabledProvider(),
+                  Self.syncEnabledFromDefaults(),
                   self.pendingRemoteChange?.id == requestID else {
                 self.finishRemoteChange(requestID, result: .noData)
                 return

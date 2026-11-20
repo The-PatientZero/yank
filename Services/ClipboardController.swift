@@ -30,9 +30,9 @@ final class ClipboardController {
     /// Owned here because the sync service holds it weakly, the same way it holds the store.
     private let settingsSyncBridge: SettingsSyncBridge
     /// Resolves the current iCloud account's identity ahead of constructing a sync service, so
-    /// a persisted checkpoint from a previous account can be detected and reset. Seam for tests.
+    /// a persisted checkpoint from a previous account can be detected and reset.
     private let accountIdentityProvider: () async throws -> String
-    /// Whether an iCloud account is signed in right now. Seam for tests, like the identity.
+    /// Whether an iCloud account is signed in right now.
     private let accountStatusProvider: () async throws -> CKAccountStatus
     private var cloudSyncConfigureTask: (id: UUID, task: Task<Void, Never>)?
     private var cloudSyncStartTask: (id: UUID, task: Task<Void, Never>)?
@@ -75,19 +75,15 @@ final class ClipboardController {
 
     private var store: ClipboardStore { dependencies.store }
 
-    init(
-        dependencies: ClipboardDependencies,
-        accountIdentityProvider: @escaping () async throws -> String = {
-            try await CKContainer(identifier: ClipboardController.cloudContainerID).userRecordID().recordName
-        },
-        accountStatusProvider: @escaping () async throws -> CKAccountStatus = {
-            try await CKContainer(identifier: ClipboardController.cloudContainerID).accountStatus()
-        }
-    ) {
+    init(dependencies: ClipboardDependencies) {
         self.dependencies = dependencies
         self.settingsSyncBridge = SettingsSyncBridge(settings: dependencies.settings, store: dependencies.store)
-        self.accountIdentityProvider = accountIdentityProvider
-        self.accountStatusProvider = accountStatusProvider
+        self.accountIdentityProvider = {
+            try await CKContainer(identifier: ClipboardController.cloudContainerID).userRecordID().recordName
+        }
+        self.accountStatusProvider = {
+            try await CKContainer(identifier: ClipboardController.cloudContainerID).accountStatus()
+        }
     }
 
     // `isolated deinit` hops to the main actor for cleanup (unlike `MainActor.assumeIsolated`, it

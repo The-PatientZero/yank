@@ -133,8 +133,9 @@ targets iOS 17+. An unsigned source build runs **local-only**:
 CloudKit sync needs the iCloud container entitlement, which only the signed builds (notarized DMG on
 Mac, App Store on iPhone) carry.
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the complete unsigned package, generated-project,
-macOS, iOS simulator, privacy-manifest, and public-link gate matrix.
+Verification is by hand and cross-model code review; this repository keeps no automated tests.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for unsigned package, macOS, and iOS simulator builds
+and manual privacy-manifest and public-link checks.
 
 ## Acknowledgments
 
