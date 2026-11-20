@@ -63,7 +63,7 @@ import Testing
             canonical: [kept, dropped, tombstone],
             replacing: [oldImage],
             historyLimit: 1,
-            retentionDays: 0,
+            retentionMinutes: 0 * SyncedSettings.minutesPerDay,
             now: t0
         )
 
@@ -89,7 +89,7 @@ import Testing
             canonical: [oldImage, fresh],
             replacing: [],
             historyLimit: 0,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             now: t0.addingTimeInterval(40 * 86_400)
         )
 
@@ -113,7 +113,7 @@ import Testing
             canonical: [kept, dropped],
             replacing: [],
             historyLimit: 1,
-            retentionDays: 0,
+            retentionMinutes: 0 * SyncedSettings.minutesPerDay,
             now: t0
         )
 
@@ -136,7 +136,7 @@ import Testing
             canonical: [oldProtected],
             replacing: [],
             historyLimit: 0,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             now: t0.addingTimeInterval(40 * 86_400)
         )
 
@@ -153,7 +153,7 @@ import Testing
             canonical: items,
             replacing: [],
             historyLimit: 0,
-            retentionDays: 0,
+            retentionMinutes: 0 * SyncedSettings.minutesPerDay,
             now: t0
         )
 

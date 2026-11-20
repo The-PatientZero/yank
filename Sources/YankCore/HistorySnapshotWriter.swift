@@ -128,6 +128,7 @@ final class HistorySnapshotWriter {
         preservedElements: [HeldHistoryElement] = [],
         tombstones: [UUID: Date],
         keyboardProjectionURL: URL? = nil,
+        keyboardRetentionMinutes: Int = 0,
         afterSuccessfulWrite: (@Sendable () -> Void)? = nil,
         onKeyboardProjectionError: (@Sendable (Error) -> Void)? = nil
     ) -> HistorySnapshotWriteReceipt {
@@ -142,6 +143,7 @@ final class HistorySnapshotWriter {
                 preservedElements: preservedElements,
                 tombstones: tombstones,
                 keyboardProjectionURL: keyboardProjectionURL,
+                keyboardRetentionMinutes: keyboardRetentionMinutes,
                 afterSuccessfulWrite: afterSuccessfulWrite,
                 onKeyboardProjectionError: onKeyboardProjectionError
             ),
@@ -167,12 +169,13 @@ final class HistorySnapshotWriter {
     func scheduleKeyboardProjection(
         items: [ClipboardItem],
         to url: URL,
+        retentionMinutes: Int = 0,
         onError: (@Sendable (Error) -> Void)? = nil,
         afterWrite: (@Sendable () -> Void)? = nil
     ) {
         queue.async {
             do {
-                try KeyboardHistoryProjection(items: items).write(to: url)
+                try KeyboardHistoryProjection(items: items, retentionMinutes: retentionMinutes).write(to: url)
             } catch {
                 onError?(error)
             }
@@ -185,6 +188,7 @@ final class HistorySnapshotWriter {
         preservedElements: [HeldHistoryElement],
         tombstones: [UUID: Date],
         keyboardProjectionURL: URL?,
+        keyboardRetentionMinutes: Int,
         afterSuccessfulWrite: (@Sendable () -> Void)?,
         onKeyboardProjectionError: (@Sendable (Error) -> Void)?
     ) -> @Sendable () -> Result<Void, any Error> {
@@ -242,7 +246,8 @@ final class HistorySnapshotWriter {
 
             if let keyboardProjectionURL {
                 do {
-                    try KeyboardHistoryProjection(items: items).write(to: keyboardProjectionURL)
+                    try KeyboardHistoryProjection(items: items, retentionMinutes: keyboardRetentionMinutes)
+                        .write(to: keyboardProjectionURL)
                 } catch {
                     onKeyboardProjectionError?(error)
                 }

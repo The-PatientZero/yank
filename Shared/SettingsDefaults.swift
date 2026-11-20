@@ -9,8 +9,16 @@ enum SettingsDefaults {
     /// Conservative by design — a clipboard manager shouldn't hoard.
     static let historyLimit: HistoryLimit = .essential
     /// `0` = keep forever (auto-delete off).
-    static let retentionDays = 0
-    /// Auto-delete windows offered on every platform, in the order shown. `0` is "Never".
-    static let retentionChoices = [0, 7, 30, 90]
+    static let retentionMinutes = 0
+    /// Auto-delete windows in minutes, offered on every platform in the order shown. `0` is "Never".
+    static let retentionChoices = [0, 60, 240, 720] + [1, 7, 30, 90].map { $0 * SyncedSettings.minutesPerDay }
     static let syncEnabled = false
+
+    /// The stored auto-delete window, carrying forward a whole-day choice saved by an older build.
+    static func storedRetentionMinutes(in defaults: UserDefaults) -> Int {
+        if defaults.object(forKey: SettingsKeys.retentionMinutes) != nil {
+            return defaults.integer(forKey: SettingsKeys.retentionMinutes)
+        }
+        return defaults.integer(forKey: SettingsKeys.legacyRetentionDays) * SyncedSettings.minutesPerDay
+    }
 }

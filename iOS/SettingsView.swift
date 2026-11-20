@@ -284,14 +284,14 @@ struct SettingsView: View {
         settings.setHistoryLimit(applied)
     }
 
-    private func selectRetentionDays(_ days: Int) {
+    private func selectRetentionMinutes(_ minutes: Int) {
         guard let applied = retentionConfirmation.select(
-            days,
-            current: settings.retentionDays,
+            minutes,
+            current: settings.retentionMinutes,
             items: store.items,
             syncEnabled: settings.syncEnabled
         ) else { return }
-        settings.setRetentionDays(applied)
+        settings.setRetentionMinutes(applied)
     }
 
     private func coerceMacOnlyViewMode(_ mode: ClipViewMode) {
@@ -328,15 +328,15 @@ struct SettingsView: View {
             }
             // Committed-value binding: see `RetentionConfirmation` for the cancel-path guarantee.
             Picker("Auto-delete", selection: Binding(
-                get: { settings.retentionDays },
-                set: { selectRetentionDays($0) }
+                get: { settings.retentionMinutes },
+                set: { selectRetentionMinutes($0) }
             )) {
-                ForEach(SettingsDefaults.retentionChoices, id: \.self) { days in
-                    Text(SyncCopy.retentionLabel(days: days)).tag(days)
+                ForEach(SettingsDefaults.retentionChoices, id: \.self) { minutes in
+                    Text(SyncCopy.retentionLabel(minutes: minutes)).tag(minutes)
                 }
             }
             .confirmationDialog(
-                SyncCopy.retentionReductionTitle(days: retentionConfirmation.pending?.days ?? 0),
+                SyncCopy.retentionReductionTitle(minutes: retentionConfirmation.pending?.minutes ?? 0),
                 isPresented: Binding(
                     get: { retentionConfirmation.isConfirming },
                     set: { if !$0 { retentionConfirmation.cancel() } }
@@ -344,15 +344,15 @@ struct SettingsView: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete Clips", role: .destructive) {
-                    if let days = retentionConfirmation.confirm() {
-                        settings.setRetentionDays(days)
+                    if let minutes = retentionConfirmation.confirm() {
+                        settings.setRetentionMinutes(minutes)
                     }
                 }
                 Button("Cancel", role: .cancel) { retentionConfirmation.cancel() }
             } message: {
                 if let pending = retentionConfirmation.pending {
                     Text(SyncCopy.retentionReduction(
-                        days: pending.days,
+                        minutes: pending.minutes,
                         deleting: pending.deleting,
                         syncEnabled: settings.syncEnabled
                     ))
@@ -377,7 +377,7 @@ struct SettingsView: View {
             Text("Keeps up to \(settings.historyLimit.subtitle). \(SyncCopy.historyLimitScope(syncEnabled: settings.syncEnabled)) \(SyncCopy.retentionCaption(syncEnabled: settings.syncEnabled))")
         }
         .onChange(of: settings.historyLimit) { _, _ in store.enforceRetentionAndLimit() }
-        .onChange(of: settings.retentionDays) { _, _ in
+        .onChange(of: settings.retentionMinutes) { _, _ in
             // An adopted remote window must not be overwritten by a late "Delete Clips".
             retentionConfirmation.cancel()
             store.enforceRetentionAndLimit()

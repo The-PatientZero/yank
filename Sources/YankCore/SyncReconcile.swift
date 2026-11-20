@@ -56,7 +56,7 @@ enum SyncReconcile {
         canonical: [ClipboardItem],
         replacing previousItems: [ClipboardItem],
         historyLimit: Int,
-        retentionDays: Int,
+        retentionMinutes: Int,
         now: Date
     ) -> ApplyResult {
         let (visible, tombstones) = split(canonical)
@@ -64,7 +64,7 @@ enum SyncReconcile {
             items: visible,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionMinutes: retentionMinutes,
             now: now
         )
         let cleanup = Set(ClipboardBlobCleanup.referencesRemoved(from: previousItems, keeping: enforced.items))

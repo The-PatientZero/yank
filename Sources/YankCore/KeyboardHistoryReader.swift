@@ -28,10 +28,10 @@ struct KeyboardHistoryReader: Sendable {
         self.reportSkippedPreviews = reportSkippedPreviews
     }
 
-    func load() throws -> [ClipboardItem] {
+    func load(now: Date = Date()) throws -> [ClipboardItem] {
         var items: [ClipboardItem] = []
         if FileManager.default.fileExists(atPath: projectionURL.path) {
-            items = try KeyboardHistoryProjection.load(from: projectionURL).items
+            items = try KeyboardHistoryProjection.load(from: projectionURL).items(liveAt: now)
         }
         guard let previewsURL, let inboxEntriesURL else { return items }
         return merging(pendingPreviews(in: previewsURL, entriesURL: inboxEntriesURL), into: items)

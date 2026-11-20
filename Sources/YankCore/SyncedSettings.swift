@@ -6,20 +6,29 @@ import Foundation
 public struct SyncedSettings: Equatable, Sendable {
     /// How many clips to keep.
     public let historyLimit: HistoryLimit
-    /// Auto-delete window in days (0 = keep forever). Optional because records written by
+    /// Auto-delete window in minutes (0 = keep forever). Optional because records written by
     /// builds that predate the field carry no opinion: `nil` means "unknown", and adoption
     /// must keep the local value rather than resetting anyone's retention on upgrade.
-    public let retentionDays: Int?
+    public let retentionMinutes: Int?
     /// When the local user last *chose* this value — not when it was last written to disk.
     /// A value adopted from another device carries that device's stamp verbatim, so the
     /// decision is stable no matter which device evaluates it.
     public let updatedAt: Date
 
     /// Creates settings stamped with the time the value was chosen.
-    public init(historyLimit: HistoryLimit, retentionDays: Int? = nil, updatedAt: Date) {
+    public init(historyLimit: HistoryLimit, retentionMinutes: Int? = nil, updatedAt: Date) {
         self.historyLimit = historyLimit
-        self.retentionDays = retentionDays
+        self.retentionMinutes = retentionMinutes
         self.updatedAt = updatedAt
+    }
+
+    /// Minutes in one day, the unit of the window builds before hour windows store and sync.
+    public static let minutesPerDay = 1_440
+
+    /// The whole-day window for builds that only read days. A part day rounds up, so such a build
+    /// never deletes a clip the chosen window would keep.
+    public static func legacyDays(forMinutes minutes: Int) -> Int {
+        (minutes + minutesPerDay - 1) / minutesPerDay
     }
 
     /// `false` when nobody has ever chosen this value on the local device — the state every
@@ -36,10 +45,10 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
     public private(set) var current: SyncedSettings
 
     /// Creates a value; the default `updatedAt` of `.distantPast` means nobody has chosen it.
-    public init(historyLimit: HistoryLimit, retentionDays: Int? = nil, updatedAt: Date = .distantPast) {
+    public init(historyLimit: HistoryLimit, retentionMinutes: Int? = nil, updatedAt: Date = .distantPast) {
         self.current = SyncedSettings(
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionMinutes: retentionMinutes,
             updatedAt: updatedAt
         )
     }
@@ -56,7 +65,7 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
         guard historyLimit != current.historyLimit else { return false }
         current = SyncedSettings(
             historyLimit: historyLimit,
-            retentionDays: current.retentionDays,
+            retentionMinutes: current.retentionMinutes,
             updatedAt: now
         )
         return true
@@ -64,11 +73,11 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
 
     /// A local retention choice, same stamp rule as `choose`.
     @discardableResult
-    public mutating func chooseRetentionDays(_ days: Int, at now: Date = Date()) -> Bool {
-        guard days != current.retentionDays else { return false }
+    public mutating func chooseRetentionMinutes(_ minutes: Int, at now: Date = Date()) -> Bool {
+        guard minutes != current.retentionMinutes else { return false }
         current = SyncedSettings(
             historyLimit: current.historyLimit,
-            retentionDays: days,
+            retentionMinutes: minutes,
             updatedAt: now
         )
         return true
@@ -80,7 +89,7 @@ public struct SyncedHistoryLimit: Equatable, Sendable {
     public mutating func adopt(_ remote: SyncedSettings) {
         current = SyncedSettings(
             historyLimit: remote.historyLimit,
-            retentionDays: remote.retentionDays ?? current.retentionDays,
+            retentionMinutes: remote.retentionMinutes ?? current.retentionMinutes,
             updatedAt: remote.updatedAt
         )
     }

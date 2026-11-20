@@ -174,7 +174,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// Settings the user set in-app (App-Group backed). `0` means unlimited / off.
     private var prefs: UserDefaults? { appGroupContext?.defaults }
     private var historyLimit: Int { prefs?.integer(forKey: SettingsKeys.historyLimit) ?? 0 }
-    private var retentionDays: Int { prefs?.integer(forKey: SettingsKeys.retentionDays) ?? 0 }
+    private var retentionMinutes: Int { prefs.map(SettingsDefaults.storedRetentionMinutes(in:)) ?? 0 }
     private var isSyncEnabled: Bool {
         prefs?.object(forKey: SettingsKeys.syncEnabled) as? Bool ?? SettingsDefaults.syncEnabled
     }
@@ -760,7 +760,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             items: items,
             tombstones: tombstones,
             historyLimit: historyLimit,
-            retentionDays: isSyncEnabled && !hasReadSyncedSettings ? 0 : retentionDays,
+            retentionMinutes: isSyncEnabled && !hasReadSyncedSettings ? 0 : retentionMinutes,
             now: Date(),
             agesOutUnpushedTombstones: isSyncOff
         )
@@ -889,7 +889,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             canonical: canonical,
             replacing: items,
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionMinutes: retentionMinutes,
             now: Date()
         )
         let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)
@@ -1140,6 +1140,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             preservedElements: heldElements,
             tombstones: tombstones,
             keyboardProjectionURL: projectionURL,
+            keyboardRetentionMinutes: retentionMinutes,
             afterSuccessfulWrite: reconcileBackupExclusionAfterWrite,
             onKeyboardProjectionError: { error in
                 clipStoreLog.error("Failed to publish keyboard history: \(error.localizedDescription)")
@@ -1197,6 +1198,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         historyWriter.scheduleKeyboardProjection(
             items: items,
             to: appGroupContext.keyboardProjectionURL,
+            retentionMinutes: retentionMinutes,
             onError: { [weak self] error in
                 clipStoreLog.error("Failed to publish keyboard history: \(error.localizedDescription)")
                 Task { @MainActor [weak self] in

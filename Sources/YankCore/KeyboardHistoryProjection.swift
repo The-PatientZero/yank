@@ -98,6 +98,8 @@ struct KeyboardHistoryProjection: Codable, Sendable {
     private struct Payload: Codable {
         let version: Int
         let generatedAt: Date
+        /// Absent in files written before hour windows; read as no window.
+        let retentionMinutes: Int?
         let items: [ProjectedItem]
     }
 
@@ -109,26 +111,43 @@ struct KeyboardHistoryProjection: Codable, Sendable {
 
     let version: Int
     let generatedAt: Date
+    /// The auto-delete window when the projection was written; `0` keeps every clip.
+    let retentionMinutes: Int
     private let projectedItems: [ProjectedItem]
     private var encodedByteLimit: Int
 
     var items: [ClipboardItem] { projectedItems.map(\.clipboardItem) }
 
+    /// The clips still inside the auto-delete window at `now`. The app deletes expired clips only
+    /// when it runs, so the keyboard hides them meanwhile.
+    func items(liveAt now: Date) -> [ClipboardItem] {
+        guard retentionMinutes > 0 else { return items }
+        let cutoff = now.addingTimeInterval(-Double(retentionMinutes) * 60)
+        return items.filter { $0.isProtected || $0.timestamp >= cutoff }
+    }
+
     init(
         items: [ClipboardItem],
         generatedAt: Date = Date(),
+        retentionMinutes: Int = 0,
         maxCandidates: Int = defaultMaxCandidates,
         maxItems: Int = defaultMaxItems,
         maxEncodedBytes: Int = defaultMaxEncodedBytes
     ) {
         self.version = Self.currentVersion
         self.generatedAt = generatedAt
+        self.retentionMinutes = max(0, retentionMinutes)
         self.encodedByteLimit = max(0, maxEncodedBytes)
 
         let candidateLimit = max(0, maxCandidates)
         let itemLimit = max(0, maxItems)
         let encoder = JSONEncoder()
-        let emptyPayload = Payload(version: version, generatedAt: generatedAt, items: [])
+        let emptyPayload = Payload(
+            version: version,
+            generatedAt: generatedAt,
+            retentionMinutes: self.retentionMinutes,
+            items: []
+        )
         var encodedBytes = (try? encoder.encode(emptyPayload).count) ?? Int.max
         var projected: [ProjectedItem] = []
         projected.reserveCapacity(min(candidateLimit, itemLimit, items.count))
@@ -158,6 +177,7 @@ struct KeyboardHistoryProjection: Codable, Sendable {
         }
         self.version = payload.version
         self.generatedAt = payload.generatedAt
+        self.retentionMinutes = max(0, payload.retentionMinutes ?? 0)
         self.projectedItems = payload.items
         self.encodedByteLimit = encodedByteLimit
     }
@@ -217,6 +237,11 @@ struct KeyboardHistoryProjection: Codable, Sendable {
     }
 
     private var payload: Payload {
-        Payload(version: version, generatedAt: generatedAt, items: projectedItems)
+        Payload(
+            version: version,
+            generatedAt: generatedAt,
+            retentionMinutes: retentionMinutes,
+            items: projectedItems
+        )
     }
 }

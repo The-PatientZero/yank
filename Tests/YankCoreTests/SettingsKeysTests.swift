@@ -12,6 +12,7 @@ import Testing
         #expect(SettingsKeys.density == "clipDensity")
         #expect(SettingsKeys.historyLimit == "historyLimit")
         #expect(SettingsKeys.historyLimitUpdatedAt == "historyLimitUpdatedAt")
-        #expect(SettingsKeys.retentionDays == "retentionDays")
+        #expect(SettingsKeys.retentionMinutes == "retentionMinutes")
+        #expect(SettingsKeys.legacyRetentionDays == "retentionDays")
     }
 }

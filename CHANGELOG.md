@@ -8,6 +8,10 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Added
+
+- Auto-delete can now remove clips after 1 hour, 4 hours, 12 hours or 1 day, as well as after 7, 30 or 90 days. On the Mac, a clip is removed when its time is up, even if nothing new is copied. On iPhone and iPad, the Yank keyboard hides expired clips until Yank next opens and removes them. Devices with an older version of Yank treat a window shorter than a day as 1 day.
+
 ## [1.4.1] - 2026-11-05
 
 ### Fixed

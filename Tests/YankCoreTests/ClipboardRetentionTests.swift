@@ -28,17 +28,17 @@ import Testing
     }
 
     @Test func zeroDisablesExpiry() {
-        #expect(ClipboardRetention.expiredItems(sample, olderThanDays: 0, now: now).map(\.id).isEmpty)
+        #expect(ClipboardRetention.expiredItems(sample, olderThanMinutes: 0 * SyncedSettings.minutesPerDay, now: now).map(\.id).isEmpty)
     }
 
     @Test func onlyOldUnprotectedItemExpires() {
-        let expired = ClipboardRetention.expiredItems(sample, olderThanDays: 30, now: now).map(\.id)
+        let expired = ClipboardRetention.expiredItems(sample, olderThanMinutes: 30 * SyncedSettings.minutesPerDay, now: now).map(\.id)
         #expect(expired.count == 1)
         #expect(expired.first == sample[0].id)
     }
 
     @Test func protectedItemsAreNeverExpired() {
-        let expired = Set(ClipboardRetention.expiredItems(sample, olderThanDays: 30, now: now).map(\.id))
+        let expired = Set(ClipboardRetention.expiredItems(sample, olderThanMinutes: 30 * SyncedSettings.minutesPerDay, now: now).map(\.id))
         #expect(!(expired.contains(sample[2].id)))
         #expect(!(expired.contains(sample[3].id)))
         #expect(!(expired.contains(sample[4].id)))
@@ -64,7 +64,7 @@ import Testing
 
         let expired = ClipboardRetention.expiredItems(
             [freshText, oldImage, pinnedOldImage],
-            olderThanDays: 30,
+            olderThanMinutes: 30 * SyncedSettings.minutesPerDay,
             now: now
         )
 
@@ -78,7 +78,32 @@ import Testing
     }
 
     @Test func nothingOlderThanWindow() {
-        #expect(ClipboardRetention.expiredItems(sample, olderThanDays: 90, now: now).map(\.id).isEmpty)
+        #expect(ClipboardRetention.expiredItems(sample, olderThanMinutes: 90 * SyncedSettings.minutesPerDay, now: now).map(\.id).isEmpty)
+    }
+
+    @Test func hourWindowExpiresUnprotectedClipsOlderThanIt() {
+        let recent = item(6, ageDays: 1.0 / 24)
+        let older = item(7, ageDays: 5.0 / 24)
+        let pinned = item(8, ageDays: 5.0 / 24, pinned: true)
+
+        let expired = ClipboardRetention.expiredItems([recent, older, pinned], olderThanMinutes: 240, now: now)
+
+        #expect(expired.map(\.id) == [older.id])
+    }
+
+    @Test func nextExpiryIsTheOldestUnprotectedClipPlusTheWindow() {
+        let newer = item(6, ageDays: 1.0 / 24)
+        let oldest = item(7, ageDays: 3.0 / 24)
+        let pinned = item(8, ageDays: 10, pinned: true)
+
+        let next = ClipboardRetention.nextExpiry(of: [newer, oldest, pinned], retentionMinutes: 240)
+
+        #expect(next == oldest.timestamp.addingTimeInterval(240 * 60))
+    }
+
+    @Test func nothingExpiresWithoutAWindowOrUnprotectedClips() {
+        #expect(ClipboardRetention.nextExpiry(of: sample, retentionMinutes: 0) == nil)
+        #expect(ClipboardRetention.nextExpiry(of: [item(3, ageDays: 1, pinned: true)], retentionMinutes: 60) == nil)
     }
 
     // MARK: - capped
@@ -161,7 +186,7 @@ import Testing
             items: [old, fresh],
             tombstones: [:],
             historyLimit: 0,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             now: now
         )
 
@@ -183,7 +208,7 @@ import Testing
             items: protected,
             tombstones: [:],
             historyLimit: 0,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             now: now
         )
 
@@ -215,7 +240,7 @@ import Testing
             items: [expired, capped, kept],
             tombstones: [:],
             historyLimit: 1,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             now: now
         )
 
@@ -237,7 +262,7 @@ import Testing
             items: [],
             tombstones: [clipID(80): stale, clipID(81): fresh],
             historyLimit: 0,
-            retentionDays: 0,
+            retentionMinutes: 0 * SyncedSettings.minutesPerDay,
             now: now
         )
 
@@ -252,7 +277,7 @@ import Testing
             items: items,
             tombstones: [:],
             historyLimit: 0,
-            retentionDays: 0,
+            retentionMinutes: 0 * SyncedSettings.minutesPerDay,
             now: now
         )
 

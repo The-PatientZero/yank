@@ -123,7 +123,7 @@ extension ClipboardStore {
             canonical: canonical,
             replacing: items,
             historyLimit: maxItems,
-            retentionDays: captureSettings.retentionDays,
+            retentionMinutes: captureSettings.retentionMinutes,
             now: Date()
         )
         let changed = SyncReconcile.changesPersistedState(result, items: items, tombstones: tombstones)
