@@ -50,7 +50,10 @@ enum SyncCopy {
         let scope = syncEnabled
             ? "from this device and from every device signed in to your iCloud"
             : "from this device"
-        return "This permanently deletes every clip, including pinned, bookmarked, and tagged clips, \(scope). This cannot be undone."
+        let timing = syncEnabled
+            ? " History clears on this device now. iCloud deletion finishes the next time Yank syncs, and other devices clear when they sync."
+            : ""
+        return "This permanently deletes every clip, including pinned, bookmarked, and tagged clips, \(scope). This cannot be undone.\(timing)"
     }
 
     /// "1 hour" / "7 days": the app has no string catalogs, so the plural is written by hand.

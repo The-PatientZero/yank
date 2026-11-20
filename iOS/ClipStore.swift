@@ -747,6 +747,9 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     /// Remove every clip, leaving tombstones so the clearance propagates via sync.
     func clear() {
+        if isSyncEnabled {
+            CloudKitSyncService.requestHistoryClear(containerIdentifier: IOSCloudSyncController.containerID)
+        }
         pendingDeletion = nil
         heldElements = []
         removeItems(ids: Set(items.map(\.id)))

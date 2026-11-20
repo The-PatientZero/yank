@@ -8,6 +8,10 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clear History with iCloud sync on now also deletes clips that the history limit removed from this device but kept in iCloud. If iCloud is unavailable, deletion finishes the next time Yank syncs.
+
 ### Added
 
 - Auto-delete can now remove clips after 1 hour, 4 hours, 12 hours or 1 day, as well as after 7, 30 or 90 days. On the Mac, a clip is removed when its time is up, even if nothing new is copied. On iPhone and iPad, the Yank keyboard hides expired clips until Yank next opens and removes them. Devices with an older version of Yank treat a window shorter than a day as 1 day.
