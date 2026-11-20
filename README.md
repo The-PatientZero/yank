@@ -62,6 +62,7 @@ For help or to report a problem, see [Yank Support](SUPPORT.md).
 | `⌘F` | Focus the search field |
 | `⌘1`–`⌘9` | Paste the first nine clips directly |
 | `⌥↵` | Paste as text |
+| `⇧↵` | Paste the other text version: cleaned when cleaning is off for the clip, original when it is on |
 | `Space` | Peek at the selected clip (when the search field is empty) |
 | `Tab` | Complete a tag (in the tag field or a `#tag` search) |
 | `←` / `→` | Move between tiles in Grid, Masonry and Gallery |
@@ -78,6 +79,7 @@ The Quick Picker is the compact chooser the shortcut opens. Its footer lists the
 | `↑` / `↓` | Move the selection |
 | `↵` Enter | Paste the selected clip |
 | `⌥↵` | Paste the selected clip as text (the text of a text clip, or the text recognized in an image) |
+| `⇧↵` | Paste the other text version: cleaned when cleaning is off for the clip, original when it is on |
 | `⌘↵` | Copy the selected clip without pasting; a "Copied." note confirms it |
 | `⌘1`–`⌘9` | Paste the first nine clips directly |
 | `⌘F` | Focus the search field |

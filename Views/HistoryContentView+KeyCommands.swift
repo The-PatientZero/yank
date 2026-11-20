@@ -20,6 +20,7 @@ extension HistoryContentView {
             onBackspace: clearActiveTagWithBackspace,
             onPasteIndex: pasteQuickIndex,
             onPasteAsTextKey: pasteFocusedAsText,
+            onPasteAlternateKey: pasteFocusedAlternate,
             onSpace: toggleQuickLookFromKeyboard,
             onLeft: { moveTiledFocusHorizontally(by: -1) },
             onRight: { moveTiledFocusHorizontally(by: 1) },
@@ -106,6 +107,8 @@ extension HistoryContentView {
     func clipActions(for item: ClipboardItem) -> ClipActions {
         ClipActions(
             paste: { pasteFromMenu(item) },
+            pasteAlternate: { onPasteAlternate(item) },
+            cleansByDefault: settings.cleanPastePolicy.cleansByDefault(item),
             copy: { copyFromMenu(item) },
             togglePin: { store.togglePin(for: item) },
             toggleBookmark: { store.toggleBookmark(for: item) },
@@ -255,6 +258,12 @@ extension HistoryContentView {
 
     func pasteFocusedAsText() {
         if let item = selectedItem { onPasteAsText(item) }
+    }
+
+    func pasteFocusedAlternate() {
+        guard !detail.showTagInput, selectedItems.count <= 1,
+              let item = selectedItem, item.type == .text else { return }
+        onPasteAlternate(item)
     }
 
     func toggleQuickLookFromKeyboard() -> Bool {

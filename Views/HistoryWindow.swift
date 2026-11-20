@@ -340,6 +340,9 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             onPasteAsText: { [weak self] item in
                 self?.pasteItemAsText(item)
             },
+            onPasteAlternate: { [weak self] item in
+                self?.pasteItem(item, flipDefault: true)
+            },
             onPasteMultiple: { [weak self] items in
                 self?.pasteMultiple(items)
             },
@@ -382,13 +385,15 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         reduceMotion ? 0 : YankMotion.summonOutDuration
     }
 
-    private func pasteItem(_ item: ClipboardItem) {
+    private func pasteItem(_ item: ClipboardItem, flipDefault: Bool = false) {
         let appToRestore = previousApp
         let ax = axPermission
+        let policy = settings.cleanPastePolicy
         let delay = pasteDelay
         close()
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            PasteController.paste(item, store: self.store, axPermission: ax, previousApp: appToRestore)
+            PasteController.paste(item, store: self.store, policy: policy, flipDefault: flipDefault,
+                                  axPermission: ax, previousApp: appToRestore)
         }
     }
 

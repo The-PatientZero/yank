@@ -100,6 +100,8 @@ final class SettingsManager {
     private let quickPickerPlacementNoticeDismissedKey = "quickPickerPlacementNoticeDismissed"
     private let shortcutOpenTargetKey = "shortcutOpenTarget"
     private let clickToPasteInQuickViewsKey = "clickToPasteInQuickViews"
+    private let cleanPasteModeKey = "cleanPasteMode"
+    private let cleanPasteAppsKey = "cleanPasteApps"
     private let hapticFeedbackKey = "hapticFeedback"
     private let soundEffectsKey = "soundEffects"
     private let soundEffectChoiceKey = "soundEffectChoice"
@@ -155,6 +157,13 @@ final class SettingsManager {
     var shortcutOpenTarget: ShortcutOpenTarget = .quickPicker
 
     var clickToPasteInQuickViews: Bool = true
+
+    var cleanPasteMode: CleanPasteMode = .off
+    var cleanPasteApps: Set<String> = []
+
+    var cleanPastePolicy: CleanPastePolicy {
+        CleanPastePolicy(mode: cleanPasteMode, apps: cleanPasteApps)
+    }
 
     /// Trackpad haptic feedback on key actions (copy, paste, pin, delete). On by default — it is
     /// subtle, private, and the signature premium touch; a no-op on Macs without a Force Touch
@@ -250,6 +259,8 @@ final class SettingsManager {
         )
         self.clickToPasteInQuickViews =
             defaults.object(forKey: clickToPasteInQuickViewsKey) as? Bool ?? true
+        self.cleanPasteMode = CleanPasteMode(rawValue: defaults.string(forKey: cleanPasteModeKey) ?? "") ?? .off
+        self.cleanPasteApps = Set(defaults.stringArray(forKey: cleanPasteAppsKey) ?? [])
         self.hapticFeedbackEnabled = defaults.object(forKey: hapticFeedbackKey) as? Bool ?? true
         self.soundEffectsEnabled = defaults.object(forKey: soundEffectsKey) as? Bool ?? false
         self.soundEffectChoice =
@@ -281,6 +292,8 @@ final class SettingsManager {
         defaults.set(quickPickerPlacementNoticeDismissed, forKey: quickPickerPlacementNoticeDismissedKey)
         defaults.set(shortcutOpenTarget.rawValue, forKey: shortcutOpenTargetKey)
         defaults.set(clickToPasteInQuickViews, forKey: clickToPasteInQuickViewsKey)
+        defaults.set(cleanPasteMode.rawValue, forKey: cleanPasteModeKey)
+        defaults.set(cleanPasteApps.sorted(), forKey: cleanPasteAppsKey)
         defaults.set(hapticFeedbackEnabled, forKey: hapticFeedbackKey)
         defaults.set(soundEffectsEnabled, forKey: soundEffectsKey)
         defaults.set(soundEffectChoice.rawValue, forKey: soundEffectChoiceKey)
