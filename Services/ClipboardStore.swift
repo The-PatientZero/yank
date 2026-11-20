@@ -485,6 +485,7 @@ final class ClipboardStore {
             return nil
         }
         releaseHeldElements()
+        scheduleExpirySweep(at: nextExpiry())
         let receipt = historyWriter.scheduleSave(
             items: items,
             preservedElements: heldElements,

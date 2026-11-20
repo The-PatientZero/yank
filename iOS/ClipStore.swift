@@ -184,6 +184,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
     /// is deleted on every device, including clips the user chose to keep from another device.
     private var hasReadSyncedSettings = false
 
+    /// The window the keyboard projection was last written with, so a window change that deletes
+    /// nothing still reaches the keyboard.
+    @ObservationIgnored private var projectedRetentionMinutes = 0
+
     /// With `deferHistoryLoad` the saved history is not read here: call `hydrate()` and wait for
     /// it before anything captures, syncs or shows the history. The app does this so the load
     /// does not block launch; the default keeps the synchronous load for every other caller.
@@ -764,7 +768,10 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
             now: Date(),
             agesOutUnpushedTombstones: isSyncOff
         )
-        guard result.didChange else { return }
+        guard result.didChange else {
+            if retentionMinutes != projectedRetentionMinutes { publishKeyboardProjection() }
+            return
+        }
         blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
         tombstones = result.tombstones
@@ -1135,12 +1142,13 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
         }
         releaseHeldElements()
         let projectionURL = appGroupContext?.keyboardProjectionURL
+        if projectionURL != nil { projectedRetentionMinutes = retentionMinutes }
         let receipt = historyWriter.scheduleSave(
             items: items,
             preservedElements: heldElements,
             tombstones: tombstones,
             keyboardProjectionURL: projectionURL,
-            keyboardRetentionMinutes: retentionMinutes,
+            keyboardRetentionMinutes: projectedRetentionMinutes,
             afterSuccessfulWrite: reconcileBackupExclusionAfterWrite,
             onKeyboardProjectionError: { error in
                 clipStoreLog.error("Failed to publish keyboard history: \(error.localizedDescription)")
@@ -1195,6 +1203,7 @@ final class ClipStore: SyncableStore, SyncEncryptionStatusReporting, SyncIssueRe
 
     private func publishKeyboardProjection() {
         guard let appGroupContext, let historyWriter else { return }
+        projectedRetentionMinutes = retentionMinutes
         historyWriter.scheduleKeyboardProjection(
             items: items,
             to: appGroupContext.keyboardProjectionURL,

@@ -121,6 +121,11 @@ struct KeyboardHistoryProjection: Codable, Sendable {
     /// The clips still inside the auto-delete window at `now`. The app deletes expired clips only
     /// when it runs, so the keyboard hides them meanwhile.
     func items(liveAt now: Date) -> [ClipboardItem] {
+        Self.live(items, retentionMinutes: retentionMinutes, now: now)
+    }
+
+    /// `items` without the unprotected clips older than the window at `now`.
+    static func live(_ items: [ClipboardItem], retentionMinutes: Int, now: Date) -> [ClipboardItem] {
         guard retentionMinutes > 0 else { return items }
         let cutoff = now.addingTimeInterval(-Double(retentionMinutes) * 60)
         return items.filter { $0.isProtected || $0.timestamp >= cutoff }
