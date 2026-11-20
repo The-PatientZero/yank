@@ -51,7 +51,7 @@ enum SyncCopy {
             ? "from this device and from every device signed in to your iCloud"
             : "from this device"
         let timing = syncEnabled
-            ? " History clears on this device now. iCloud deletion finishes the next time Yank syncs, and other devices clear when they sync."
+            ? " History clears on this device now. iCloud and your other devices finish clearing when they next sync; clips another device has not synced yet may remain."
             : ""
         return "This permanently deletes every clip, including pinned, bookmarked, and tagged clips, \(scope). This cannot be undone.\(timing)"
     }

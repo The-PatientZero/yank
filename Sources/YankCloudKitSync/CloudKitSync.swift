@@ -700,7 +700,12 @@ public final class CloudKitSyncService {
             guard let self else { throw CancellationError() }
             defer { if self.activePull?.id == id { self.activePull = nil } }
             if self.defaults.object(forKey: self.historyClearKey) is Date {
-                try await self.pushLocal(generation: generation)
+                do {
+                    try await self.pushLocal(generation: generation)
+                } catch {
+                    // The pull still applies the clear cutoff, so a stalled clear never blocks it.
+                    syncLog.error("history clear before pull failed: \(error.localizedDescription, privacy: .public)")
+                }
             }
             guard fetchesChanges else {
                 return try await self.backfillIfHistoryLimitRose(generation: generation)
@@ -1600,23 +1605,28 @@ public final class CloudKitSyncService {
         // independent of the clip batches, so a failing clip batch must not strand a limit the
         // user chose in the same session (nor the reverse).
         var clipError: (any Error)?
+        // A clear that cannot finish yet stays pending without holding back new clips.
         do {
-            do {
-                try await finishPendingHistoryClear(store: store, generation: generation)
-            } catch {
-                if Self.isExpiredChangeTokenError(error) || CloudKitEncryptedDataKeyReset.isReset(error) {
-                    defaults.removeObject(forKey: historyClearTokenKey)
-                }
-                if CloudKitEncryptedDataKeyReset.isReset(error) {
-                    noteEncryptedDataKeyReset(during: "history clear")
-                    try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
-                }
-                throw error
+            try await finishPendingHistoryClear(store: store, generation: generation)
+        } catch {
+            if Self.isExpiredChangeTokenError(error) || CloudKitEncryptedDataKeyReset.isReset(error) {
+                defaults.removeObject(forKey: historyClearTokenKey)
             }
+            clipError = error
+            if CloudKitEncryptedDataKeyReset.isReset(error) {
+                noteEncryptedDataKeyReset(during: "history clear")
+                do {
+                    try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                } catch {
+                    clipError = error
+                }
+            }
+        }
+        do {
             try await pushLocalClips(store: store, generation: generation)
             discardAgedAcknowledgedTombstones(from: store, generation: generation)
         } catch {
-            clipError = error
+            if clipError == nil { clipError = error }
         }
 
         if settingsReconciliationPending, canMutate(generation) {
@@ -1669,8 +1679,9 @@ public final class CloudKitSyncService {
                     try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
                     throw CloudKitSyncError.encryptedDataKeyReset
                 }
-                guard changes.failedRecords.isEmpty else {
-                    throw CloudKitSyncError.partialRecordFailures(changes.failedRecords.count)
+                let retryable = changes.failedRecords.filter { !Self.isPermanentServerRecordFailure($0.error) }
+                guard retryable.isEmpty else {
+                    throw CloudKitSyncError.partialRecordFailures(retryable.count)
                 }
                 var records: [CKRecord] = []
                 for record in changes.changedRecords where record.recordType == ClipboardCloudMapping.recordType {
@@ -1683,7 +1694,7 @@ public final class CloudKitSyncService {
                        let live = ClipboardCloudMapping.item(from: record),
                        !ClipboardMerge.deleteOutranksLiveCopy(deletedAt: requestedAt, live: live) { continue }
                     let modifiedAt = record[ClipboardCloudMapping.Key.modifiedAt] as? Date ?? requestedAt
-                    let deletedAt = existingDelete.map { max(requestedAt, modifiedAt, $0) }
+                    let deletedAt = existingDelete
                         ?? max(requestedAt, modifiedAt.addingTimeInterval(Self.historyClearClockBump))
                     let tombstone = ClipboardItem(
                         id: id, type: .text, timestamp: deletedAt,
