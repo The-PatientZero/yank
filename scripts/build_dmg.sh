@@ -64,7 +64,7 @@ APP_PATH="${EXPORT_DIR}/${APP_NAME}.app"
 # DMG staging lives outside the repo (hygiene + defense-in-depth): it holds an
 # `Applications -> /Applications` symlink, and a build artifact that symlinks the entire
 # /Applications tree into the working directory invites any tool that walks the repo to
-# wander into it. This once ballooned SwiftPM builds to tens of GB, back when YankCore used
+# wander into it. This once ballooned `swift test` to tens of GB, back when YankCore used
 # `path: "."` and llbuild followed the symlink; that root cause is fixed (YankCore now lives
 # in Sources/YankCore), but keeping the artifact out-of-tree is the right call regardless.
 # A temp dir holds the staging; the trap removes it on exit.

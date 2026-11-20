@@ -12,7 +12,8 @@ import PackageDescription
 //
 // The Xcode app target already builds this code with `SWIFT_VERSION = 6.0` and
 // complete strict concurrency. Pinning the package to the same mode makes
-// `swift build` enforce the identical concurrency rules as the shipped apps.
+// `swift test` enforce the identical concurrency rules, so the test target can't
+// pass under weaker checking than ships.
 let package = Package(
     name: "YankCore",
     platforms: [.macOS(.v14), .iOS(.v17)],
@@ -28,6 +29,16 @@ let package = Package(
         .target(
             name: "YankCloudKitSync",
             dependencies: ["YankCore"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "YankCoreTests",
+            dependencies: ["YankCore"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "YankCloudKitSyncTests",
+            dependencies: ["YankCore", "YankCloudKitSync"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]

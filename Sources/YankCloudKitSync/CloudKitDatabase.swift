@@ -14,7 +14,9 @@ public enum CloudKitSyncStartResult: Equatable, Sendable {
     case failed(message: String)
 }
 
-/// One page of zone changes. Its non-`Sendable` records stay on the main actor.
+/// Plain-data view of one page of zone changes, so the sync engine can be exercised with a
+/// fake (`CKDatabase.RecordZoneChanges` isn't constructible outside CloudKit). Its non-`Sendable`
+/// `CKRecord`s stay safe: the `CloudKitDatabase` seam is `@MainActor`, so they never cross actors.
 struct CloudKitZoneChanges {
     var changedRecords: [CKRecord]
     var deletedRecordNames: [String]
@@ -94,8 +96,9 @@ struct CloudKitRecordPresence {
     var missingRecordNames: Set<String> = []
 }
 
-/// CloudKit operations shared by the live database and manual diagnostic wrappers.
-/// `@MainActor` keeps `CKRecord` on the service's actor.
+/// The CloudKit operations `CloudKitSyncService` depends on, abstracted as a seam (DIP) so the
+/// full pull → `ClipboardMerge` → apply → push pipeline is unit-tested against an in-memory
+/// fake. `@MainActor` keeps `CKRecord` on the service's actor, avoiding `Sendable` laundering.
 @MainActor
 protocol CloudKitDatabase {
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws
@@ -149,7 +152,7 @@ extension CloudKitDatabase {
 
 /// Live CloudKit conformance. The idempotent "subscription already exists" handling and the
 /// `RecordZoneChanges` → `CloudKitZoneChanges` flattening live here so the orchestration in
-/// `CloudKitSyncService` stays transport-agnostic.
+/// `CloudKitSyncService` stays transport-agnostic and testable.
 @MainActor
 extension CKDatabase: CloudKitDatabase {
     func ensureZone(_ zoneID: CKRecordZone.ID) async throws {

@@ -11,7 +11,7 @@ struct RGBA: Equatable {
 
 /// The pure content-sniffing behind `ClipKind` — link / email / phone / code / CSS-colour
 /// detection. No SwiftUI, no I/O, so the branchy heuristics (the kind of logic that rots
-/// silently) are shared here; `ClipKind` maps the result onto its cases.
+/// silently) are unit-tested headlessly; `ClipKind` just maps the result onto its cases.
 enum ContentClassifier {
 
     /// A single http(s) URL with a host and no embedded whitespace.

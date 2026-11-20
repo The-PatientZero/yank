@@ -2,7 +2,7 @@ import Foundation
 
 /// A semantic feedback moment in Yank — *what happened*, not *how it feels*. Call sites speak in
 /// cues (`capture`, `paste`, …); the app's feedback layer maps each to a concrete tactile/audible
-/// channel. Kept in `YankCore` (no AppKit) to share cue patterns across platforms.
+/// channel. Kept in `YankCore` (no AppKit) so the cue→pattern decision is unit-tested in isolation.
 public enum HapticCue: Sendable, CaseIterable {
     /// A clip was captured into history.
     case capture
@@ -24,7 +24,7 @@ public enum HapticCue: Sendable, CaseIterable {
 }
 
 /// The tactile patterns a trackpad performer supports. Mirrors the AppKit patterns used by
-/// clipboard cues but stays dependency-free so `YankCore` never import AppKit.
+/// clipboard cues but stays dependency-free so `YankCore` (and its tests) never import AppKit.
 public enum HapticPattern: Sendable, Equatable {
     /// A general-purpose tap.
     case generic

@@ -447,7 +447,7 @@ enum IOSSyncRunOutcome: Equatable, Sendable {
 
 /// Owns the iOS CloudKit container, service, and the one account/start/refresh workflow.
 /// A SwiftUI `App` is a value, so keeping the task here gives sync-disable a stable cancellation
-/// boundary across account lookups and refreshes.
+/// boundary and lets tests resume cancellation-ignoring account lookups deterministically.
 @MainActor
 @Observable
 final class IOSCloudSyncController {
@@ -528,11 +528,15 @@ final class IOSCloudSyncController {
 
     private(set) var iCloudSignedOut = false
 
-    init(store: ClipStore, settings: IOSSettings) {
-        self.store = store
-        self.settings = settings
-        self.makeContainer = Self.makeLiveContainer
-        self.makeService = { database, store, settingsStore in
+    init(
+        store: ClipStore,
+        settings: IOSSettings,
+        makeContainer: @escaping @MainActor () -> ContainerHandle? = IOSCloudSyncController.makeLiveContainer,
+        makeService: @escaping @MainActor (
+            any CloudKitDatabase,
+            ClipStore,
+            any SyncedSettingsStore
+        ) -> CloudKitSyncService = { database, store, settingsStore in
             let service = CloudKitSyncService(
                 containerIdentifier: IOSCloudSyncController.containerID,
                 store: store,
@@ -541,16 +545,29 @@ final class IOSCloudSyncController {
             )
             service.enableEncryptionRollout(deviceID: DeviceIdentity.current, statusReporter: store)
             return service
-        }
-        self.makeRecoveryTriggers = Self.makeLiveRecoveryTriggers
-        self.registerForRemoteNotifications = {
+        },
+        makeRecoveryTriggers: @escaping @MainActor (
+            _ onNetworkRestored: @escaping @MainActor () -> Void,
+            _ onAccountChanged: @escaping @MainActor () -> Void
+        ) -> SyncRecoveryTriggers? = IOSCloudSyncController.makeLiveRecoveryTriggers,
+        registerForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.registerForRemoteNotifications()
-        }
-        self.unregisterForRemoteNotifications = {
+        },
+        unregisterForRemoteNotifications: @escaping @MainActor () -> Void = {
             UIApplication.shared.unregisterForRemoteNotifications()
-        }
-        self.transientRetryDelayNanoseconds = Self.transientRetryDelayNanoseconds
-        self.syncDefaults = .standard
+        },
+        transientRetryDelayNanoseconds: UInt64 = IOSCloudSyncController.transientRetryDelayNanoseconds,
+        syncDefaults: UserDefaults = .standard
+    ) {
+        self.store = store
+        self.settings = settings
+        self.makeContainer = makeContainer
+        self.makeService = makeService
+        self.makeRecoveryTriggers = makeRecoveryTriggers
+        self.registerForRemoteNotifications = registerForRemoteNotifications
+        self.unregisterForRemoteNotifications = unregisterForRemoteNotifications
+        self.transientRetryDelayNanoseconds = transientRetryDelayNanoseconds
+        self.syncDefaults = syncDefaults
         self.settingsBridge = IOSSyncedSettingsBridge(settings: settings, store: store)
     }
 

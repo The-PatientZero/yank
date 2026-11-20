@@ -2,7 +2,7 @@ import Foundation
 
 /// The slice of user settings the capture critical path reads, injected into
 /// `ClipboardStore`/`ClipboardWatcher` as a value instead of the `SettingsManager.shared`
-/// singleton, so capture logic only depends on this value.
+/// singleton, so capture logic is testable in isolation and only depends on this value.
 struct CaptureSettings: Equatable, Sendable {
     /// Maximum number of live clips to retain on this device. `0` disables the cap.
     var historyLimit: Int
@@ -29,7 +29,8 @@ struct CaptureSettings: Equatable, Sendable {
     }
 
     /// A no-capture-rules baseline: unbounded history, no expiry, no min length, no
-    /// exclusions. The iOS store only needs the storage-shaped fields.
+    /// exclusions. Convenient default for tests and for the iOS store, which only needs
+    /// the storage-shaped fields.
     static let unbounded = CaptureSettings(
         historyLimit: 0,
         retentionDays: 0,

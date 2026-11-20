@@ -1,7 +1,8 @@
 import Foundation
 
-/// Holds the tier awaiting confirmation. Nothing is written until `confirm()` returns the
-/// tier, so a cancelled reduction cannot change the value, its stamp, or sync it.
+/// Holds the tier awaiting confirmation while the reduction dialog is up. Extracted from
+/// `SettingsView` so the cancel path is unit-testable: nothing is written until `confirm()`
+/// returns the tier, so a cancelled reduction can't move the value, its stamp, or sync it.
 @MainActor
 @Observable
 final class HistoryLimitConfirmation {

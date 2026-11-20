@@ -10,15 +10,15 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  test-and-build:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Build Swift packages
-        run: swift build
+      - name: Run package and public repository tests
+        run: swift test
 
       - name: Install pinned XcodeGen
         run: scripts/install_xcodegen.sh
@@ -26,14 +26,14 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build macOS app (unsigned)
+      - name: Test macOS app (unsigned)
         run: >
           xcodebuild -project Yank.xcodeproj -scheme Yank -configuration Debug
           -destination 'platform=macOS'
-          CODE_SIGNING_ALLOWED=NO build
+          CODE_SIGNING_ALLOWED=NO test
 
-      - name: Build iOS app (simulator, unsigned)
+      - name: Test iOS app (simulator, unsigned)
         run: >
           xcodebuild -project Yank.xcodeproj -scheme YankiOS -configuration Debug
           -destination 'platform=iOS Simulator,name=iPhone 17'
-          CODE_SIGNING_ALLOWED=NO build
+          CODE_SIGNING_ALLOWED=NO test

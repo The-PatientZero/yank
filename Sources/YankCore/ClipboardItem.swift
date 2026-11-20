@@ -80,8 +80,8 @@ public struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     public var aiTags: [String] = []
     /// Legacy on-device title retained only to decode and sync records from older releases.
     /// Yank no longer generates, displays, or searches this metadata.
-    // TODO(v2): Remove aiTitle, the legacy title enrichment APIs, and CloudKit mapping
-    // together in the next breaking history/sync migration.
+    // TODO(v2): Remove aiTitle, the legacy title enrichment APIs, CloudKit mapping, and
+    // compatibility tests together in the next breaking history/sync migration.
     public var aiTitle: String?
     /// When on-device enrichment last ran; nil if it never has.
     public var aiEnrichedAt: Date?

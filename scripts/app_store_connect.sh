@@ -18,6 +18,13 @@ usage:
   app_store_connect.sh verify-assignment <group-id> <build-id>
   app_store_connect.sh submit-beta-review <build-id>
 
+test-only parsers:
+  app_store_connect.sh next-build-from-json <builds-response.json>
+  app_store_connect.sh build-state-from-json <prerelease-response.json> <build-number>
+  app_store_connect.sh relationship-has-build-from-json <relationship-response.json> <build-id>
+  app_store_connect.sh beta-review-state-from-json <submission-response.json>
+  app_store_connect.sh api-errors-from-json <error-response.json>
+
 Live commands require ASC_KEY_PATH, ASC_KEY_ID, and ASC_ISSUER_ID.
 EOF
     exit 64
@@ -564,6 +571,26 @@ case "$command" in
     submit-beta-review)
         [[ "$#" -eq 2 ]] || usage
         submit_beta_review "$2"
+        ;;
+    next-build-from-json)
+        [[ "$#" -eq 2 ]] || usage
+        next_build_from_json "$2"
+        ;;
+    build-state-from-json)
+        [[ "$#" -eq 3 ]] || usage
+        build_state_from_json "$2" "$3"
+        ;;
+    relationship-has-build-from-json)
+        [[ "$#" -eq 3 ]] || usage
+        relationship_has_build_from_json "$2" "$3"
+        ;;
+    api-errors-from-json)
+        [[ "$#" -eq 2 ]] || usage
+        api_errors_from_json "$2"
+        ;;
+    beta-review-state-from-json)
+        [[ "$#" -eq 2 ]] || usage
+        beta_review_state_from_json "$2"
         ;;
     *)
         usage

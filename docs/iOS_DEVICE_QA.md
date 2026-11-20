@@ -1,7 +1,7 @@
 # iOS Device QA
 
-Complete this checklist by hand on physical hardware before promoting an iOS build.
-Builds and cross-model code review do not prove App Group sharing, keyboard insertion, CloudKit
+Complete this checklist on physical hardware before promoting an iOS build. Simulator tests
+remain required, but they do not prove App Group sharing, keyboard insertion, CloudKit
 delivery, iCloud account state, memory pressure, or data protection while a device is locked.
 
 Record results in a copy of [`IOS_RELEASE_EVIDENCE_TEMPLATE.md`](IOS_RELEASE_EVIDENCE_TEMPLATE.md).

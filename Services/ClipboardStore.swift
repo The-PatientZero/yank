@@ -22,7 +22,8 @@ final class ClipboardStore {
         }
     }
 
-    /// Capture settings supplied by the composition root, which
+    /// Injected capture-relevant settings — replaces reading `SettingsManager.shared` on the
+    /// capture critical path so the store is testable in isolation. The composition root
     /// re-assigns this when the user changes the history limit or retention window.
     var captureSettings: CaptureSettings {
         didSet {

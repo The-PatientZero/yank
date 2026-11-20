@@ -1,5 +1,11 @@
 import Foundation
 
+enum HistorySnapshotTransactionPhase: Sendable {
+    case transactionStaged
+    case historyReplaced
+    case tombstonesReplaced
+}
+
 enum HistorySnapshotTransactionError: LocalizedError {
     case tombstoneEncodingFailed
     case invalidEnvelope
@@ -139,7 +145,8 @@ enum HistorySnapshotTransaction {
 
     static func replayIfPresent(
         historyURL: URL,
-        tombstonesURL: URL
+        tombstonesURL: URL,
+        afterCanonicalWrite: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)? = nil
     ) throws {
         let transactionURL = transactionURL(for: historyURL)
         guard FileManager.default.fileExists(atPath: transactionURL.path) else { return }
@@ -168,7 +175,8 @@ enum HistorySnapshotTransaction {
             tombstonesURL: tombstonesURL,
             writeOptions: validated.writeOptions,
             filePermissions: validated.filePermissions,
-            fileProtection: validated.fileProtection
+            fileProtection: validated.fileProtection,
+            afterCanonicalWrite: afterCanonicalWrite
         )
     }
 
@@ -182,7 +190,8 @@ enum HistorySnapshotTransaction {
         tombstonesURL: URL,
         writeOptions: Data.WritingOptions,
         filePermissions: Int?,
-        fileProtection: FileProtectionType?
+        fileProtection: FileProtectionType?,
+        afterCanonicalWrite: (@Sendable (HistorySnapshotTransactionPhase) throws -> Void)? = nil
     ) throws {
         try writeCanonical(
             historyData,
@@ -191,6 +200,7 @@ enum HistorySnapshotTransaction {
             filePermissions: filePermissions,
             fileProtection: fileProtection
         )
+        try afterCanonicalWrite?(.historyReplaced)
         try writeCanonical(
             tombstonesData,
             to: tombstonesURL,
@@ -198,6 +208,7 @@ enum HistorySnapshotTransaction {
             filePermissions: filePermissions,
             fileProtection: fileProtection
         )
+        try afterCanonicalWrite?(.tombstonesReplaced)
         try FileManager.default.removeItem(at: transactionURL(for: historyURL))
     }
 

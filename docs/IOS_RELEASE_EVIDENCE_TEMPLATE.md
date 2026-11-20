@@ -14,13 +14,13 @@
 | Evidence date | |
 | Overall result | Pending / Pass / Fail |
 
-## Build and manual verification
+## Automated verification
 
 | Check | Command or run URL | Result | Evidence |
 |---|---|---|---|
-| Swift packages | `swift build` | | |
-| macOS build | `xcodebuild ... -scheme Yank ... build` | | |
-| iOS simulator build | `xcodebuild ... -scheme YankiOS ... build` | | |
+| YankCore tests | `swift test` | | |
+| macOS host tests | `xcodebuild ... -scheme Yank ... test` | | |
+| iOS simulator tests | `xcodebuild ... -scheme YankiOS ... test` | | |
 | Release configuration | XcodeGen generation and archive validation | | |
 | Signed archive structure | host app, keyboard extension, and share extension bundles | | |
 | Debug diagnostic entitlements | host: CloudKit `Development`, APNs `development` | | |
@@ -28,8 +28,7 @@
 | Packaged privacy manifests | `PrivacyInfo.xcprivacy` in the host app and both extension bundles | | |
 | Archive privacy report | required-reason API declarations match packaged behavior | | |
 
-Verify behavior by hand and cross-model code review. Builds and simulator checks do not prove
-signed-archive contents, system paste permission,
+Automated and simulator results do not prove signed-archive contents, system paste permission,
 extension behavior, Universal Clipboard, CloudKit convergence, or physical-device resource use.
 
 ## Physical devices
