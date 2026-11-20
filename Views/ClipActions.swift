@@ -4,6 +4,8 @@ import SwiftUI
 /// points can never drift apart. Each closure already knows which clip(s) it acts on.
 struct ClipActions {
     let paste: () -> Void
+    let pasteAlternate: () -> Void
+    let cleansByDefault: Bool
     let copy: () -> Void
     let togglePin: () -> Void
     let toggleBookmark: () -> Void
@@ -18,6 +20,9 @@ struct ClipContextMenu: View {
 
     var body: some View {
         Button("Paste", action: actions.paste)
+        if item.type == .text {
+            Button(actions.cleansByDefault ? "Paste Original" : "Paste Cleaned", action: actions.pasteAlternate)
+        }
         Button("Copy", action: actions.copy)
         Divider()
         Button(ClipActionCopy.pin(isPinned: item.isPinned), action: actions.togglePin)

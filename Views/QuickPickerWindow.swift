@@ -179,6 +179,7 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
             presentationState: presentationState,
             onPaste: { [weak self] item in self?.paste(item) },
             onPasteAsText: { [weak self] item in self?.pasteAsText(item) },
+            onPasteAlternate: { [weak self] item in self?.paste(item, flipDefault: true) },
             onCopy: { [weak self] item in self?.copy(item) },
             onSmartPaste: { [weak self] item, transform in self?.smartPaste(item, transform) },
             onDismiss: { [weak self] in self?.close() },
@@ -248,11 +249,13 @@ final class QuickPickerWindowController: NSWindowController, NSWindowDelegate {
         close()
     }
 
-    private func paste(_ item: ClipboardItem) {
+    private func paste(_ item: ClipboardItem, flipDefault: Bool = false) {
         let appToRestore = previousApp
+        let policy = settings.cleanPastePolicy
         close()
         DispatchQueue.main.async {
-            PasteController.paste(item, store: self.store, axPermission: self.axPermission, previousApp: appToRestore)
+            PasteController.paste(item, store: self.store, policy: policy, flipDefault: flipDefault,
+                                  axPermission: self.axPermission, previousApp: appToRestore)
         }
     }
 

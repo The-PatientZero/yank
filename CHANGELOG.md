@@ -8,6 +8,10 @@ and passes that section to `gh release create --notes-file`.
 
 ## [Unreleased]
 
+### Added
+
+- Clean terminal text on the Mac removes padding, shared indentation, colour codes, frames, status markers and consecutive line-number gutters when pasting. Choose Off, From chosen apps or Always in Settings; Shift-Return and the clip menu paste the other version.
+
 ## [1.4.1] - 2026-11-05
 
 ### Fixed
