@@ -3143,7 +3143,7 @@ private final class AsyncTestGate {
 /// In-memory `CloudKitDatabase`: returns the configured zone-change pages in order, records
 /// every saved batch, and can be told to fail bring-up. `@MainActor` to match the seam.
 @MainActor
-private final class FakeCloudKitDatabase: CloudKitDatabase {
+final class FakeCloudKitDatabase: CloudKitDatabase {
     var pages: [CloudKitZoneChanges] = []
     var existingRecordNames: Set<String> = []
     var ensureZoneError: (any Error)?
@@ -3336,7 +3336,7 @@ private final class FakeSyncedSettingsStore: SyncedSettingsStore {
 
 /// In-memory `SyncableStore` capturing the reconciled snapshot the service applies.
 @MainActor
-private final class FakeSyncableStore: SyncableStore {
+final class FakeSyncableStore: SyncableStore {
     var items: [ClipboardItem] = []
     var blobURLs: [SyncBlobReference: URL] = [:]
     var onApplyReconciledDurably: (() -> Void)?
