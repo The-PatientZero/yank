@@ -1613,6 +1613,7 @@ public final class CloudKitSyncService {
                 defaults.removeObject(forKey: historyClearTokenKey)
             }
             clipError = error
+            syncLog.error("history clear failed: \(error.localizedDescription, privacy: .public)")
             if CloudKitEncryptedDataKeyReset.isReset(error) {
                 noteEncryptedDataKeyReset(during: "history clear")
                 do {
@@ -1626,7 +1627,8 @@ public final class CloudKitSyncService {
             try await pushLocalClips(store: store, generation: generation)
             discardAgedAcknowledgedTombstones(from: store, generation: generation)
         } catch {
-            if clipError == nil { clipError = error }
+            // An upload failure (for example full iCloud storage) is the one the user can act on.
+            clipError = error
         }
 
         if settingsReconciliationPending, canMutate(generation) {
