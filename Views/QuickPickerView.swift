@@ -2,12 +2,11 @@ import SwiftUI
 import Cocoa
 import Observation
 
-/// Footer key hints that give way, first to last, when the picker is too narrow. "↵ paste",
-/// "⌘↵ copy", "⌥↵ as text", "⌘1–9 quick" and "esc close" never drop.
+/// Footer hints drop in priority order while paste, copy, as-text and close stay visible.
 private enum QuickPickerHint {
-    case history, search
+    case history, search, quickPaste, alternatePaste
 
-    static let dropOrder: [QuickPickerHint] = [.search, .history]
+    static let dropOrder: [QuickPickerHint] = [.search, .history, .quickPaste, .alternatePaste]
 }
 
 struct QuickPickerView: View {
@@ -16,6 +15,7 @@ struct QuickPickerView: View {
     @Bindable var presentationState: QuickPickerPresentationState
     let onPaste: (ClipboardItem) -> Void
     let onPasteAsText: (ClipboardItem) -> Void
+    let onPasteAlternate: (ClipboardItem) -> Void
     let onCopy: (ClipboardItem) -> Void
     let onSmartPaste: (ClipboardItem, TextTransform) -> Void
     let onDismiss: () -> Void
@@ -285,7 +285,12 @@ struct QuickPickerView: View {
             if selectedItem?.canPasteAsText == true {
                 KeyHint(key: "⌥↵", label: "as text")
             }
-            KeyHint(key: "⌘1–9", label: "quick")
+            if selectedItem?.type == .text, !dropped.contains(.alternatePaste) {
+                KeyHint(key: "⇧↵", label: selectedItemCleansByDefault ? "original" : "clean")
+            }
+            if !dropped.contains(.quickPaste) {
+                KeyHint(key: "⌘1–9", label: "quick")
+            }
             KeyHint(key: "esc", label: "close")
             if !dropped.contains(.history) {
                 KeyHint(key: "⌘O", label: "history")
@@ -303,6 +308,9 @@ struct QuickPickerView: View {
             "Command Return copies"
         ]
         if selectedItem?.canPasteAsText == true { parts.append("Option Return pastes as text") }
+        if selectedItem?.type == .text {
+            parts.append(selectedItemCleansByDefault ? "Shift Return pastes original text" : "Shift Return pastes cleaned text")
+        }
         parts.append("Command 1 through 9 for quick paste")
         parts.append("Escape closes")
         parts.append("Command O opens full history")
@@ -336,6 +344,7 @@ struct QuickPickerView: View {
             onEnter: { pasteSelected() },
             onCopy: { copySelected() },
             onPasteAsText: { pasteSelectedAsText() },
+            onPasteAlternate: { pasteSelectedAlternate() },
             onEscape: onDismiss,
             onOpenFullHistory: onOpenFullHistory,
             onFocusSearch: { searchFocused = true },
@@ -361,6 +370,11 @@ struct QuickPickerView: View {
     @ViewBuilder
     private func rowMenu(for item: ClipboardItem) -> some View {
         Button("Paste") { onPaste(item) }
+        if item.type == .text {
+            Button(settings.cleanPastePolicy.cleansByDefault(item) ? "Paste Original" : "Paste Cleaned") {
+                onPasteAlternate(item)
+            }
+        }
         Button("Copy") { onCopy(item) }
         Button(item.isPinned ? "Unpin" : "Pin to top") { store.togglePin(for: item) }
         ForEach(item.aiTags.filter { !item.tags.contains($0) }, id: \.self) { tag in
@@ -419,6 +433,10 @@ struct QuickPickerView: View {
 }
 
 private extension QuickPickerView {
+    private var selectedItemCleansByDefault: Bool {
+        selectedItem.map { settings.cleanPastePolicy.cleansByDefault($0) } ?? false
+    }
+
     private func moveSelection(by delta: Int) {
         applyPendingSearch()
         selection.move(by: delta, in: items)
@@ -440,6 +458,12 @@ private extension QuickPickerView {
         applyPendingSearch()
         guard let selectedItem else { return }
         onPasteAsText(selectedItem)
+    }
+
+    private func pasteSelectedAlternate() {
+        applyPendingSearch()
+        guard let selectedItem, selectedItem.type == .text else { return }
+        onPasteAlternate(selectedItem)
     }
 
     private func pasteItem(atQuickIndex index: Int) {

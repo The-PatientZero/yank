@@ -128,6 +128,7 @@ struct QuickPickerKeyMonitor: NSViewRepresentable {
         let onEnter: () -> Void
         let onCopy: () -> Void
         let onPasteAsText: () -> Void
+        let onPasteAlternate: () -> Void
         let onEscape: () -> Void
         let onOpenFullHistory: () -> Void
         let onFocusSearch: () -> Void
@@ -180,6 +181,8 @@ struct QuickPickerKeyMonitor: NSViewRepresentable {
             handlers.onPasteAsText()
         } else if modifiers.contains(.command) {
             handlers.onCopy()
+        } else if modifiers.intersection([.shift, .control, .option, .command]) == .shift {
+            handlers.onPasteAlternate()
         } else {
             handlers.onEnter()
         }

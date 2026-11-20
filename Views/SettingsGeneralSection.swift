@@ -185,6 +185,8 @@ extension SettingsView {
                         manager.save()
                     }))
             Divider().overlay(Color.yankHairline)
+            cleanPasteSection
+            Divider().overlay(Color.yankHairline)
             toggleRow(
                 "Haptic feedback",
                 "A subtle tap on copy, paste, and pin. Needs a Force Touch trackpad.",

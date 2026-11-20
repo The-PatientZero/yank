@@ -19,6 +19,7 @@ struct GlobalKeyMonitor: NSViewRepresentable {
         let onBackspace: () -> Bool
         let onPasteIndex: (Int) -> Void
         let onPasteAsTextKey: () -> Void
+        let onPasteAlternateKey: () -> Void
         let onSpace: () -> Bool
         let onLeft: () -> Bool
         let onRight: () -> Bool
@@ -69,6 +70,8 @@ struct GlobalKeyMonitor: NSViewRepresentable {
             case 36: // Enter (⌥↵ pastes the text of a clip, or an image's recognized text, instead)
                 if event.modifierFlags.contains(.option) {
                     handlers.onPasteAsTextKey()
+                } else if modifiers.subtracting([.capsLock, .numericPad, .function]) == .shift {
+                    handlers.onPasteAlternateKey()
                 } else {
                     handlers.onEnter()
                 }

@@ -20,6 +20,7 @@ struct HistoryContentView: View {
     let onCopyMultipleToClipboard: ([ClipboardItem]) -> Void
     let onPaste: (ClipboardItem) -> Void
     let onPasteAsText: (ClipboardItem) -> Void
+    let onPasteAlternate: (ClipboardItem) -> Void
     let onPasteMultiple: ([ClipboardItem]) -> Void
     let onDismiss: () -> Void
     /// Tells the window whether the Settings screen is showing, so it can stop
@@ -104,6 +105,7 @@ struct HistoryContentView: View {
          onCopyMultipleToClipboard: @escaping ([ClipboardItem]) -> Void,
          onPaste: @escaping (ClipboardItem) -> Void,
          onPasteAsText: @escaping (ClipboardItem) -> Void,
+         onPasteAlternate: @escaping (ClipboardItem) -> Void,
          onPasteMultiple: @escaping ([ClipboardItem]) -> Void,
          onDismiss: @escaping () -> Void,
          onSettingsActiveChange: @escaping (Bool) -> Void = { _ in },
@@ -115,6 +117,7 @@ struct HistoryContentView: View {
         self.onCopyMultipleToClipboard = onCopyMultipleToClipboard
         self.onPaste = onPaste
         self.onPasteAsText = onPasteAsText
+        self.onPasteAlternate = onPasteAlternate
         self.onPasteMultiple = onPasteMultiple
         self.onDismiss = onDismiss
         self.onSettingsActiveChange = onSettingsActiveChange
