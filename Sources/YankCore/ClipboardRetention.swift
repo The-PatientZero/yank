@@ -22,17 +22,23 @@ enum ClipboardRetention {
         }
     }
 
-    /// Items that should expire because they are older than `days`.
-    /// `days <= 0` disables expiry. Protected items are never expired.
-    static func expiredItems(_ items: [ClipboardItem], olderThanDays days: Int, now: Date) -> [ClipboardItem] {
-        guard days > 0 else { return [] }
-        let cutoff = retentionCutoff(days: days, now: now)
+    /// Items that should expire because they are older than `minutes`.
+    /// `minutes <= 0` disables expiry. Protected items are never expired.
+    static func expiredItems(_ items: [ClipboardItem], olderThanMinutes minutes: Int, now: Date) -> [ClipboardItem] {
+        guard minutes > 0 else { return [] }
+        let cutoff = now.addingTimeInterval(-window(minutes: minutes))
         return items.filter { !$0.isProtected && $0.timestamp < cutoff }
     }
 
-    /// Clips captured before this moment are older than `days`.
-    private static func retentionCutoff(days: Int, now: Date) -> Date {
-        now.addingTimeInterval(-Double(days) * 86_400)
+    /// When the oldest unprotected clip passes the window, or `nil` when nothing can expire.
+    static func nextExpiry(of items: [ClipboardItem], retentionMinutes minutes: Int) -> Date? {
+        guard minutes > 0 else { return nil }
+        let oldest = items.lazy.filter { !$0.isProtected }.map(\.timestamp).min()
+        return oldest?.addingTimeInterval(window(minutes: minutes))
+    }
+
+    private static func window(minutes: Int) -> TimeInterval {
+        Double(minutes) * 60
     }
 
     /// Trim to the newest `limit` clips, always keeping protected (pinned / bookmarked
@@ -100,7 +106,7 @@ enum ClipboardRetention {
         items: [ClipboardItem],
         tombstones: [UUID: Date],
         historyLimit: Int,
-        retentionDays: Int,
+        retentionMinutes: Int,
         now: Date,
         agesOutUnpushedTombstones: Bool = false
     ) -> EnforcementResult {
@@ -115,8 +121,8 @@ enum ClipboardRetention {
         let prunedCount = tombstones.count - nextTombstones.count
         var expired: [ClipboardItem] = []
 
-        if retentionDays > 0 {
-            expired = expiredItems(nextItems, olderThanDays: retentionDays, now: now)
+        if retentionMinutes > 0 {
+            expired = expiredItems(nextItems, olderThanMinutes: retentionMinutes, now: now)
             if !expired.isEmpty {
                 let result = ClipboardMutations.removeItems(
                     ids: Set(expired.map(\.id)),

@@ -71,7 +71,7 @@ struct IOSSyncedSettingsBridgeTests {
         // so the adopted value matches the remote everywhere except that preserved field.
         #expect(bridge.syncedSettings?.historyLimit == remote.historyLimit)
         #expect(bridge.syncedSettings?.updatedAt == remote.updatedAt)
-        #expect(bridge.syncedSettings?.retentionDays == settings.retentionDays)
+        #expect(bridge.syncedSettings?.retentionMinutes == settings.retentionMinutes)
     }
 
     @Test("Without the App Group there is no durable opinion to weigh")

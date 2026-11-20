@@ -64,56 +64,56 @@ import Testing
     }
 
     @Test func choosingRetentionStampsTheMomentAndKeepsTheLimit() {
-        var limit = SyncedHistoryLimit(historyLimit: .deep, retentionDays: 0)
+        var limit = SyncedHistoryLimit(historyLimit: .deep, retentionMinutes: 0 * SyncedSettings.minutesPerDay)
         let now = Date(timeIntervalSinceReferenceDate: 500)
 
-        let didChange = limit.chooseRetentionDays(30, at: now)
+        let didChange = limit.chooseRetentionMinutes(30 * SyncedSettings.minutesPerDay, at: now)
 
         #expect(didChange)
         #expect(limit.historyLimit == .deep)
-        #expect(limit.current.retentionDays == 30)
+        #expect(limit.current.retentionMinutes == 30 * SyncedSettings.minutesPerDay)
         #expect(limit.updatedAt == now)
     }
 
     @Test func rechoosingTheSameRetentionChangesNothing() {
         var limit = SyncedHistoryLimit(
             historyLimit: .deep,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             updatedAt: Date(timeIntervalSinceReferenceDate: 100)
         )
 
-        let didChange = limit.chooseRetentionDays(30, at: Date(timeIntervalSinceReferenceDate: 900))
+        let didChange = limit.chooseRetentionMinutes(30 * SyncedSettings.minutesPerDay, at: Date(timeIntervalSinceReferenceDate: 900))
 
         #expect(!didChange)
         #expect(limit.updatedAt == Date(timeIntervalSinceReferenceDate: 100))
     }
 
     @Test func choosingTheLimitPreservesTheRetentionChoice() {
-        var limit = SyncedHistoryLimit(historyLimit: .essential, retentionDays: 7)
+        var limit = SyncedHistoryLimit(historyLimit: .essential, retentionMinutes: 7 * SyncedSettings.minutesPerDay)
 
         limit.choose(.unlimited, at: Date(timeIntervalSinceReferenceDate: 500))
 
-        #expect(limit.current.retentionDays == 7)
+        #expect(limit.current.retentionMinutes == 7 * SyncedSettings.minutesPerDay)
     }
 
     @Test func adoptingCarriesTheRemoteRetention() {
-        var limit = SyncedHistoryLimit(historyLimit: .essential, retentionDays: 0)
+        var limit = SyncedHistoryLimit(historyLimit: .essential, retentionMinutes: 0 * SyncedSettings.minutesPerDay)
         let remote = SyncedSettings(
             historyLimit: .unlimited,
-            retentionDays: 90,
+            retentionMinutes: 90 * SyncedSettings.minutesPerDay,
             updatedAt: Date(timeIntervalSinceReferenceDate: 400)
         )
 
         limit.adopt(remote)
 
-        #expect(limit.current.retentionDays == 90)
+        #expect(limit.current.retentionMinutes == 90 * SyncedSettings.minutesPerDay)
         #expect(limit.updatedAt == remote.updatedAt)
     }
 
     /// A record written by a build that predates retention sync has no opinion on it, and
     /// adopting one must not reset the window this device already enforces.
     @Test func adoptingARecordWithoutRetentionKeepsTheLocalWindow() {
-        var limit = SyncedHistoryLimit(historyLimit: .essential, retentionDays: 7)
+        var limit = SyncedHistoryLimit(historyLimit: .essential, retentionMinutes: 7 * SyncedSettings.minutesPerDay)
         let legacyRemote = SyncedSettings(
             historyLimit: .unlimited,
             updatedAt: Date(timeIntervalSinceReferenceDate: 400)
@@ -122,7 +122,7 @@ import Testing
         limit.adopt(legacyRemote)
 
         #expect(limit.historyLimit == .unlimited)
-        #expect(limit.current.retentionDays == 7)
+        #expect(limit.current.retentionMinutes == 7 * SyncedSettings.minutesPerDay)
     }
 
     @Test func wasChosenTracksTheStampNotTheValue() {

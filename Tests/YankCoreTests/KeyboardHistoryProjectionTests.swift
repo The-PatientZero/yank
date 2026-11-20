@@ -35,6 +35,30 @@ import Testing
         #expect(decoded.items.first?.textContent == "hello")
     }
 
+    @Test func hidesClipsPastTheWindowButKeepsProtectedOnes() throws {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let fresh = ClipboardItem(type: .text, timestamp: now.addingTimeInterval(-30 * 60), textContent: "fresh")
+        let stale = ClipboardItem(type: .text, timestamp: now.addingTimeInterval(-2 * 3_600), textContent: "stale")
+        let pinned = ClipboardItem(
+            type: .text,
+            timestamp: now.addingTimeInterval(-2 * 3_600),
+            textContent: "pinned",
+            isPinned: true
+        )
+        let projection = KeyboardHistoryProjection(items: [fresh, stale, pinned], retentionMinutes: 60)
+
+        let decoded = try KeyboardHistoryProjection.decode(projection.encoded())
+
+        #expect(decoded.items(liveAt: now).map(\.id) == [fresh.id, pinned.id])
+    }
+
+    @Test func aProjectionWithoutAWindowShowsEveryClip() throws {
+        let json = #"{"version":1,"generatedAt":0,"items":[]}"#
+        let decoded = try KeyboardHistoryProjection.decode(Data(json.utf8))
+
+        #expect(decoded.retentionMinutes == 0)
+    }
+
     @Test func stripsHeavyMetadataFromTheKeyboardDTO() throws {
         let metadata = "search-marker-" + String(repeating: "x", count: 100_000)
         let item = ClipboardItem(

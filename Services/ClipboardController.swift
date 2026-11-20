@@ -730,6 +730,9 @@ final class ClipboardController {
 
         if alert.runModal() == .alertSecondButtonReturn {
             pasteSequenceCoordinator?.discard()
+            if syncEnabled {
+                CloudKitSyncService.requestHistoryClear(containerIdentifier: Self.cloudContainerID)
+            }
             store.clear()
         }
     }

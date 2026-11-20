@@ -7,8 +7,8 @@ struct CaptureSettings: Equatable, Sendable {
     /// Maximum number of live clips to retain on this device. `0` disables the cap.
     var historyLimit: Int
 
-    /// Auto-delete unprotected clips older than this many days. `0` keeps them forever.
-    var retentionDays: Int
+    /// Auto-delete unprotected clips older than this many minutes. `0` keeps them forever.
+    var retentionMinutes: Int
 
     /// Copies whose trimmed length is below this are never captured. `0` disables the rule.
     var minCaptureLength: Int
@@ -18,12 +18,12 @@ struct CaptureSettings: Equatable, Sendable {
 
     init(
         historyLimit: Int,
-        retentionDays: Int,
+        retentionMinutes: Int,
         minCaptureLength: Int,
         excludedBundleIDs: Set<String>
     ) {
         self.historyLimit = historyLimit
-        self.retentionDays = retentionDays
+        self.retentionMinutes = retentionMinutes
         self.minCaptureLength = minCaptureLength
         self.excludedBundleIDs = excludedBundleIDs
     }
@@ -33,7 +33,7 @@ struct CaptureSettings: Equatable, Sendable {
     /// the storage-shaped fields.
     static let unbounded = CaptureSettings(
         historyLimit: 0,
-        retentionDays: 0,
+        retentionMinutes: 0,
         minCaptureLength: 0,
         excludedBundleIDs: []
     )

@@ -84,7 +84,7 @@ final class SettingsManager {
     private let defaults = UserDefaults.standard
     
     // macOS-only keys. The cross-platform keys (themeID / clipViewMode / clipDensity /
-    // historyLimit / retentionDays) live in the shared `SettingsKeys`.
+    // historyLimit / retentionMinutes) live in the shared `SettingsKeys`.
     private let hotkeyModifiersKey = "hotkeyModifiers"
     private let hotkeyKeyCodeKey = "hotkeyKeyCode"
     private let excludedBundleIDsKey = "excludedBundleIDs"
@@ -128,9 +128,9 @@ final class SettingsManager {
     /// Copies whose trimmed length is below this are never captured (0 = off).
     var minCaptureLength: Int = 0
 
-    /// Auto-delete window in days (0 = keep forever). Synced: expiry mints tombstones that
+    /// Auto-delete window in minutes (0 = keep forever). Synced: expiry mints tombstones that
     /// propagate, so the window must be one account-wide choice.
-    var retentionDays: Int { syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays }
+    var retentionMinutes: Int { syncedHistoryLimit.current.retentionMinutes ?? SettingsDefaults.retentionMinutes }
 
     /// Whether the menu-bar icon is shown (the global hotkey works regardless).
     var showMenuBarIcon: Bool = true
@@ -195,7 +195,7 @@ final class SettingsManager {
     var captureSettings: CaptureSettings {
         CaptureSettings(
             historyLimit: historyLimit.rawValue,
-            retentionDays: retentionDays,
+            retentionMinutes: retentionMinutes,
             minCaptureLength: minCaptureLength,
             excludedBundleIDs: excludedBundleIDs
         )
@@ -227,7 +227,7 @@ final class SettingsManager {
         let rawLimit = defaults.integer(forKey: SettingsKeys.historyLimit)
         self.syncedHistoryLimit = SyncedHistoryLimit(
             historyLimit: HistoryLimit(rawValue: rawLimit) ?? SettingsDefaults.historyLimit,
-            retentionDays: defaults.integer(forKey: SettingsKeys.retentionDays),
+            retentionMinutes: SettingsDefaults.storedRetentionMinutes(in: defaults),
             updatedAt: defaults.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
                 ?? .distantPast
         )
@@ -280,7 +280,7 @@ final class SettingsManager {
         defaults.set(historyLimitUpdatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         defaults.set(Array(excludedBundleIDs).sorted(), forKey: excludedBundleIDsKey)
         defaults.set(minCaptureLength, forKey: minCaptureLengthKey)
-        defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
+        defaults.set(retentionMinutes, forKey: SettingsKeys.retentionMinutes)
         defaults.set(showMenuBarIcon, forKey: showMenuBarIconKey)
         defaults.set(menuBarIconStyle.rawValue, forKey: menuBarIconStyleKey)
         defaults.set(capturePaused, forKey: capturePausedKey)
@@ -347,8 +347,8 @@ final class SettingsManager {
     }
 
     /// A user-driven retention change, announced like the history limit.
-    func setRetentionDays(_ value: Int) {
-        guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
+    func setRetentionMinutes(_ value: Int) {
+        guard syncedHistoryLimit.chooseRetentionMinutes(value) else { return }
         save()
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }

@@ -24,10 +24,10 @@ struct SyncedSettingsMappingTests {
         #expect(SyncedSettingsCloudMapping.settings(from: record) == settings)
     }
 
-    @Test func retentionDaysRoundTripsWithTheRecord() throws {
+    @Test func retentionRoundTripsWithTheRecord() throws {
         let settings = SyncedSettings(
             historyLimit: .deep,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             updatedAt: Date(timeIntervalSinceReferenceDate: 1_234)
         )
 
@@ -35,6 +35,49 @@ struct SyncedSettingsMappingTests {
 
         #expect(record["retentionDays"] as? Int == 30)
         #expect(SyncedSettingsCloudMapping.settings(from: record) == settings)
+    }
+
+    /// A part-day window rounds up for builds that only read days, so they never delete more.
+    @Test func anHourWindowWritesOneDayForOlderBuilds() throws {
+        let settings = SyncedSettings(
+            historyLimit: .deep,
+            retentionMinutes: 240,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 1_234)
+        )
+
+        let record = SyncedSettingsCloudMapping.record(for: settings, in: zoneID)
+
+        #expect(record["retentionDays"] as? Int == 1)
+        #expect(record["retentionMinutes"] as? Int == 240)
+        #expect(SyncedSettingsCloudMapping.settings(from: record) == settings)
+    }
+
+    /// An older build that later chooses a day window rewrites only the days field; its newer
+    /// choice wins over the leftover minutes.
+    @Test func minutesThatDisagreeWithDaysAreIgnored() throws {
+        let hours = SyncedSettings(
+            historyLimit: .deep,
+            retentionMinutes: 240,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 1_234)
+        )
+        let record = SyncedSettingsCloudMapping.record(for: hours, in: zoneID)
+        record["retentionDays"] = 30
+
+        let settings = try #require(SyncedSettingsCloudMapping.settings(from: record))
+        #expect(settings.retentionMinutes == 30 * SyncedSettings.minutesPerDay)
+    }
+
+    @Test func aRecordFromAnOlderBuildReadsItsDaysAsMinutes() throws {
+        let record = CKRecord(
+            recordType: "SyncedSettings",
+            recordID: SyncedSettingsCloudMapping.recordID(in: zoneID)
+        )
+        record["historyLimit"] = 500
+        record["retentionDays"] = 7
+        record["updatedAt"] = Date(timeIntervalSinceReferenceDate: 1_234)
+
+        let settings = try #require(SyncedSettingsCloudMapping.settings(from: record))
+        #expect(settings.retentionMinutes == 7 * SyncedSettings.minutesPerDay)
     }
 
     /// Records written before retention synced carry no opinion — the read degrades to `nil`
@@ -48,7 +91,7 @@ struct SyncedSettingsMappingTests {
         record["updatedAt"] = Date(timeIntervalSinceReferenceDate: 1_234)
 
         let settings = try #require(SyncedSettingsCloudMapping.settings(from: record))
-        #expect(settings.retentionDays == nil)
+        #expect(settings.retentionMinutes == nil)
     }
 
     @Test func aNegativeRetentionValueReadsAsNoOpinion() throws {
@@ -61,7 +104,7 @@ struct SyncedSettingsMappingTests {
         record["updatedAt"] = Date(timeIntervalSinceReferenceDate: 1_234)
 
         let settings = try #require(SyncedSettingsCloudMapping.settings(from: record))
-        #expect(settings.retentionDays == nil)
+        #expect(settings.retentionMinutes == nil)
     }
 
     /// Publishing through a fetched record must not erase a retention value another build
@@ -69,7 +112,7 @@ struct SyncedSettingsMappingTests {
     @Test func applyWithoutARetentionOpinionLeavesTheStoredValueAlone() throws {
         let withRetention = SyncedSettings(
             historyLimit: .essential,
-            retentionDays: 30,
+            retentionMinutes: 30 * SyncedSettings.minutesPerDay,
             updatedAt: Date(timeIntervalSinceReferenceDate: 100)
         )
         let withoutOpinion = SyncedSettings(

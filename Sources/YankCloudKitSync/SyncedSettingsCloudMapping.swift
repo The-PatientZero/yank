@@ -13,7 +13,9 @@ enum SyncedSettingsCloudMapping {
 
     enum Key {
         static let historyLimit = "historyLimit"
+        /// Whole days, still written for builds that only know days.
         static let retentionDays = "retentionDays"
+        static let retentionMinutes = "retentionMinutes"
         static let updatedAt = "updatedAt"
     }
 
@@ -33,8 +35,9 @@ enum SyncedSettingsCloudMapping {
         record[Key.historyLimit] = settings.historyLimit.rawValue
         // Written only when this device has an opinion, so a publish routed through an
         // existing server record can never erase a retention value another build wrote.
-        if let retentionDays = settings.retentionDays {
-            record[Key.retentionDays] = retentionDays
+        if let minutes = settings.retentionMinutes {
+            record[Key.retentionDays] = SyncedSettings.legacyDays(forMinutes: minutes)
+            record[Key.retentionMinutes] = minutes
         }
         record[Key.updatedAt] = settings.updatedAt
     }
@@ -49,12 +52,24 @@ enum SyncedSettingsCloudMapping {
               let updatedAt = record[Key.updatedAt] as? Date else { return nil }
         // A missing or nonsensical retention value degrades to "no opinion" rather than
         // rejecting the record: the limit is still usable, and adoption keeps local retention.
-        let retentionDays = (record[Key.retentionDays] as? Int).flatMap { $0 >= 0 ? $0 : nil }
         return SyncedSettings(
             historyLimit: historyLimit,
-            retentionDays: retentionDays,
+            retentionMinutes: retentionMinutes(from: record),
             updatedAt: updatedAt
         )
+    }
+
+    /// The minutes value is trusted only while it still matches the days value. A build that only
+    /// knows days rewrites days alone, and its newer choice must win over the leftover minutes.
+    private static func retentionMinutes(from record: CKRecord) -> Int? {
+        guard let days = (record[Key.retentionDays] as? Int).flatMap({ $0 >= 0 ? $0 : nil }) else {
+            return nil
+        }
+        if let minutes = record[Key.retentionMinutes] as? Int, minutes >= 0,
+           SyncedSettings.legacyDays(forMinutes: minutes) == days {
+            return minutes
+        }
+        return days * SyncedSettings.minutesPerDay
     }
 
     /// What this build can read off a settings record. The stamp is read *independently* of the

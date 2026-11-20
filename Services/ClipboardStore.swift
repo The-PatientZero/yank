@@ -120,6 +120,10 @@ final class ClipboardStore {
     /// Explicit triggers (settings change, retention notification, launch) bypass the gate.
     @ObservationIgnored private var lastExpirySweep: Date = .distantPast
 
+    /// Wakes the store when the oldest unprotected clip passes the window, so a clip expires on
+    /// time even when nothing is copied.
+    @ObservationIgnored private var expirySweepTask: Task<Void, Never>?
+
     /// While true, age retention waits until sync has read the synced settings once in this
     /// process. This device's own retention window can be stale: a clip expired under it is
     /// deleted on every device, including clips the user chose to keep from another device.
@@ -130,9 +134,8 @@ final class ClipboardStore {
         }
     }
 
-    /// Minimum spacing between capture-path expiry sweeps. Retention is a day-granularity
-    /// policy, so a one-minute floor is imperceptible while collapsing a burst of captures
-    /// from N linear passes down to one.
+    /// Minimum spacing between expiry sweeps. The shortest window is an hour, so a one-minute
+    /// floor is imperceptible while collapsing a burst of captures from N linear passes down to one.
     private static let expirySweepInterval: TimeInterval = 60
 
     /// Coalesces a burst of mutations (auto-capture, pin/tag) into a single trailing write
@@ -413,10 +416,11 @@ final class ClipboardStore {
             items: items,
             tombstones: tombstones,
             historyLimit: maxItems,
-            retentionDays: isRetentionHeldForSettings ? 0 : captureSettings.retentionDays,
+            retentionMinutes: isRetentionHeldForSettings ? 0 : captureSettings.retentionMinutes,
             now: now,
             agesOutUnpushedTombstones: isSyncOff
         )
+        defer { scheduleExpirySweep(at: nextExpiry()) }
         guard result.didChange else { return false }
         blobDeletionsAwaitingSnapshot.formUnion(result.blobReferencesToDelete)
         items = result.items
@@ -424,9 +428,30 @@ final class ClipboardStore {
         return true
     }
 
+    private func nextExpiry() -> Date? {
+        guard !isRetentionHeldForSettings else { return nil }
+        return ClipboardRetention.nextExpiry(of: items, retentionMinutes: captureSettings.retentionMinutes)
+    }
+
+    private func scheduleExpirySweep(at date: Date?) {
+        expirySweepTask?.cancel()
+        expirySweepTask = nil
+        guard let date else { return }
+        let delay = max(date.timeIntervalSinceNow, Self.expirySweepInterval)
+        expirySweepTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.expirySweepTask = nil
+            self.pruneExpired()
+        }
+    }
+
     @discardableResult
     private func sweepExpiredOnCapture(now: Date) -> Bool {
         if now.timeIntervalSince(lastExpirySweep) < Self.expirySweepInterval {
+            if expirySweepTask == nil {
+                scheduleExpirySweep(at: lastExpirySweep.addingTimeInterval(Self.expirySweepInterval))
+            }
             return false
         }
         lastExpirySweep = now
@@ -460,6 +485,7 @@ final class ClipboardStore {
             return nil
         }
         releaseHeldElements()
+        scheduleExpirySweep(at: nextExpiry())
         let receipt = historyWriter.scheduleSave(
             items: items,
             preservedElements: heldElements,

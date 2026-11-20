@@ -106,6 +106,11 @@ public final class CloudKitSyncService {
     let encryptedCopyBackfillKey: String
     private let historyCoverageKey: String
     private let localOnlyClipsKey: String
+    private let historyClearKey: String
+    private let historyClearTokenKey: String
+    private var historyClearCutoff: Date?
+    private static let historyClearPageSize = 100
+    private static let historyClearClockBump: TimeInterval = 0.010
     private let pushDebounceNanoseconds: UInt64
     private let pushRetryDelaysNanoseconds: [UInt64]
     private let beforeReceiptPersistence: (() throws -> Void)?
@@ -195,8 +200,8 @@ public final class CloudKitSyncService {
         #endif
     }
 
-    /// Discards every persisted sync checkpoint (token, receipts, watermark, quarantine, epoch, history coverage)
-    /// for a container. They describe the previous iCloud account's zone, and keeping them would
+    /// Discards every persisted sync checkpoint and pending history clear for a container.
+    /// They describe the previous iCloud account's zone, and keeping them would
     /// suppress re-uploading the library into a new one. Call before constructing a fresh service.
     public static func resetPersistedState(
         containerIdentifier: String,
@@ -210,7 +215,18 @@ public final class CloudKitSyncService {
         defaults.removeObject(forKey: "cloudkit.encryptedCopyBackfill.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.historyCoverage.\(containerIdentifier)")
         defaults.removeObject(forKey: "cloudkit.localOnlyClips.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.historyClear.\(containerIdentifier)")
+        defaults.removeObject(forKey: "cloudkit.historyClearToken.\(containerIdentifier)")
         EncryptionRolloutState.reset(containerIdentifier: containerIdentifier, defaults: defaults)
+    }
+
+    /// Queues a whole-history deletion for the next sync, including clips held only in iCloud.
+    public static func requestHistoryClear(
+        containerIdentifier: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.removeObject(forKey: "cloudkit.historyClearToken.\(containerIdentifier)")
+        defaults.set(Date(), forKey: "cloudkit.historyClear.\(containerIdentifier)")
     }
 
     /// Forgets only where the last pull stopped, so the next pull reads the zone from the start.
@@ -251,6 +267,8 @@ public final class CloudKitSyncService {
         self.encryptedCopyBackfillKey = "cloudkit.encryptedCopyBackfill.\(containerIdentifier)"
         self.historyCoverageKey = "cloudkit.historyCoverage.\(containerIdentifier)"
         self.localOnlyClipsKey = "cloudkit.localOnlyClips.\(containerIdentifier)"
+        self.historyClearKey = "cloudkit.historyClear.\(containerIdentifier)"
+        self.historyClearTokenKey = "cloudkit.historyClearToken.\(containerIdentifier)"
         self.pushDebounceNanoseconds = pushDebounceNanoseconds
         self.pushRetryDelaysNanoseconds = pushRetryDelaysNanoseconds
         self.beforeReceiptPersistence = beforeReceiptPersistence
@@ -681,6 +699,14 @@ public final class CloudKitSyncService {
         let task = Task { @MainActor [weak self] () throws -> Int in
             guard let self else { throw CancellationError() }
             defer { if self.activePull?.id == id { self.activePull = nil } }
+            if self.defaults.object(forKey: self.historyClearKey) is Date {
+                do {
+                    try await self.pushLocal(generation: generation)
+                } catch {
+                    // The pull still applies the clear cutoff, so a stalled clear never blocks it.
+                    syncLog.error("history clear before pull failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             guard fetchesChanges else {
                 return try await self.backfillIfHistoryLimitRose(generation: generation)
             }
@@ -934,6 +960,8 @@ public final class CloudKitSyncService {
         generation: UInt64
     ) async throws -> Int {
         try requireActive(generation)
+        await awaitDurablePullApply()
+        try requireActive(generation)
         // Before the snapshot and the apply, so the cap below is the adopted limit rather
         // than this device's old one. Nothing suspends between here and the apply. Adoption is
         // idempotent against the local stamp, so replaying this page after a later failure
@@ -956,14 +984,14 @@ public final class CloudKitSyncService {
                 throw CloudKitSyncError.missingBlobAsset(bypassed.blob.filename)
             }
         }
-        let merged = ClipboardMerge.reconcile(
+        let merged = applyingHistoryClear(to: ClipboardMerge.reconcile(
             Self.droppingHealedBlankItems(
                 from: local,
                 remote: accumulation.remote,
                 healable: accumulation.healableItemIDs
             ),
             accumulation.remote
-        )
+        ))
         // The same text copied on two devices before they synced is one clip. Only clips new
         // to this device qualify, and never in a pull that started from nothing, so history
         // already on a device and a full re-download are left as they are.
@@ -1577,10 +1605,29 @@ public final class CloudKitSyncService {
         // independent of the clip batches, so a failing clip batch must not strand a limit the
         // user chose in the same session (nor the reverse).
         var clipError: (any Error)?
+        // A clear that cannot finish yet stays pending without holding back new clips.
+        do {
+            try await finishPendingHistoryClear(store: store, generation: generation)
+        } catch {
+            if Self.isExpiredChangeTokenError(error) || CloudKitEncryptedDataKeyReset.isReset(error) {
+                defaults.removeObject(forKey: historyClearTokenKey)
+            }
+            clipError = error
+            syncLog.error("history clear failed: \(error.localizedDescription, privacy: .public)")
+            if CloudKitEncryptedDataKeyReset.isReset(error) {
+                noteEncryptedDataKeyReset(during: "history clear")
+                do {
+                    try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                } catch {
+                    clipError = error
+                }
+            }
+        }
         do {
             try await pushLocalClips(store: store, generation: generation)
             discardAgedAcknowledgedTombstones(from: store, generation: generation)
         } catch {
+            // An upload failure (for example full iCloud storage) is the one the user can act on.
             clipError = error
         }
 
@@ -1594,6 +1641,114 @@ public final class CloudKitSyncService {
         }
 
         if let clipError { throw clipError }
+    }
+
+    private func applyingHistoryClear(to items: [ClipboardItem]) -> [ClipboardItem] {
+        let pending = defaults.object(forKey: historyClearKey) as? Date
+        guard let cutoff = [pending, historyClearCutoff].compactMap({ $0 }).max() else { return items }
+        return items.map { item in
+            guard !item.isDeleted,
+                  ClipboardMerge.deleteOutranksLiveCopy(deletedAt: cutoff, live: item) else { return item }
+            let deletedAt = max(cutoff, item.modifiedAt.addingTimeInterval(Self.historyClearClockBump))
+            return ClipboardItem(
+                id: item.id, type: .text, timestamp: deletedAt,
+                modifiedAt: deletedAt, deletedAt: deletedAt
+            )
+        }
+    }
+
+    private func finishPendingHistoryClear(store: SyncableStore, generation: UInt64) async throws {
+        while let requestedAt = defaults.object(forKey: historyClearKey) as? Date {
+            historyClearCutoff = max(historyClearCutoff ?? requestedAt, requestedAt)
+            try requireActive(generation)
+            try await reconcileSettings(generation: generation)
+            try requireActive(generation)
+            await awaitDurablePullApply()
+            try requireActive(generation)
+            try await applyPulledStateDurably(applyingHistoryClear(to: store.itemsForSync()), to: store)
+            try requireActive(generation)
+            var token = Self.loadToken(from: defaults, key: historyClearTokenKey)
+            var moreComing = true
+            while moreComing {
+                // Full records let the existing tombstone writer erase loaded content and assets.
+                let changes = try await database.fetchZoneChanges(
+                    zoneID, since: token, desiredKeys: nil, resultsLimit: Self.historyClearPageSize
+                )
+                try requireActive(generation)
+                if changes.failedRecords.contains(where: { CloudKitEncryptedDataKeyReset.isReset($0.error) }) {
+                    defaults.removeObject(forKey: historyClearTokenKey)
+                    noteEncryptedDataKeyReset(during: "history clear")
+                    try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                    throw CloudKitSyncError.encryptedDataKeyReset
+                }
+                let retryable = changes.failedRecords.filter { !Self.isPermanentServerRecordFailure($0.error) }
+                guard retryable.isEmpty else {
+                    throw CloudKitSyncError.partialRecordFailures(retryable.count)
+                }
+                var records: [CKRecord] = []
+                for record in changes.changedRecords where record.recordType == ClipboardCloudMapping.recordType {
+                    guard let id = UUID(uuidString: record.recordID.recordName) else { continue }
+                    let existingDelete = record[ClipboardCloudMapping.Key.deletedAt] as? Date
+                    if existingDelete == nil,
+                       let timestamp = record[ClipboardCloudMapping.Key.timestamp] as? Date,
+                       timestamp > requestedAt { continue }
+                    if existingDelete == nil,
+                       let live = ClipboardCloudMapping.item(from: record),
+                       !ClipboardMerge.deleteOutranksLiveCopy(deletedAt: requestedAt, live: live) { continue }
+                    let modifiedAt = record[ClipboardCloudMapping.Key.modifiedAt] as? Date ?? requestedAt
+                    let deletedAt = existingDelete
+                        ?? max(requestedAt, modifiedAt.addingTimeInterval(Self.historyClearClockBump))
+                    let tombstone = ClipboardItem(
+                        id: id, type: .text, timestamp: deletedAt,
+                        modifiedAt: deletedAt, deletedAt: deletedAt
+                    )
+                    if Self.serverTombstoneStanding(against: tombstone, serverRecord: record) == .settled {
+                        continue
+                    }
+                    ClipboardCloudMapping.applyTombstone(from: tombstone, to: record)
+                    records.append(record)
+                }
+                if !records.isEmpty {
+                    let result = try await database.saveRecords(records, savePolicy: .ifServerRecordUnchanged)
+                    try requireActive(generation)
+                    if result.encryptedDataKeyWasReset {
+                        defaults.removeObject(forKey: historyClearTokenKey)
+                        noteEncryptedDataKeyReset(during: "history clear")
+                        try await recoverFromEncryptedDataKeyResetIfPending(generation: generation)
+                        throw CloudKitSyncError.encryptedDataKeyReset
+                    }
+                    let unconfirmed = result.failedRecordNames.count + result.conflictedRecordNames.count
+                    guard unconfirmed == 0 else {
+                        throw CloudKitSyncError.partialRecordSaves(unconfirmed, result.failure)
+                    }
+                }
+                try persistHistoryClearPosition(changes.changeToken, requestedAt: requestedAt, generation: generation)
+                token = changes.changeToken
+                moreComing = changes.moreComing
+            }
+            try requireActive(generation)
+            // A second clear during the scan must survive completion of the first request.
+            if defaults.object(forKey: historyClearKey) as? Date == requestedAt {
+                defaults.removeObject(forKey: historyClearTokenKey)
+                defaults.removeObject(forKey: historyClearKey)
+            }
+        }
+    }
+
+    private func persistHistoryClearPosition(
+        _ token: CKServerChangeToken?,
+        requestedAt: Date,
+        generation: UInt64
+    ) throws {
+        try requireActive(generation)
+        guard defaults.object(forKey: historyClearKey) as? Date == requestedAt else { return }
+        guard let token else {
+            defaults.removeObject(forKey: historyClearTokenKey)
+            return
+        }
+        let data = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+        // A crash before this checkpoint replays accepted tombstones; it cannot skip an unsaved page.
+        defaults.set(data, forKey: historyClearTokenKey)
     }
 
     private func pushLocalClips(

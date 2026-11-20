@@ -28,13 +28,21 @@ struct KeyboardHistoryReader: Sendable {
         self.reportSkippedPreviews = reportSkippedPreviews
     }
 
-    func load() throws -> [ClipboardItem] {
+    func load(now: Date = Date()) throws -> [ClipboardItem] {
         var items: [ClipboardItem] = []
+        var retentionMinutes = 0
         if FileManager.default.fileExists(atPath: projectionURL.path) {
-            items = try KeyboardHistoryProjection.load(from: projectionURL).items
+            let projection = try KeyboardHistoryProjection.load(from: projectionURL)
+            items = projection.items(liveAt: now)
+            retentionMinutes = projection.retentionMinutes
         }
         guard let previewsURL, let inboxEntriesURL else { return items }
-        return merging(pendingPreviews(in: previewsURL, entriesURL: inboxEntriesURL), into: items)
+        let previews = KeyboardHistoryProjection.live(
+            pendingPreviews(in: previewsURL, entriesURL: inboxEntriesURL),
+            retentionMinutes: retentionMinutes,
+            now: now
+        )
+        return merging(previews, into: items)
     }
 
     /// Newest first. A preview is kept only while its queue entry exists and its text differs from

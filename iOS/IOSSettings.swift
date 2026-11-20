@@ -57,8 +57,8 @@ final class IOSSettings {
         didSet {
             defaults?.set(syncedHistoryLimit.historyLimit.rawValue, forKey: SettingsKeys.historyLimit)
             defaults?.set(
-                syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays,
-                forKey: SettingsKeys.retentionDays
+                syncedHistoryLimit.current.retentionMinutes ?? SettingsDefaults.retentionMinutes,
+                forKey: SettingsKeys.retentionMinutes
             )
             defaults?.set(syncedHistoryLimit.updatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         }
@@ -70,10 +70,10 @@ final class IOSSettings {
     /// without silently resizing anyone's history on upgrade.
     var historyLimitUpdatedAt: Date { syncedHistoryLimit.updatedAt }
     var syncedSettings: SyncedSettings { syncedHistoryLimit.current }
-    /// Auto-delete window in days (0 = keep forever). Synced: expiry mints tombstones that
+    /// Auto-delete window in minutes (0 = keep forever). Synced: expiry mints tombstones that
     /// propagate, so the window must be one account-wide choice.
-    var retentionDays: Int {
-        syncedHistoryLimit.current.retentionDays ?? SettingsDefaults.retentionDays
+    var retentionMinutes: Int {
+        syncedHistoryLimit.current.retentionMinutes ?? SettingsDefaults.retentionMinutes
     }
     var syncEnabled: Bool { didSet { defaults?.set(syncEnabled, forKey: SettingsKeys.syncEnabled) } }
     var spotlightIndexing: Bool { didSet { defaults?.set(spotlightIndexing, forKey: SettingsKeys.spotlightIndexing) } }
@@ -129,8 +129,8 @@ final class IOSSettings {
                 historyLimit: HistoryLimit(
                     rawValue: defaults?.integer(forKey: SettingsKeys.historyLimit) ?? -1
                 ) ?? SettingsDefaults.historyLimit,
-                retentionDays: defaults?.integer(forKey: SettingsKeys.retentionDays)
-                    ?? SettingsDefaults.retentionDays,
+                retentionMinutes: defaults.map(SettingsDefaults.storedRetentionMinutes(in:))
+                    ?? SettingsDefaults.retentionMinutes,
                 updatedAt: defaults?.object(forKey: SettingsKeys.historyLimitUpdatedAt) as? Date
                     ?? .distantPast
             )
@@ -199,8 +199,8 @@ final class IOSSettings {
         if defaults.object(forKey: SettingsKeys.historyLimitUpdatedAt) == nil {
             defaults.set(historyLimitUpdatedAt, forKey: SettingsKeys.historyLimitUpdatedAt)
         }
-        if defaults.object(forKey: SettingsKeys.retentionDays) == nil {
-            defaults.set(retentionDays, forKey: SettingsKeys.retentionDays)
+        if defaults.object(forKey: SettingsKeys.retentionMinutes) == nil {
+            defaults.set(retentionMinutes, forKey: SettingsKeys.retentionMinutes)
         }
         if defaults.object(forKey: SettingsKeys.themeID) == nil {
             defaults.set(themeID, forKey: SettingsKeys.themeID)
@@ -232,8 +232,8 @@ final class IOSSettings {
     }
 
     /// A user-driven retention change, announced like the history limit.
-    func setRetentionDays(_ value: Int) {
-        guard syncedHistoryLimit.chooseRetentionDays(value) else { return }
+    func setRetentionMinutes(_ value: Int) {
+        guard syncedHistoryLimit.chooseRetentionMinutes(value) else { return }
         NotificationCenter.default.post(name: .yankSyncedSettingsChanged, object: nil)
     }
 

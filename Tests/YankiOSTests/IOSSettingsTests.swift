@@ -44,7 +44,7 @@ struct IOSSettingsTests {
         let settings = IOSSettings(defaults: defaults)
 
         #expect(defaults.integer(forKey: SettingsKeys.historyLimit) == settings.historyLimit.rawValue)
-        #expect(defaults.object(forKey: SettingsKeys.retentionDays) != nil)
+        #expect(defaults.object(forKey: SettingsKeys.retentionMinutes) != nil)
         #expect(defaults.string(forKey: SettingsKeys.themeID) == settings.themeID)
         #expect(defaults.string(forKey: SettingsKeys.viewMode) == settings.viewMode.rawValue)
         #expect(defaults.string(forKey: SettingsKeys.density) == settings.density.rawValue)
@@ -132,7 +132,7 @@ struct IOSSettingsTests {
         settings.viewMode = .grid
         settings.density = .snug
         settings.setHistoryLimit(.deep)
-        settings.setRetentionDays(30)
+        settings.setRetentionMinutes(30 * SyncedSettings.minutesPerDay)
         settings.spotlightIndexing = true
 
         let reloaded = IOSSettings(defaults: defaults)
@@ -140,7 +140,7 @@ struct IOSSettingsTests {
         #expect(reloaded.viewMode == .grid)
         #expect(reloaded.density == .snug)
         #expect(reloaded.historyLimit == .deep)
-        #expect(reloaded.retentionDays == 30)
+        #expect(reloaded.retentionMinutes == 30 * SyncedSettings.minutesPerDay)
         #expect(reloaded.spotlightIndexing)
     }
 

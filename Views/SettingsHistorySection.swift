@@ -14,10 +14,10 @@ extension SettingsView {
 
             settingRowControl("Auto-delete after", "Older unprotected clips are removed. \(SyncCopy.retentionCaption(syncEnabled: manager.syncEnabled))") {
                 Picker("Auto-delete after", selection: Binding(
-                    get: { manager.retentionDays },
-                    set: { selectRetentionDays($0) })) {
-                    ForEach(SettingsDefaults.retentionChoices, id: \.self) { days in
-                        Text(SyncCopy.retentionLabel(days: days)).tag(days)
+                    get: { manager.retentionMinutes },
+                    set: { selectRetentionMinutes($0) })) {
+                    ForEach(SettingsDefaults.retentionChoices, id: \.self) { minutes in
+                        Text(SyncCopy.retentionLabel(minutes: minutes)).tag(minutes)
                     }
                 }
                 .labelsHidden()
@@ -41,26 +41,26 @@ extension SettingsView {
             }
         }
         .alert(
-            SyncCopy.retentionReductionTitle(days: pendingRetention?.days ?? 0),
+            SyncCopy.retentionReductionTitle(minutes: pendingRetention?.minutes ?? 0),
             isPresented: $showingRetentionAlert
         ) {
             Button("Cancel", role: .cancel) { pendingRetention = nil }
             Button("Delete Clips", role: .destructive) {
                 if let pending = pendingRetention {
-                    manager.setRetentionDays(pending.days)
+                    manager.setRetentionMinutes(pending.minutes)
                 }
                 pendingRetention = nil
             }
         } message: {
             if let pending = pendingRetention {
                 Text(SyncCopy.retentionReduction(
-                    days: pending.days,
+                    minutes: pending.minutes,
                     deleting: pending.deleting,
                     syncEnabled: manager.syncEnabled
                 ))
             }
         }
-        .onChange(of: manager.retentionDays) {
+        .onChange(of: manager.retentionMinutes) {
             // An adopted remote window must not be overwritten by a late "Delete Clips".
             showingRetentionAlert = false
             pendingRetention = nil
@@ -113,26 +113,26 @@ extension SettingsView {
 
     /// Mirrors the iOS picker's rule: a shortening that would delete, or that other devices may
     /// act on, asks first; anything else applies at once.
-    func selectRetentionDays(_ days: Int) {
+    func selectRetentionMinutes(_ minutes: Int) {
         switch RetentionChange.requested(
-            days,
-            current: manager.retentionDays,
+            minutes,
+            current: manager.retentionMinutes,
             items: store?.items,
             syncEnabled: manager.syncEnabled,
             now: Date()
         ) {
         case .unchanged:
             break
-        case .apply(let days):
-            manager.setRetentionDays(days)
-        case .confirm(let days, let deleting):
-            pendingRetention = RetentionChange.Pending(days: days, deleting: deleting)
+        case .apply(let minutes):
+            manager.setRetentionMinutes(minutes)
+        case .confirm(let minutes, let deleting):
+            pendingRetention = RetentionChange.Pending(minutes: minutes, deleting: deleting)
             showingRetentionAlert = true
         }
     }
 
     var retentionAccessibilityValue: String {
-        SyncCopy.retentionLabel(days: manager.retentionDays)
+        SyncCopy.retentionLabel(minutes: manager.retentionMinutes)
     }
 
     var minCaptureLengthAccessibilityValue: String {

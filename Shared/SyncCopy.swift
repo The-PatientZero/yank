@@ -50,17 +50,25 @@ enum SyncCopy {
         let scope = syncEnabled
             ? "from this device and from every device signed in to your iCloud"
             : "from this device"
-        return "This permanently deletes every clip, including pinned, bookmarked, and tagged clips, \(scope). This cannot be undone."
+        let timing = syncEnabled
+            ? " History clears on this device now. iCloud and your other devices finish clearing when they next sync; clips another device has not synced yet may remain."
+            : ""
+        return "This permanently deletes every clip, including pinned, bookmarked, and tagged clips, \(scope). This cannot be undone.\(timing)"
     }
 
-    /// "1 day" / "7 days": the app has no string catalogs, so the plural is written by hand.
-    private static func dayCount(_ days: Int) -> String {
-        days == 1 ? "1 day" : "\(days) days"
+    /// "1 hour" / "7 days": the app has no string catalogs, so the plural is written by hand.
+    private static func duration(minutes: Int) -> String {
+        let minutesPerHour = 60
+        let (count, unit): (Int, String) =
+            if minutes % SyncedSettings.minutesPerDay == 0 { (minutes / SyncedSettings.minutesPerDay, "day") }
+            else if minutes % minutesPerHour == 0 { (minutes / minutesPerHour, "hour") }
+            else { (minutes, "minute") }
+        return count == 1 ? "1 \(unit)" : "\(count) \(unit)s"
     }
 
     /// Short picker label for an auto-delete window; `0` means the window is off.
-    static func retentionLabel(days: Int) -> String {
-        days == 0 ? "Never" : dayCount(days)
+    static func retentionLabel(minutes: Int) -> String {
+        minutes == 0 ? "Never" : duration(minutes: minutes)
     }
 
     /// Scope sentence for the auto-delete setting. Absent while sync is off.
@@ -73,15 +81,15 @@ enum SyncCopy {
         [retentionScope(syncEnabled: syncEnabled), protectedClips].compactMap { $0 }.joined(separator: " ")
     }
 
-    static func retentionReductionTitle(days: Int) -> String {
-        "Delete Clips Older Than \(dayCount(days).capitalized)?"
+    static func retentionReductionTitle(minutes: Int) -> String {
+        "Delete Clips Older Than \(duration(minutes: minutes).capitalized)?"
     }
 
     /// Confirmation for shortening the auto-delete window. `deleting` is the number of clips this
     /// device would delete, or `nil` when they could not be counted. Other devices apply the same
     /// window to their own history, so the count is only ever claimed for this device.
-    static func retentionReduction(days: Int, deleting: Int?, syncEnabled: Bool) -> String {
-        let age = dayCount(days)
+    static func retentionReduction(minutes: Int, deleting: Int?, syncEnabled: Bool) -> String {
+        let age = duration(minutes: minutes)
         let everywhere = "every device signed in to your iCloud"
         let opening: String
         switch deleting {

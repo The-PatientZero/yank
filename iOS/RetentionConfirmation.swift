@@ -13,20 +13,20 @@ final class RetentionConfirmation {
     /// Returns the window to apply immediately, or `nil` when the choice is either a no-op or now
     /// waiting on confirmation.
     func select(
-        _ days: Int,
+        _ minutes: Int,
         current: Int,
         items: [ClipboardItem]?,
         syncEnabled: Bool,
         now: Date = Date()
     ) -> Int? {
-        switch RetentionChange.requested(days, current: current, items: items, syncEnabled: syncEnabled, now: now) {
+        switch RetentionChange.requested(minutes, current: current, items: items, syncEnabled: syncEnabled, now: now) {
         case .unchanged:
             return nil
-        case .apply(let days):
+        case .apply(let minutes):
             pending = nil
-            return days
-        case .confirm(let days, let deleting):
-            pending = RetentionChange.Pending(days: days, deleting: deleting)
+            return minutes
+        case .confirm(let minutes, let deleting):
+            pending = RetentionChange.Pending(minutes: minutes, deleting: deleting)
             return nil
         }
     }
@@ -34,7 +34,7 @@ final class RetentionConfirmation {
     /// Returns the window the user agreed to, clearing the pending state.
     func confirm() -> Int? {
         defer { pending = nil }
-        return pending?.days
+        return pending?.minutes
     }
 
     func cancel() {

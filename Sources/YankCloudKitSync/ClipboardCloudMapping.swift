@@ -75,6 +75,7 @@ enum ClipboardCloudMapping {
         Key.hasRichContent, Key.aiEnrichedAt,
         SyncedSettingsCloudMapping.Key.historyLimit,
         SyncedSettingsCloudMapping.Key.retentionDays,
+        SyncedSettingsCloudMapping.Key.retentionMinutes,
         SyncedSettingsCloudMapping.Key.updatedAt
     ]
 
